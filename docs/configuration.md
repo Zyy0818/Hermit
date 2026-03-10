@@ -1,5 +1,10 @@
 # Hermit 配置文档
 
+相关文档：
+
+- [`architecture.md`](./architecture.md): 解释整体运行架构和模块分层
+- [`openclaw-comparison.md`](./openclaw-comparison.md): 解释 Hermit 与 OpenClaw 的设计差异
+
 ## 目标
 
 这份文档说明 Hermit 的配置来源、启动时注入的上下文、目录约定、插件体系、MCP Server 接入，以及"自我配置能力"应该如何使用。
