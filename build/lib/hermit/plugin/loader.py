@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import sys
+from pathlib import Path
+from typing import Any, Callable, List, Optional
+
+import structlog
+
+from hermit.plugin.base import PluginContext, PluginManifest
+from hermit.plugin.hooks import HooksEngine
+
+import tomllib
+
+log = structlog.get_logger()
+
+
+def parse_manifest(plugin_dir: Path) -> Optional[PluginManifest]:
+    toml_path = plugin_dir / "plugin.toml"
+    if not toml_path.exists():
+        return None
+
+    with open(toml_path, "rb") as fh:
+        data = tomllib.load(fh)
+
+    plugin_sec = data.get("plugin", {})
+    entry_sec = data.get("entry", {})
+    config_sec = data.get("config", {})
+    deps_sec = data.get("dependencies", {})
+
+    return PluginManifest(
+        name=str(plugin_sec.get("name", plugin_dir.name)),
+        version=str(plugin_sec.get("version", "0.0.0")),
+        description=str(plugin_sec.get("description", "")),
+        author=str(plugin_sec.get("author", "")),
+        builtin=bool(plugin_sec.get("builtin", False)),
+        entry=dict(entry_sec),
+        config=dict(config_sec),
+        dependencies=list(deps_sec.get("requires", [])),
+        plugin_dir=plugin_dir,
+    )
+
+
+def discover_plugins(*search_dirs: Path) -> List[PluginManifest]:
+    manifests: List[PluginManifest] = []
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        for child in sorted(search_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            manifest = parse_manifest(child)
+            if manifest is not None:
+                manifests.append(manifest)
+    return manifests
+
+
+def load_plugin_entries(
+    manifest: PluginManifest,
+    hooks_engine: HooksEngine,
+    settings: Any = None,
+) -> PluginContext:
+    plugin_dir = Path(manifest.plugin_dir)
+    ctx = PluginContext(hooks_engine, settings=settings)
+
+    for dimension, entry_spec in manifest.entry.items():
+        if ":" not in entry_spec:
+            log.warning("invalid_entry_spec", plugin=manifest.name,
+                        dimension=dimension, spec=entry_spec)
+            continue
+        _invoke_entry(manifest, plugin_dir, dimension, entry_spec, ctx)
+
+    return ctx
+
+
+def _invoke_entry(
+    manifest: PluginManifest,
+    plugin_dir: Path,
+    dimension: str,
+    entry_spec: str,
+    ctx: PluginContext,
+) -> None:
+    module_name, func_name = entry_spec.split(":", 1)
+    try:
+        if manifest.builtin:
+            dir_name = Path(manifest.plugin_dir).name
+            full_module = f"hermit.builtin.{dir_name}.{module_name}"
+            mod = importlib.import_module(full_module)
+        else:
+            mod = _import_external_module(manifest.name, plugin_dir, module_name)
+
+        fn: Callable = getattr(mod, func_name)
+        fn(ctx)
+    except Exception:
+        log.exception("plugin_entry_error", plugin=manifest.name, dimension=dimension)
+
+
+def _import_external_module(plugin_name: str, plugin_dir: Path, module_name: str) -> Any:
+    module_path = plugin_dir / f"{module_name}.py"
+    if not module_path.exists():
+        raise FileNotFoundError(f"Plugin module not found: {module_path}")
+
+    unique = f"_hermit_ext_{plugin_name}_{module_name}"
+    spec = importlib.util.spec_from_file_location(unique, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot create module spec for {module_path}")
+
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[unique] = mod
+    sys.path.insert(0, str(plugin_dir))
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        try:
+            sys.path.remove(str(plugin_dir))
+        except ValueError:
+            pass
+    return mod

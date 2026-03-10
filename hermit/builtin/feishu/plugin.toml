@@ -1,0 +1,10 @@
+[plugin]
+name = "feishu"
+version = "0.1.0"
+description = "Feishu (Lark) messaging adapter via lark-oapi WebSocket long connection"
+author = "Hermit"
+builtin = true
+
+[entry]
+adapter = "adapter:register"
+hooks = "hooks:register"

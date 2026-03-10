@@ -1,0 +1,10 @@
+[plugin]
+name = "scheduler"
+version = "0.1.0"
+description = "Scheduled task execution — cron-like precise timing with persistent storage and hook-based result broadcast"
+author = "Hermit"
+builtin = true
+
+[entry]
+tools = "tools:register"
+hooks = "hooks:register"

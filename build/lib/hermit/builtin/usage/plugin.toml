@@ -1,0 +1,8 @@
+[plugin]
+name = "usage"
+version = "0.1.0"
+description = "显示当前会话的 token 消耗统计"
+builtin = true
+
+[entry]
+commands = "commands:register"

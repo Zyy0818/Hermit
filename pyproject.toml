@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermit"
+version = "0.1.0"
+description = "Hermit personal AI agent MVP."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Beta" },
+]
+dependencies = [
+  "anthropic>=0.57.1",
+  "croniter>=6.0.0",
+  "fastapi>=0.115.0",
+  "lark-oapi>=1.4.18",
+  "mcp>=1.26.0",
+  "pydantic>=2.11.1",
+  "pydantic-settings>=2.8.1",
+  "structlog>=25.1.0",
+  "typer>=0.15.2",
+  "uvicorn>=0.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.26.0",
+  "httpx>=0.28.0",
+]
+
+[project.scripts]
+hermit = "hermit.main:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["hermit*"]
+
+[tool.setuptools.package-data]
+"hermit" = [
+  "builtin/**/plugin.toml",
+  "builtin/**/skills/**/*.md",
+  "builtin/**/rules/**/*.md",
+]

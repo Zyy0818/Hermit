@@ -1,0 +1,8 @@
+[plugin]
+name = "image_memory"
+version = "0.1.0"
+description = "Cross-session image asset and semantic memory"
+builtin = true
+
+[entry]
+hooks = "hooks:register"

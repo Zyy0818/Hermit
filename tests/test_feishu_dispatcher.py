@@ -1,0 +1,478 @@
+"""Tests for the Feishu adapter plugin normalize + AgentRunner integration."""
+from __future__ import annotations
+
+import asyncio
+import copy
+import json
+from dataclasses import dataclass
+from typing import Any, Dict, List
+
+from hermit.builtin.feishu.normalize import FeishuMessage, normalize_event
+from hermit.core.agent import ClaudeAgent
+from hermit.core.runner import AgentRunner
+from hermit.core.session import SessionManager
+from hermit.core.tools import ToolRegistry
+from hermit.plugin.manager import PluginManager
+
+
+@dataclass
+class FakeResponse:
+    content: list
+    stop_reason: str = "end_turn"
+
+
+class FakeMessagesAPI:
+    def __init__(self, answer: str = "ok") -> None:
+        self.answer = answer
+        self.calls: List[Dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> FakeResponse:
+        self.calls.append(copy.deepcopy(kwargs))
+        return FakeResponse(content=[{"type": "text", "text": self.answer}])
+
+
+class FakeClient:
+    def __init__(self, answer: str = "ok") -> None:
+        self.messages = FakeMessagesAPI(answer)
+
+
+def _make_event(chat_id: str, text: str, chat_type: str = "p2p") -> dict:
+    return {
+        "message": {
+            "chat_id": chat_id,
+            "message_id": f"om_{chat_id}",
+            "content": json.dumps({"text": text}),
+            "message_type": "text",
+            "chat_type": chat_type,
+        },
+        "sender": {"sender_id": {"open_id": "user-1"}},
+    }
+
+
+# ---- normalize_event tests ----
+
+def test_normalize_event_extracts_fields() -> None:
+    event = _make_event("chat-1", "hello")
+    msg = normalize_event(event)
+
+    assert msg.chat_id == "chat-1"
+    assert msg.text == "hello"
+    assert msg.sender_id == "user-1"
+    assert msg.message_type == "text"
+    assert msg.chat_type == "p2p"
+    assert msg.image_keys == []
+
+
+def test_normalize_event_strips_at_mention_in_group() -> None:
+    event = _make_event("chat-g", "@_user_1 how are you", chat_type="group")
+    msg = normalize_event(event)
+
+    assert msg.chat_type == "group"
+    assert msg.text == "how are you"
+
+
+def test_normalize_event_handles_plain_text_content() -> None:
+    event = {
+        "message": {"chat_id": "c1", "message_id": "m1", "content": "plain text", "message_type": "text"},
+        "sender": {"sender_id": {"open_id": "u1"}},
+    }
+    msg = normalize_event(event)
+    assert msg.text == "plain text"
+
+
+def test_normalize_event_empty_fields() -> None:
+    msg = normalize_event({"message": {}, "sender": {}})
+    assert msg.chat_id == ""
+    assert msg.text == ""
+    assert msg.image_keys == []
+
+
+def test_normalize_event_extracts_image_key() -> None:
+    event = {
+        "message": {
+            "chat_id": "chat-img",
+            "message_id": "m-img",
+            "content": json.dumps({"image_key": "img_v2_123"}),
+            "message_type": "image",
+            "chat_type": "p2p",
+        },
+        "sender": {"sender_id": {"open_id": "u1"}},
+    }
+
+    msg = normalize_event(event)
+
+    assert msg.text == ""
+    assert msg.message_type == "image"
+    assert msg.image_keys == ["img_v2_123"]
+
+
+def test_normalize_event_collects_nested_image_key_for_post() -> None:
+    event = {
+        "message": {
+            "chat_id": "chat-post",
+            "message_id": "m-post",
+            "message_type": "post",
+            "chat_type": "p2p",
+            "content": json.dumps(
+                {
+                    "zh_cn": {
+                        "title": "这是什么",
+                        "content": [
+                            [
+                                {"tag": "at", "user_name": "ZClaw"},
+                                {"tag": "text", "text": " 这个是啥"},
+                            ],
+                            [{"tag": "img", "image_key": "img_nested_1"}],
+                        ],
+                    }
+                }
+            ),
+        },
+        "sender": {"sender_id": {"open_id": "u1"}},
+    }
+
+    msg = normalize_event(event)
+
+    assert msg.message_type == "post"
+    assert msg.text == "这是什么\n@ZClaw这个是啥"
+    assert msg.image_keys == ["img_nested_1"]
+
+
+# ---- AgentRunner tests ----
+
+def _make_runner(tmp_path, answer: str = "reply") -> tuple[AgentRunner, FakeClient]:
+    client = FakeClient(answer=answer)
+    agent = ClaudeAgent(client=client, registry=ToolRegistry(), model="fake")
+    manager = SessionManager(tmp_path / "sessions")
+    pm = PluginManager()
+    runner = AgentRunner(agent, manager, pm)
+    return runner, client
+
+
+def test_runner_creates_session_and_returns_result(tmp_path) -> None:
+    runner, _ = _make_runner(tmp_path, answer="reply-1")
+    result = runner.handle("chat-x", "hi")
+
+    assert result.text == "reply-1"
+    session = runner.session_manager.get_or_create("chat-x")
+    assert len(session.messages) == 2
+
+
+def test_runner_preserves_history_across_messages(tmp_path) -> None:
+    runner, client = _make_runner(tmp_path, answer="turn-2")
+
+    runner.handle("chat-y", "first")
+    runner.handle("chat-y", "second")
+
+    assert len(client.messages.calls) == 2
+    second_call_messages = client.messages.calls[1]["messages"]
+    roles = [m["role"] for m in second_call_messages]
+    assert roles == ["user", "assistant", "user"]
+
+
+def test_runner_isolates_sessions(tmp_path) -> None:
+    runner, _ = _make_runner(tmp_path, answer="response")
+
+    runner.handle("chat-a", "msg-a")
+    runner.handle("chat-b", "msg-b")
+
+    session_a = runner.session_manager.get_or_create("chat-a")
+    session_b = runner.session_manager.get_or_create("chat-b")
+    assert session_a.messages != session_b.messages
+
+
+def test_runner_reset_session(tmp_path) -> None:
+    runner, _ = _make_runner(tmp_path, answer="r1")
+
+    runner.handle("s1", "hello")
+    session_before = runner.session_manager.get_or_create("s1")
+    assert len(session_before.messages) == 2
+
+    runner.reset_session("s1")
+    session_after = runner.session_manager.get_or_create("s1")
+    assert len(session_after.messages) == 0
+
+
+def test_runner_close_session(tmp_path) -> None:
+    runner, _ = _make_runner(tmp_path, answer="ok")
+
+    runner.handle("s2", "hi")
+    runner.close_session("s2")
+
+    fresh = runner.session_manager.get_or_create("s2")
+    assert len(fresh.messages) == 0
+
+
+def test_feishu_adapter_accepts_legacy_env_names(monkeypatch) -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+
+    monkeypatch.delenv("HERMIT_FEISHU_APP_ID", raising=False)
+    monkeypatch.delenv("HERMIT_FEISHU_APP_SECRET", raising=False)
+    monkeypatch.setenv("FEISHU_APP_ID", "legacy-app-id")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "legacy-app-secret")
+
+    adapter = FeishuAdapter()
+
+    assert adapter._app_id == "legacy-app-id"
+    assert adapter._app_secret == "legacy-app-secret"
+
+
+def test_feishu_adapter_prefers_hermit_env_names(monkeypatch) -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("HERMIT_FEISHU_APP_ID", "preferred-app-id")
+    monkeypatch.setenv("HERMIT_FEISHU_APP_SECRET", "preferred-app-secret")
+    monkeypatch.setenv("FEISHU_APP_ID", "legacy-app-id")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "legacy-app-secret")
+
+    adapter = FeishuAdapter()
+
+    assert adapter._app_id == "preferred-app-id"
+    assert adapter._app_secret == "preferred-app-secret"
+
+
+def test_feishu_adapter_builds_prompt_from_images(tmp_path) -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+
+    adapter = FeishuAdapter()
+    runner, _ = _make_runner(tmp_path, answer="ok")
+
+    def image_store(_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        assert payload["image_key"] == "img_v2_123"
+        return {
+            "image_id": "abc123",
+            "summary": "一张包含流程图的截图",
+            "tags": ["流程图", "产品"],
+        }
+
+    runner.agent.registry.call = image_store  # type: ignore[method-assign]
+    adapter._runner = runner
+
+    prompt = adapter._build_image_prompt(
+        "chat-1",
+        FeishuMessage(
+            chat_id="chat-1",
+            message_id="msg-1",
+            sender_id="user-1",
+            text="",
+            message_type="image",
+            chat_type="p2p",
+            image_keys=["img_v2_123"],
+        ),
+    )
+
+    assert "用户发送了 1 张图片" in prompt
+    assert "image_id=abc123" in prompt
+    assert "流程图" in prompt
+
+
+def test_feishu_adapter_stop_shuts_down_background_resources(monkeypatch) -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+
+    adapter = FeishuAdapter()
+    shutdown_called: list[bool] = []
+    join_called: list[float] = []
+    flush_called: list[bool] = []
+
+    class FakeTimer:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    class FakeExecutor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[bool, bool]] = []
+
+        def shutdown(self, wait: bool, cancel_futures: bool) -> None:
+            self.calls.append((wait, cancel_futures))
+
+    async def fake_shutdown_ws() -> None:
+        shutdown_called.append(True)
+
+    def fake_join_ws_thread(timeout_seconds: float = 2.0) -> None:
+        join_called.append(timeout_seconds)
+
+    def fake_flush_all_sessions() -> None:
+        flush_called.append(True)
+
+    timer = FakeTimer()
+    executor = FakeExecutor()
+    adapter._sweep_timer = timer
+    adapter._executor = executor  # type: ignore[assignment]
+    adapter._shutdown_ws = fake_shutdown_ws  # type: ignore[method-assign]
+    adapter._join_ws_thread = fake_join_ws_thread  # type: ignore[method-assign]
+    adapter._flush_all_sessions = fake_flush_all_sessions  # type: ignore[method-assign]
+
+    asyncio.run(adapter.stop())
+
+    assert adapter._stopped is True
+    assert timer.cancelled is True
+    assert adapter._sweep_timer is None
+    assert shutdown_called == [True]
+    assert executor.calls == [(False, True)]
+    assert join_called == [2.0]
+    assert flush_called == [True]
+
+
+def test_feishu_adapter_start_raises_when_ws_thread_crashes() -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+
+    adapter = FeishuAdapter()
+    adapter._app_id = "app-id"
+    adapter._app_secret = "app-secret"
+
+    def fake_run_ws_client() -> None:
+        adapter._ws_error = ValueError("boom")
+        adapter._ws_exited.set()
+
+    adapter._run_ws_client = fake_run_ws_client  # type: ignore[method-assign]
+
+    try:
+        asyncio.run(adapter.start(runner=object()))  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        assert str(exc) == "Feishu adapter stopped unexpectedly"
+        assert isinstance(exc.__cause__, ValueError)
+    else:
+        raise AssertionError("adapter.start() should propagate WebSocket thread failures")
+
+
+# ── Emoji reaction tests ────────────────────────────────────────────────────
+
+
+def test_resolve_emoji_alias() -> None:
+    from hermit.builtin.feishu.reaction import resolve_emoji
+
+    assert resolve_emoji("thumbsup") == "THUMBSUP"
+    assert resolve_emoji("congrats") == "CONGRATULATIONS"
+    assert resolve_emoji("fire") == "FIRE"
+    assert resolve_emoji("thinking") == "THINKING_FACE"
+    assert resolve_emoji("done") == "OK"
+
+
+def test_resolve_emoji_passthrough_raw_type() -> None:
+    from hermit.builtin.feishu.reaction import resolve_emoji
+
+    assert resolve_emoji("THUMBSUP") == "THUMBSUP"
+    assert resolve_emoji("FIRE") == "FIRE"
+
+
+def test_add_reaction_returns_false_when_api_fails(monkeypatch) -> None:
+    from hermit.builtin.feishu.reaction import add_reaction
+
+    class FakeResp:
+        def success(self):
+            return False
+
+        code = 99
+        msg = "forbidden"
+
+    class FakeReaction:
+        def create(self, _):
+            return FakeResp()
+
+    class FakeIm:
+        v1 = type("v1", (), {"message_reaction": FakeReaction()})()
+
+    class FakeClient:
+        im = FakeIm()
+
+    result = add_reaction(FakeClient(), "om_123", "THUMBSUP")
+    assert result is False
+
+
+def test_send_ack_disabled_by_env(monkeypatch) -> None:
+    from hermit.builtin.feishu import reaction
+
+    monkeypatch.setenv("HERMIT_FEISHU_REACTION_ENABLED", "false")
+    called: list[str] = []
+    monkeypatch.setattr(reaction, "add_reaction", lambda *_a, **_kw: called.append("called"))
+    reaction.send_ack(object(), "om_123")
+    assert called == []
+
+
+def test_build_prompt_injects_message_id() -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+    from hermit.builtin.feishu.normalize import FeishuMessage
+
+    adapter = FeishuAdapter()
+    msg = FeishuMessage(
+        chat_id="oc_1",
+        message_id="om_abc",
+        sender_id="u1",
+        text="你好",
+        message_type="text",
+        chat_type="p2p",
+        image_keys=[],
+    )
+    prompt = adapter._build_prompt("session-1", msg)
+    assert "<feishu_msg_id>om_abc</feishu_msg_id>" in prompt
+    assert "你好" in prompt
+
+
+def test_build_prompt_without_message_id() -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+    from hermit.builtin.feishu.normalize import FeishuMessage
+
+    adapter = FeishuAdapter()
+    msg = FeishuMessage(
+        chat_id="oc_1",
+        message_id="",
+        sender_id="u1",
+        text="测试",
+        message_type="text",
+        chat_type="p2p",
+        image_keys=[],
+    )
+    prompt = adapter._build_prompt("session-1", msg)
+    assert "<feishu_msg_id>" not in prompt
+    assert "<feishu_chat_id>oc_1</feishu_chat_id>" in prompt
+    assert "测试" in prompt
+
+
+def test_feishu_react_tool_registered(monkeypatch) -> None:
+    from hermit.builtin.feishu.hooks import register
+    from hermit.core.tools import ToolRegistry
+    from hermit.plugin.base import PluginContext
+    from hermit.plugin.hooks import HooksEngine
+
+    ctx = PluginContext(HooksEngine(), settings=None)
+    register(ctx)
+    registry = ToolRegistry()
+    for tool in ctx.tools:
+        registry.register(tool)
+    assert registry.get("feishu_react") is not None
+
+
+def test_feishu_react_tool_resolves_alias_and_calls_api(monkeypatch) -> None:
+    from hermit.builtin.feishu import hooks as hooks_mod
+    from hermit.builtin.feishu import reaction as reaction_mod
+    from hermit.builtin.feishu.hooks import register
+    from hermit.core.tools import ToolRegistry
+    from hermit.plugin.base import PluginContext
+    from hermit.plugin.hooks import HooksEngine
+
+    reactions: list[tuple[str, str]] = []
+
+    def fake_add_reaction(client, message_id, emoji_type):
+        reactions.append((message_id, emoji_type))
+        return True
+
+    monkeypatch.setattr(hooks_mod, "add_reaction", fake_add_reaction)
+
+    class FakeClient:
+        pass
+
+    monkeypatch.setattr(hooks_mod, "build_lark_client", lambda: FakeClient())
+
+    ctx = PluginContext(HooksEngine(), settings=None)
+    register(ctx)
+    registry = ToolRegistry()
+    for tool in ctx.tools:
+        registry.register(tool)
+
+    result = registry.call("feishu_react", {"message_id": "om_xyz", "emoji": "thumbsup"})
+    assert result["success"] is True
+    assert result["emoji_type"] == "THUMBSUP"
+    assert reactions == [("om_xyz", "THUMBSUP")]

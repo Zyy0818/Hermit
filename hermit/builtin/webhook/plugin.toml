@@ -1,0 +1,10 @@
+[plugin]
+name = "webhook"
+version = "0.1.0"
+description = "HTTP webhook receiver — event-driven agent dispatch with configurable routes and signature verification"
+author = "Hermit"
+builtin = true
+
+[entry]
+hooks = "hooks:register"
+tools = "tools:register"

@@ -1,0 +1,9 @@
+[plugin]
+name = "orchestrator"
+version = "0.1.0"
+description = "Multi-agent delegation with researcher and coder subagents"
+builtin = true
+
+[entry]
+hooks = "hooks:register"
+subagents = "subagents:register"
