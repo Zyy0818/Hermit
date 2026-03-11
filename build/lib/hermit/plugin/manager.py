@@ -37,7 +37,7 @@ class PluginManager:
         self._all_mcp: List[McpServerSpec] = []
         self._all_commands: List[CommandSpec] = []
         self._mcp_manager: Any = None
-        self._client: Any = None
+        self._runtime: Any = None
         self._registry: Optional[ToolRegistry] = None
         self._model: str = ""
         self._max_tokens: int = 2048
@@ -120,19 +120,11 @@ class PluginManager:
         available = ", ".join(s.name for s in self._all_skills)
         return f"Skill '{name}' not found. Available: {available}"
 
-    def configure_subagent_runner(
-        self,
-        client: Any,
-        model: str,
-        max_tokens: int = 2048,
-        tool_output_limit: int = 4000,
-        on_tool_call: Any = None,
-    ) -> None:
-        """Provide the Anthropic client so subagents can actually run."""
-        self._client = client
-        self._model = model
-        self._max_tokens = max_tokens
-        self._tool_output_limit = tool_output_limit
+    def configure_subagent_runtime(self, runtime: Any, on_tool_call: Any = None) -> None:
+        self._runtime = runtime
+        self._model = runtime.model
+        self._max_tokens = runtime.max_tokens
+        self._tool_output_limit = runtime.tool_output_limit
         self._on_tool_call = on_tool_call
 
     def build_system_prompt(
@@ -239,11 +231,10 @@ class PluginManager:
         )
 
     def _run_subagent(self, spec: SubagentSpec, task: str) -> str:
-        if not self._client or not self._registry:
+        if not self._runtime or not self._registry:
             return f"[Subagent '{spec.name}' unavailable: agent runner not configured]"
 
         import sys
-        from hermit.core.agent import ClaudeAgent
 
         DIM = "\033[2m"
         MAGENTA = "\033[35m"
@@ -260,13 +251,10 @@ class PluginManager:
             except KeyError:
                 log.warning("subagent_tool_not_found", subagent=spec.name, tool=tool_name)
 
-        sub_agent = ClaudeAgent(
-            client=self._client,
+        sub_agent = self._runtime.clone(
             registry=sub_registry,
             model=spec.model or self._model,
-            max_tokens=self._max_tokens,
             max_turns=15,
-            tool_output_limit=self._tool_output_limit,
             system_prompt=spec.system_prompt,
         )
 

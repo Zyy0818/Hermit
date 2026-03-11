@@ -20,14 +20,6 @@ class ToolSpec:
     handler: ToolHandler
     readonly: bool = False  # True = no side effects; safe to call in plan mode
 
-    def to_anthropic_schema(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.input_schema,
-        }
-
-
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
@@ -45,11 +37,11 @@ class ToolRegistry:
     def call(self, name: str, payload: dict[str, Any]) -> Any:
         return self.get(name).handler(payload)
 
-    def anthropic_tools(self, readonly_only: bool = False) -> list[dict[str, Any]]:
+    def list_tools(self, readonly_only: bool = False) -> list[ToolSpec]:
         tools = self._tools.values()
         if readonly_only:
             tools = (t for t in tools if t.readonly)  # type: ignore[assignment]
-        return [tool.to_anthropic_schema() for tool in tools]
+        return list(tools)
 
 
 def _safe_path(root_dir: Path, relative_path: str) -> Path:

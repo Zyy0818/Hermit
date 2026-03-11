@@ -47,13 +47,14 @@ def _load_hermit_env() -> None:
 _load_hermit_env()
 
 from hermit.context import build_base_context, ensure_default_context_file, load_context_text
-from hermit.core.agent import AgentResult, ClaudeAgent
+from hermit.provider.runtime import AgentResult
 from hermit.core.runner import AgentRunner
 from hermit.core.sandbox import CommandSandbox
 from hermit.core.session import SessionManager
 from hermit.core.tools import create_builtin_tool_registry
 from hermit.logging import configure_logging
 from hermit.plugin.manager import PluginManager
+from hermit.provider.services import build_provider_client_kwargs, build_runtime
 
 app = typer.Typer(help="Hermit personal AI agent CLI.")
 plugin_app = typer.Typer(help="Manage plugins.")
@@ -126,16 +127,7 @@ class _StreamPrinter:
 
 
 def _build_anthropic_client_kwargs(settings: Settings) -> dict:
-    kwargs = {}
-    if settings.anthropic_api_key:
-        kwargs["api_key"] = settings.anthropic_api_key
-    if settings.auth_token:
-        kwargs["auth_token"] = settings.auth_token
-    if settings.base_url:
-        kwargs["base_url"] = settings.base_url
-    if settings.parsed_custom_headers:
-        kwargs["default_headers"] = settings.parsed_custom_headers
-    return kwargs
+    return build_provider_client_kwargs(settings, "claude")
 
 
 def _ensure_workspace(settings: Settings) -> None:
@@ -154,73 +146,6 @@ def _ensure_workspace(settings: Settings) -> None:
     if not settings.memory_file.exists():
         from hermit.builtin.memory.engine import MemoryEngine
         MemoryEngine(settings.memory_file).save({})
-
-
-def _build_agent(
-    settings: Settings,
-    preloaded_skills: list[str] | None = None,
-    pm: PluginManager | None = None,
-    serve_mode: bool = False,
-) -> tuple[ClaudeAgent, PluginManager]:
-    from anthropic import Anthropic
-
-    if pm is None:
-        pm = PluginManager(settings=settings)
-        builtin_dir = Path(__file__).parent / "builtin"
-        pm.discover_and_load(builtin_dir, settings.plugins_dir)
-
-    sandbox = CommandSandbox(
-        mode=settings.sandbox_mode,
-        timeout_seconds=settings.command_timeout_seconds,
-        cwd=Path.cwd(),
-    )
-    registry = create_builtin_tool_registry(
-        Path.cwd(), sandbox, config_root_dir=settings.base_dir,
-    )
-    pm.setup_tools(registry)
-    pm.start_mcp_servers(registry)
-
-    base_prompt = build_base_context(settings, Path.cwd())
-
-    # Combine core commands + plugin commands for system prompt injection
-    visible_commands: list[tuple[str, str]] = [
-        (cmd, help_text)
-        for cmd, (_fn, help_text, cli_only) in sorted(AgentRunner._core_commands.items())
-        if not (serve_mode and cli_only)
-    ]
-    for spec in pm._all_commands:
-        if not (serve_mode and spec.cli_only):
-            visible_commands.append((spec.name, spec.help_text))
-    visible_commands.sort()
-    if visible_commands:
-        cmd_lines = ["<available_commands>"]
-        cmd_lines.append("以下斜杠命令由系统层处理（不经过 LLM），用户可直接输入使用。当用户询问有哪些命令时，请告知：")
-        for cmd, help_text in visible_commands:
-            cmd_lines.append(f"- `{cmd}` — {help_text}")
-        cmd_lines.append("</available_commands>")
-        base_prompt = base_prompt + "\n\n" + "\n".join(cmd_lines)
-
-    system_prompt = pm.build_system_prompt(base_prompt, preloaded_skills=preloaded_skills)
-
-    client = Anthropic(**_build_anthropic_client_kwargs(settings))
-    agent = ClaudeAgent(
-        client=client,
-        registry=registry,
-        model=settings.model,
-        max_tokens=settings.effective_max_tokens(),
-        max_turns=settings.max_turns,
-        tool_output_limit=settings.tool_output_limit,
-        thinking_budget=settings.thinking_budget,
-        system_prompt=system_prompt,
-    )
-    pm.configure_subagent_runner(
-        client=client,
-        model=settings.model,
-        max_tokens=settings.effective_max_tokens(),
-        tool_output_limit=settings.tool_output_limit,
-        on_tool_call=None,
-    )
-    return agent, pm
 
 
 @contextlib.contextmanager
@@ -250,7 +175,7 @@ def _caffeinate(settings: Settings):
 def _require_auth(settings: Settings) -> None:
     if not settings.has_auth:
         raise typer.BadParameter(
-            "Missing authentication. Set HERMIT_AUTH_TOKEN, HERMIT_ANTHROPIC_API_KEY, or ANTHROPIC_API_KEY."
+            "Missing authentication for the selected provider."
         )
 
 
@@ -307,32 +232,60 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
     ]
     errors: list[str] = []
 
-    auth_key = _resolve_env_key(
-        "HERMIT_ANTHROPIC_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "HERMIT_AUTH_TOKEN",
+    provider_key = _resolve_env_key("HERMIT_PROVIDER")
+    items.append(
+        _PreflightItem(
+            label="Provider",
+            ok=True,
+            detail=(
+                f"{settings.provider} ({_describe_env_source(provider_key, env_file_keys)})"
+                if provider_key
+                else f"{settings.provider} (默认值)"
+            ),
+        )
     )
-    if auth_key:
-        detail = f"{auth_key} ({_describe_env_source(auth_key, env_file_keys)})"
-        if auth_key == "HERMIT_AUTH_TOKEN":
-            base_url_key = _resolve_env_key("HERMIT_BASE_URL")
-            if base_url_key:
-                detail += f", HERMIT_BASE_URL ({_describe_env_source(base_url_key, env_file_keys)})"
-            else:
-                detail += ", 未设置 HERMIT_BASE_URL"
-        items.append(_PreflightItem(label="LLM 鉴权", ok=True, detail=detail))
-    else:
-        errors.append(
-            "缺少 LLM 鉴权。请设置 `ANTHROPIC_API_KEY` / `HERMIT_ANTHROPIC_API_KEY`，"
-            "或设置 `HERMIT_AUTH_TOKEN`（通常还需要 `HERMIT_BASE_URL`）。"
+    if settings.provider == "claude":
+        auth_key = _resolve_env_key(
+            "HERMIT_CLAUDE_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "HERMIT_CLAUDE_AUTH_TOKEN",
+            "HERMIT_AUTH_TOKEN",
         )
-        items.append(
-            _PreflightItem(
-                label="LLM 鉴权",
-                ok=False,
-                detail="未找到 ANTHROPIC_API_KEY / HERMIT_ANTHROPIC_API_KEY / HERMIT_AUTH_TOKEN",
+        if auth_key:
+            detail = f"{auth_key} ({_describe_env_source(auth_key, env_file_keys)})"
+            base_url_key = _resolve_env_key("HERMIT_CLAUDE_BASE_URL", "HERMIT_BASE_URL")
+            if auth_key in {"HERMIT_CLAUDE_AUTH_TOKEN", "HERMIT_AUTH_TOKEN"}:
+                detail += (
+                    f", {base_url_key} ({_describe_env_source(base_url_key, env_file_keys)})"
+                    if base_url_key
+                    else ", 未设置 Claude base URL"
+                )
+            items.append(_PreflightItem(label="LLM 鉴权", ok=True, detail=detail))
+        else:
+            errors.append(
+                "缺少 Claude 鉴权。请设置 `HERMIT_CLAUDE_API_KEY` / `ANTHROPIC_API_KEY`，"
+                "或设置 `HERMIT_CLAUDE_AUTH_TOKEN`（通常还需要 `HERMIT_CLAUDE_BASE_URL`）。"
             )
-        )
+            items.append(
+                _PreflightItem(
+                    label="LLM 鉴权",
+                    ok=False,
+                    detail="未找到 Claude API Key / Auth Token",
+                )
+            )
+    elif settings.provider == "codex":
+        auth_key = _resolve_env_key("HERMIT_OPENAI_API_KEY", "OPENAI_API_KEY")
+        if auth_key:
+            items.append(
+                _PreflightItem(
+                    label="Codex 鉴权",
+                    ok=True,
+                    detail=f"{auth_key} ({_describe_env_source(auth_key, env_file_keys)})",
+                )
+            )
+        else:
+            errors.append("缺少 Codex/OpenAI 鉴权。请设置 `HERMIT_OPENAI_API_KEY` 或 `OPENAI_API_KEY`。")
+            items.append(_PreflightItem(label="Codex 鉴权", ok=False, detail="未找到 OpenAI API Key"))
 
     model_key = _resolve_env_key("HERMIT_MODEL")
     items.append(
@@ -458,13 +411,13 @@ def setup() -> None:
     # --- API credentials ---
     typer.echo("Step 1/2  API credentials\n")
     use_proxy = typer.confirm(
-        "Use a proxy/gateway instead of Anthropic API directly?", default=False
+        "Use Claude-compatible proxy/gateway instead of Anthropic API directly?", default=False
     )
     if use_proxy:
-        auth_token = typer.prompt("  HERMIT_AUTH_TOKEN (Bearer token)", hide_input=True)
-        base_url = typer.prompt("  HERMIT_BASE_URL  (proxy endpoint URL)")
+        auth_token = typer.prompt("  HERMIT_CLAUDE_AUTH_TOKEN (Bearer token)", hide_input=True)
+        base_url = typer.prompt("  HERMIT_CLAUDE_BASE_URL  (proxy endpoint URL)")
         custom_headers = typer.prompt(
-            "  HERMIT_CUSTOM_HEADERS (optional, e.g. 'X-Biz-Id: foo')", default=""
+            "  HERMIT_CLAUDE_HEADERS (optional, e.g. 'X-Biz-Id: foo')", default=""
         )
         model = typer.prompt("  HERMIT_MODEL", default="claude-3-7-sonnet-latest")
         lines += [
@@ -493,8 +446,6 @@ def setup() -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    # Reload env so get_settings() picks up the new values this session.
-    _load_hermit_env()
     get_settings.cache_clear()
 
     settings = get_settings()
@@ -541,7 +492,7 @@ def _build_runner(
     serve_mode: bool = False,
 ) -> tuple[AgentRunner, PluginManager]:
     """Build an AgentRunner (agent + session manager + plugin manager)."""
-    agent, pm = _build_agent(settings, preloaded_skills=preloaded_skills, pm=pm, serve_mode=serve_mode)
+    agent, pm = build_runtime(settings, preloaded_skills=preloaded_skills, pm=pm, serve_mode=serve_mode)
     manager = SessionManager(settings.sessions_dir, settings.session_idle_timeout_seconds)
     runner = AgentRunner(agent, manager, pm, serve_mode=serve_mode)
     pm.setup_commands(runner)

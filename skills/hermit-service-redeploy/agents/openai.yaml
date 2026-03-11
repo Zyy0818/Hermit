@@ -1,0 +1,5 @@
+version: 1
+interface:
+  display_name: Hermit Service Redeploy
+  short_description: Reinstall and reload the local Hermit service after runtime changes
+  default_prompt: Redeploy the local Hermit service so the latest runtime changes are active, then verify the running adapter and logs.

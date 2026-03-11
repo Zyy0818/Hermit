@@ -4,7 +4,7 @@ import datetime
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
-from hermit.core.agent import AgentResult, ClaudeAgent, ToolCallback, ToolStartCallback
+from hermit.provider.runtime import AgentResult, AgentRuntime, ToolCallback, ToolStartCallback
 from hermit.core.session import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ class AgentRunner:
 
     def __init__(
         self,
-        agent: ClaudeAgent,
+        agent: AgentRuntime,
         session_manager: SessionManager,
         plugin_manager: PluginManager,
         serve_mode: bool = False,

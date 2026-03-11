@@ -12,6 +12,7 @@ import structlog
 from hermit.builtin.image_memory.engine import ImageMemoryEngine
 from hermit.core.tools import ToolSpec
 from hermit.plugin.base import HookEvent, PluginContext
+from hermit.provider.services import VisionAnalysisService, build_provider
 
 log = structlog.get_logger()
 
@@ -329,45 +330,24 @@ def _analyze_image(settings: Any, mime_type: str, image_bytes: bytes) -> dict[st
     if mime_type not in _SUPPORTED_VISION_MIME_TYPES:
         raise ValueError(f"Unsupported image mime type for analysis: {mime_type}")
 
-    from anthropic import Anthropic
-
-    client = Anthropic(**_client_kwargs(settings))
     model = settings.image_model or settings.model
-    response = client.messages.create(
-        model=model,
-        max_tokens=512,
-        system=_VISION_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": mime_type,
-                            "data": base64.b64encode(image_bytes).decode("ascii"),
-                        },
-                    },
-                    {"type": "text", "text": "请分析这张图片并返回 JSON。"},
-                ],
+    provider = build_provider(settings, model=model)
+    service = VisionAnalysisService(provider, model=model)
+    data = service.analyze_image(
+        system_prompt=_VISION_PROMPT,
+        text="请分析这张图片并返回 JSON。",
+        image_block={
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime_type,
+                "data": base64.b64encode(image_bytes).decode("ascii"),
             },
-        ],
+        },
+        max_tokens=512,
     )
-    raw = _extract_response_text(response)
-    if not raw:
-        log.warning(
-            "image_analysis_empty_response",
-            model=model,
-            stop_reason=getattr(response, "stop_reason", None),
-            content_types=_describe_content_blocks(response),
-            response_repr=repr(response)[:800],
-        )
-        return {"summary": "", "tags": [], "ocr_text": ""}
-    log.debug("image_analysis_raw_response", model=model, raw_length=len(raw), raw_preview=raw[:300])
-    data = _parse_json(raw)
-    if not isinstance(data, dict):
-        log.warning("image_analysis_parse_failed", model=model, raw_preview=raw[:500])
+    if not data:
+        log.warning("image_analysis_empty_response", model=model)
         return {"summary": "", "tags": [], "ocr_text": ""}
     summary = str(data.get("summary", "")).strip()
     tags = [str(tag).strip() for tag in data.get("tags", []) if str(tag).strip()]
@@ -435,84 +415,6 @@ def _record_public_dict(record: Any, *, include_local_path: bool = False) -> dic
     if include_local_path:
         data["local_path"] = record.local_path
     return data
-
-
-def _client_kwargs(settings: Any) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {}
-    if settings.anthropic_api_key:
-        kwargs["api_key"] = settings.anthropic_api_key
-    if settings.auth_token:
-        kwargs["auth_token"] = settings.auth_token
-    if settings.base_url:
-        kwargs["base_url"] = settings.base_url
-    if settings.parsed_custom_headers:
-        kwargs["default_headers"] = settings.parsed_custom_headers
-    return kwargs
-
-
-def _extract_response_text(response: Any) -> str:
-    """Extract text from an Anthropic Messages response, handling SDK objects,
-    dict-based proxy responses, and plain-string content."""
-    content = getattr(response, "content", None)
-    if content is None and isinstance(response, dict):
-        content = response.get("content")
-
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for block in content:
-            if hasattr(block, "text") and getattr(block, "type", None) == "text":
-                text_parts.append(block.text)
-            elif isinstance(block, dict):
-                if block.get("type") == "text":
-                    text_parts.append(str(block.get("text", "")))
-                elif block.get("type") == "content_block" and "text" in block:
-                    text_parts.append(str(block["text"]))
-        if text_parts:
-            return "\n".join(text_parts)
-
-        for block in content:
-            if hasattr(block, "text"):
-                val = block.text
-                if isinstance(val, str) and val.strip():
-                    return val
-            elif isinstance(block, dict) and "text" in block:
-                val = str(block["text"])
-                if val.strip():
-                    return val
-
-    if isinstance(response, dict):
-        choices = response.get("choices")
-        if isinstance(choices, list) and choices:
-            msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
-            c = msg.get("content", "")
-            if isinstance(c, str):
-                return c
-
-    return ""
-
-
-def _describe_content_blocks(response: Any) -> str:
-    """Return a human-readable summary of content block types for diagnostics."""
-    content = getattr(response, "content", None)
-    if content is None and isinstance(response, dict):
-        content = response.get("content")
-    if content is None:
-        return "content=None"
-    if isinstance(content, str):
-        return f"content=str(len={len(content)})"
-    if isinstance(content, list):
-        types = []
-        for block in content:
-            block_type = getattr(block, "type", None) or (
-                block.get("type") if isinstance(block, dict) else type(block).__name__
-            )
-            types.append(str(block_type))
-        return f"blocks=[{', '.join(types)}]"
-    return f"content=<{type(content).__name__}>"
-
 
 def _parse_json(text: str) -> Any:
     """Extract a JSON object from model response text.

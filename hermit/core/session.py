@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermit.storage import atomic_write
+from hermit.provider.messages import normalize_messages
 
 
 @dataclass
@@ -51,7 +52,7 @@ class Session:
     def from_dict(cls, data: Dict[str, Any]) -> Session:
         return cls(
             session_id=str(data["session_id"]),
-            messages=list(data.get("messages", [])),
+            messages=normalize_messages(list(data.get("messages", []))),
             created_at=float(data.get("created_at", time.time())),
             last_active_at=float(data.get("last_active_at", time.time())),
             total_input_tokens=int(data.get("total_input_tokens", 0)),

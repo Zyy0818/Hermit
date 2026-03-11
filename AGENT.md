@@ -2,6 +2,18 @@
 
 Hermit 项目的协作开发说明。以下内容以当前源码为准。
 
+## 项目技能
+
+- 服务重部署技能：[`skills/hermit-service-redeploy/SKILL.md`](skills/hermit-service-redeploy/SKILL.md)
+
+适用场景：
+
+- 修改 `hermit serve` 运行链路相关代码
+- 修改 builtin plugin、adapter、scheduler、webhook、Feishu 集成
+- 修改安装、打包或本地运行时加载方式
+
+执行这类任务时，收尾阶段必须按该技能完成本地重部署与验证，不能只停留在源码修改或单纯 reload。
+
 ## 项目概述
 
 Hermit 是一个面向个人工作流的本地优先 AI Agent runtime。
@@ -201,3 +213,15 @@ mcp = "mcp:register"
 - 再看 [`hermit/core/runner.py`](hermit/core/runner.py) 理解执行链路
 - 再看 [`hermit/plugin/manager.py`](hermit/plugin/manager.py) 理解能力装配
 - 涉及 scheduler / webhook / feishu 时，优先检查 `DISPATCH_RESULT` 是否是你要挂接的事件
+
+## 服务变更收尾规则
+
+凡是会影响本地运行中 `hermit serve` 行为的改动，默认按下面流程收尾：
+
+1. 评估运行中的服务是否来自 repo checkout 还是 `uv tool` 安装副本
+2. 如需让安装副本更新，执行 `bash install.sh`
+3. 对目标 adapter 执行 reload；如未运行则直接启动服务
+4. 检查 `~/.hermit/serve-<adapter>.pid` 和对应进程
+5. 检查 `~/.hermit/logs/<adapter>-stdout.log` / `stderr.log` 确认 reload 或启动成功
+
+不要在未完成上述闭环前宣告“已完成”。

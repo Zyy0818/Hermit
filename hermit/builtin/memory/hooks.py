@@ -10,6 +10,7 @@ import structlog
 from hermit.builtin.memory.engine import MemoryEngine
 from hermit.builtin.memory.types import MemoryEntry
 from hermit.plugin.base import HookEvent, PluginContext
+from hermit.provider.services import StructuredExtractionService, build_provider
 from hermit.storage import JsonStore
 
 log = structlog.get_logger()
@@ -103,21 +104,13 @@ def _extract_and_save(
         f"<conversation>\n{transcript}\n</conversation>"
     )
 
-    from anthropic import Anthropic
-
-    client = Anthropic(**_client_kwargs(settings))
-    response = client.messages.create(
-        model=settings.model,
+    provider = build_provider(settings, model=settings.model)
+    service = StructuredExtractionService(provider, model=settings.model)
+    data = service.extract_json(
+        system_prompt=_EXTRACTION_PROMPT,
+        user_content=user_content,
         max_tokens=2048,
-        system=_EXTRACTION_PROMPT,
-        messages=[
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": "{"},
-        ],
     )
-
-    raw = _extract_response_text(response)
-    data = _parse_json("{" + raw)
     if not data:
         return
 
@@ -185,29 +178,6 @@ def _format_transcript(messages: List[Dict[str, Any]]) -> str:
         lines.append(entry)
 
     return "\n\n".join(lines)
-
-
-def _client_kwargs(settings: Any) -> dict:
-    kwargs: dict = {}
-    if settings.anthropic_api_key:
-        kwargs["api_key"] = settings.anthropic_api_key
-    if settings.auth_token:
-        kwargs["auth_token"] = settings.auth_token
-    if settings.base_url:
-        kwargs["base_url"] = settings.base_url
-    if settings.parsed_custom_headers:
-        kwargs["default_headers"] = settings.parsed_custom_headers
-    return kwargs
-
-
-def _extract_response_text(response: Any) -> str:
-    for block in response.content or []:
-        if hasattr(block, "text"):
-            return block.text
-        if isinstance(block, dict) and block.get("type") == "text":
-            return block.get("text", "")
-    return ""
-
 
 def _parse_json(text: str) -> Any:
     cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip())

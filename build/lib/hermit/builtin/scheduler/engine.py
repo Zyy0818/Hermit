@@ -261,74 +261,21 @@ class SchedulerEngine:
     def _run_agent_via_runner(self, prompt: str) -> Any:
         """Run using the serve-context agent — no plugin reload needed.
 
-        Creates a fresh ClaudeAgent that shares the serve agent's client,
+        Creates a fresh runtime that shares the serve provider,
         registry, and system prompt so plugins are never reloaded.
         The empty message_history ensures full session isolation.
         """
-        from hermit.core.agent import ClaudeAgent
-
         serve_agent = self._runner.agent
-        agent = ClaudeAgent(
-            client=serve_agent.client,
-            registry=serve_agent.registry,
-            model=serve_agent.model,
-            max_tokens=serve_agent.max_tokens,
-            max_turns=serve_agent.max_turns,
-            tool_output_limit=serve_agent.tool_output_limit,
-            thinking_budget=serve_agent.thinking_budget,
-            system_prompt=serve_agent.system_prompt,
-        )
+        agent = serve_agent.clone()
         return agent.run(prompt)
 
     def _run_agent_standalone(self, prompt: str) -> Any:
         """Fallback: build a fresh agent when running outside serve context (e.g. CLI)."""
-        from anthropic import Anthropic
         from hermit.config import get_settings
-        from hermit.context import build_base_context
-        from hermit.core.agent import ClaudeAgent
-        from hermit.core.sandbox import CommandSandbox
-        from hermit.core.tools import create_builtin_tool_registry
-        from hermit.plugin.manager import PluginManager
+        from hermit.provider.services import build_background_runtime
 
         settings = get_settings()
-        pm = PluginManager(settings=settings)
-        builtin_dir = Path(__file__).parent.parent
-        pm.discover_and_load(builtin_dir, settings.plugins_dir)
-
-        sandbox = CommandSandbox(
-            mode=settings.sandbox_mode,
-            timeout_seconds=settings.command_timeout_seconds,
-            cwd=Path.home(),
-        )
-        registry = create_builtin_tool_registry(
-            Path.home(), sandbox, config_root_dir=settings.base_dir,
-        )
-        pm.setup_tools(registry)
-
-        base_prompt = build_base_context(settings, Path.home())
-        system_prompt = pm.build_system_prompt(base_prompt)
-
-        client_kwargs: dict[str, Any] = {}
-        if settings.anthropic_api_key:
-            client_kwargs["api_key"] = settings.anthropic_api_key
-        if settings.auth_token:
-            client_kwargs["auth_token"] = settings.auth_token
-        if settings.base_url:
-            client_kwargs["base_url"] = settings.base_url
-        if settings.parsed_custom_headers:
-            client_kwargs["default_headers"] = settings.parsed_custom_headers
-
-        client = Anthropic(**client_kwargs)
-        agent = ClaudeAgent(
-            client=client,
-            registry=registry,
-            model=settings.model,
-            max_tokens=settings.effective_max_tokens(),
-            max_turns=settings.max_turns,
-            tool_output_limit=settings.tool_output_limit,
-            thinking_budget=settings.thinking_budget,
-            system_prompt=system_prompt,
-        )
+        agent, pm = build_background_runtime(settings, cwd=Path.home())
         return agent.run(prompt)
 
     # ------------------------------------------------------------------
