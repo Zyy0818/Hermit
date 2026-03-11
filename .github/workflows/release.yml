@@ -71,11 +71,22 @@ jobs:
           shasum -a 256 dist/* > dist/SHA256SUMS.txt
           uv run python scripts/generate_release_notes.py --tag "$RELEASE_TAG" --output dist/RELEASE_NOTES.md
 
+      - name: Prepare PyPI distributions
+        run: |
+          mkdir -p pypi-dist
+          cp dist/*.whl dist/*.tar.gz pypi-dist/
+
       - name: Upload release bundle
         uses: actions/upload-artifact@v6
         with:
           name: hermit-release-python-dist
           path: dist/*
+
+      - name: Upload PyPI distributions
+        uses: actions/upload-artifact@v6
+        with:
+          name: hermit-release-pypi-dist
+          path: pypi-dist/*
 
   build-macos-dmg:
     needs: build-python
@@ -145,7 +156,7 @@ jobs:
       - name: Download release bundle
         uses: actions/download-artifact@v5
         with:
-          name: hermit-release-python-dist
+          name: hermit-release-pypi-dist
           path: dist
 
       - name: Publish to PyPI
