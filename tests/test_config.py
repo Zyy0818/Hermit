@@ -6,12 +6,15 @@ from hermit.main import _build_anthropic_client_kwargs
 
 
 def test_settings_parse_prefixed_env_fields(monkeypatch) -> None:
+    monkeypatch.delenv("HERMIT_CLAUDE_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_BASE_URL", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_HEADERS", raising=False)
     monkeypatch.setenv("HERMIT_AUTH_TOKEN", "token-123")
     monkeypatch.setenv("HERMIT_BASE_URL", "https://example.internal/claude")
     monkeypatch.setenv("HERMIT_CUSTOM_HEADERS", "X-Biz-Id: claude-code, X-Test: yes")
     monkeypatch.setenv("HERMIT_MODEL", "claude-sonnet-4-6")
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.auth_token == "token-123"
     assert settings.base_url == "https://example.internal/claude"
@@ -22,11 +25,18 @@ def test_settings_parse_prefixed_env_fields(monkeypatch) -> None:
     }
 
 
-def test_build_anthropic_client_kwargs_supports_auth_token_and_headers() -> None:
+def test_build_anthropic_client_kwargs_supports_auth_token_and_headers(monkeypatch) -> None:
+    monkeypatch.delenv("HERMIT_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("HERMIT_BASE_URL", raising=False)
+    monkeypatch.delenv("HERMIT_CUSTOM_HEADERS", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_BASE_URL", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_HEADERS", raising=False)
     settings = Settings(
         auth_token="token-123",
         base_url="https://example.internal/claude",
         custom_headers="X-Biz-Id: claude-code",
+        _env_file=None,
     )
 
     kwargs = _build_anthropic_client_kwargs(settings)
@@ -38,11 +48,18 @@ def test_build_anthropic_client_kwargs_supports_auth_token_and_headers() -> None
     }
 
 
-def test_build_anthropic_client_kwargs_keeps_api_key_when_present() -> None:
+def test_build_anthropic_client_kwargs_keeps_api_key_when_present(monkeypatch) -> None:
+    monkeypatch.delenv("HERMIT_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("HERMIT_BASE_URL", raising=False)
+    monkeypatch.delenv("HERMIT_CUSTOM_HEADERS", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_BASE_URL", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_HEADERS", raising=False)
     settings = Settings(
         anthropic_api_key="api-key",
         auth_token="token-123",
         base_url="https://example.internal/claude",
+        _env_file=None,
     )
 
     kwargs = _build_anthropic_client_kwargs(settings)
@@ -51,8 +68,10 @@ def test_build_anthropic_client_kwargs_keeps_api_key_when_present() -> None:
     assert kwargs["auth_token"] == "token-123"
 
 
-def test_custom_headers_requires_colon_separator() -> None:
-    settings = Settings(custom_headers="broken-header")
+def test_custom_headers_requires_colon_separator(monkeypatch) -> None:
+    monkeypatch.delenv("HERMIT_CUSTOM_HEADERS", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_HEADERS", raising=False)
+    settings = Settings(custom_headers="broken-header", _env_file=None)
 
     try:
         _ = settings.parsed_custom_headers
@@ -88,6 +107,46 @@ max_turns = 42
     assert settings.model == "gpt-5.4"
     assert settings.max_turns == 42
     assert settings.config_file == base_dir / "config.toml"
+
+
+def test_settings_loads_legacy_auth_keys_from_env_file(tmp_path, monkeypatch) -> None:
+    base_dir = tmp_path / ".hermit"
+    base_dir.mkdir(parents=True)
+    (base_dir / ".env").write_text(
+        "\n".join(
+            [
+                "HERMIT_AUTH_TOKEN=token-123",
+                "HERMIT_BASE_URL=https://example.internal/claude",
+                "HERMIT_CUSTOM_HEADERS=X-Biz-Id: claude-code",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (base_dir / "config.toml").write_text(
+        """
+[profiles.claude-code]
+provider = "claude"
+model = "claude-sonnet-4-6"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    monkeypatch.setenv("HERMIT_PROFILE", "claude-code")
+    monkeypatch.delenv("HERMIT_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("HERMIT_BASE_URL", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_BASE_URL", raising=False)
+    monkeypatch.delenv("HERMIT_CUSTOM_HEADERS", raising=False)
+    monkeypatch.delenv("HERMIT_CLAUDE_HEADERS", raising=False)
+
+    settings = Settings(_env_file=base_dir / ".env")
+
+    assert settings.auth_token == "token-123"
+    assert settings.base_url == "https://example.internal/claude"
+    assert settings.custom_headers == "X-Biz-Id: claude-code"
+    assert settings.has_auth is True
 
 
 def test_env_overrides_profile_values(tmp_path, monkeypatch) -> None:

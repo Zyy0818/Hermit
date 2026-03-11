@@ -47,6 +47,7 @@ class ProfileCatalog:
     path: Path
     exists: bool
     default_profile: str | None
+    disabled_builtin_plugins: list[str]
     profiles: dict[str, dict[str, Any]]
     plugins: dict[str, dict[str, Any]]
 
@@ -66,12 +67,27 @@ def config_path_for_base_dir(base_dir: Path) -> Path:
 def load_profile_catalog(base_dir: Path) -> ProfileCatalog:
     path = config_path_for_base_dir(base_dir)
     if not path.exists():
-        return ProfileCatalog(path=path, exists=False, default_profile=None, profiles={}, plugins={})
+        return ProfileCatalog(
+            path=path,
+            exists=False,
+            default_profile=None,
+            disabled_builtin_plugins=[],
+            profiles={},
+            plugins={},
+        )
 
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     default_profile = raw.get("default_profile")
+    disabled_builtin_plugins_raw = raw.get("disabled_builtin_plugins", [])
     profiles_raw = raw.get("profiles", {})
     plugins_raw = raw.get("plugins", {})
+
+    disabled_builtin_plugins: list[str] = []
+    if isinstance(disabled_builtin_plugins_raw, list):
+        for item in disabled_builtin_plugins_raw:
+            name = str(item).strip()
+            if name:
+                disabled_builtin_plugins.append(name)
 
     profiles: dict[str, dict[str, Any]] = {}
     if isinstance(profiles_raw, dict):
@@ -98,6 +114,7 @@ def load_profile_catalog(base_dir: Path) -> ProfileCatalog:
         path=path,
         exists=True,
         default_profile=resolved_default or None,
+        disabled_builtin_plugins=disabled_builtin_plugins,
         profiles=profiles,
         plugins=plugins,
     )

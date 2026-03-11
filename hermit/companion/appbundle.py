@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import plistlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -13,8 +14,40 @@ APP_NAME = "Hermit Menu"
 BUNDLE_ID = "com.hermit.menubar"
 
 
-def app_path(target: Path | None = None) -> Path:
-    return (target or (Path.home() / "Applications" / f"{APP_NAME}.app")).expanduser()
+def _base_dir_slug(base_dir: Path) -> str:
+    resolved = base_dir.expanduser()
+    default_base_dir = Path.home() / ".hermit"
+    if resolved == default_base_dir:
+        return ""
+    name = resolved.name
+    if name.startswith(".hermit-"):
+        name = name[len(".hermit-"):]
+    elif name == ".hermit":
+        return ""
+    elif name.startswith("."):
+        name = name[1:]
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", name).strip("-").lower()
+    return slug or "custom"
+
+
+def app_name(base_dir: Path | None = None) -> str:
+    resolved = (base_dir or hermit_base_dir()).expanduser()
+    slug = _base_dir_slug(resolved)
+    if not slug:
+        return APP_NAME
+    return f"{APP_NAME} {slug.title()}"
+
+
+def bundle_id(base_dir: Path | None = None) -> str:
+    resolved = (base_dir or hermit_base_dir()).expanduser()
+    slug = _base_dir_slug(resolved)
+    if not slug:
+        return BUNDLE_ID
+    return f"{BUNDLE_ID}.{slug}"
+
+
+def app_path(target: Path | None = None, *, base_dir: Path | None = None) -> Path:
+    return (target or (Path.home() / "Applications" / f"{app_name(base_dir)}.app")).expanduser()
 
 
 def _launcher_command() -> list[str]:
@@ -28,6 +61,13 @@ def _bundle_python_target() -> Path:
     return Path(sys.executable).resolve()
 
 
+def _project_root() -> Path | None:
+    candidate = Path(__file__).resolve().parents[2]
+    if (candidate / "pyproject.toml").exists():
+        return candidate
+    return None
+
+
 def install_app_bundle(
     *,
     target: Path | None = None,
@@ -35,18 +75,21 @@ def install_app_bundle(
     profile: str | None = None,
     base_dir: Path | None = None,
 ) -> Path:
-    bundle = app_path(target)
+    resolved_base_dir = (base_dir or hermit_base_dir()).expanduser()
+    bundle = app_path(target, base_dir=resolved_base_dir)
     contents = bundle / "Contents"
     macos_dir = contents / "MacOS"
     resources_dir = contents / "Resources"
     macos_dir.mkdir(parents=True, exist_ok=True)
     resources_dir.mkdir(parents=True, exist_ok=True)
+    resolved_app_name = app_name(resolved_base_dir)
+    resolved_bundle_id = bundle_id(resolved_base_dir)
 
     info = {
-        "CFBundleDisplayName": APP_NAME,
+        "CFBundleDisplayName": resolved_app_name,
         "CFBundleExecutable": "HermitMenu",
-        "CFBundleIdentifier": BUNDLE_ID,
-        "CFBundleName": APP_NAME,
+        "CFBundleIdentifier": resolved_bundle_id,
+        "CFBundleName": resolved_app_name,
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": "0.1.0",
         "CFBundleVersion": "1",
@@ -54,23 +97,32 @@ def install_app_bundle(
     }
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))
 
-    resolved_base_dir = (base_dir or hermit_base_dir()).expanduser()
     env_lines = [f'export HERMIT_BASE_DIR="{resolved_base_dir}"']
     if profile:
         env_lines.append(f'export HERMIT_PROFILE="{profile}"')
     bundled_python = macos_dir / "python3"
-    target_python = _bundle_python_target()
     if bundled_python.exists() or bundled_python.is_symlink():
         bundled_python.unlink()
-    os.symlink(target_python, bundled_python)
+    project_root = _project_root()
+    if project_root is not None:
+        exec_line = (
+            f'exec /opt/homebrew/bin/uv run --project "{project_root}" --python 3.11 '
+            f'python -m hermit.companion.menubar --adapter "{adapter}"'
+        )
+    else:
+        target_python = _bundle_python_target()
+        os.symlink(target_python, bundled_python)
+        exec_line = (
+            'exec "$APP_ROOT/python3" -m hermit.companion.menubar '
+            f'--adapter "{adapter}"'
+        )
     launcher = "\n".join(
         [
             "#!/bin/zsh",
             "set -e",
             'APP_ROOT="$(cd "$(dirname "$0")" && pwd)"',
             *env_lines,
-            'exec "$APP_ROOT/python3" -m hermit.companion.menubar '
-            f'--adapter "{adapter}"',
+            exec_line,
             "",
         ]
     )
@@ -94,10 +146,11 @@ def _run_osascript(script: str) -> str:
     return result.stdout.strip()
 
 
-def login_item_enabled(name: str = APP_NAME) -> bool:
+def login_item_enabled(name: str | None = None) -> bool:
+    resolved_name = name or app_name()
     script = (
         'tell application "System Events"\n'
-        f'  return exists login item "{name}"\n'
+        f'  return exists login item "{resolved_name}"\n'
         "end tell"
     )
     try:
@@ -111,24 +164,26 @@ def enable_login_item(target: Path | None = None) -> str:
     bundle = app_path(target)
     if not bundle.exists():
         raise RuntimeError(f"App bundle not found: {bundle}")
+    resolved_name = bundle.stem
     script = (
         'tell application "System Events"\n'
-        f'  if exists login item "{APP_NAME}" then delete login item "{APP_NAME}"\n'
-        f'  make login item at end with properties {{name:"{APP_NAME}", path:"{bundle}", hidden:false}}\n'
+        f'  if exists login item "{resolved_name}" then delete login item "{resolved_name}"\n'
+        f'  make login item at end with properties {{name:"{resolved_name}", path:"{bundle}", hidden:false}}\n'
         "end tell"
     )
     _run_osascript(script)
-    return f"Enabled login item for {APP_NAME}."
+    return f"Enabled login item for {resolved_name}."
 
 
-def disable_login_item(name: str = APP_NAME) -> str:
+def disable_login_item(name: str | None = None) -> str:
+    resolved_name = name or app_name()
     script = (
         'tell application "System Events"\n'
-        f'  if exists login item "{name}" then delete login item "{name}"\n'
+        f'  if exists login item "{resolved_name}" then delete login item "{resolved_name}"\n'
         "end tell"
     )
     _run_osascript(script)
-    return f"Disabled login item for {name}."
+    return f"Disabled login item for {resolved_name}."
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

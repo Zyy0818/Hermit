@@ -260,6 +260,44 @@ chat / serve 模式中的 core slash commands：
 └── skills/
 ```
 
+## 环境隔离
+
+推荐约定：
+
+- `~/.hermit`：实际用户环境
+- `~/.hermit-dev`：本地开发环境
+- `~/.hermit-test`：测试 / 联调环境
+
+不要让 `dev` / `test` 复用 `~/.hermit`。否则会共享：
+
+- `.env`
+- `config.toml`
+- 飞书 bot 配置
+- memory / sessions / schedules / logs / pid
+
+仓库内提供了一个环境包装脚本：
+
+```bash
+scripts/hermit-env.sh dev serve --adapter feishu
+scripts/hermit-env.sh test chat
+scripts/hermit-env.sh prod config show
+```
+
+菜单栏与自启也有对应包装脚本：
+
+```bash
+scripts/hermit-menubar-env.sh dev --adapter feishu
+scripts/hermit-menubar-install-env.sh dev --open
+scripts/hermit-autostart-env.sh test enable --adapter feishu
+```
+
+如果要给多个环境同时开 `launchd` 自启，也必须使用不同的 `HERMIT_BASE_DIR`。
+当前实现会基于 base dir 自动生成不同 label，例如：
+
+- `com.hermit.serve.feishu`（prod）
+- `com.hermit.serve.hermit-dev.feishu`
+- `com.hermit.serve.hermit-test.feishu`
+
 补充说明：
 
 - `config.toml` 不会由 `hermit init` 自动生成，但菜单栏 companion 打开配置时会自动补默认模板

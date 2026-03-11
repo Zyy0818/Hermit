@@ -10,6 +10,7 @@ from pydantic import Field
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from hermit.i18n import locale_from_env, normalize_locale
 from hermit.provider.profiles import config_path_for_base_dir, load_profile_catalog, resolve_profile
 
 
@@ -109,6 +110,7 @@ class Settings(BaseSettings):
     openai_base_url: Optional[str] = None
     openai_headers: Optional[str] = None
     codex_command: str = "codex"
+    locale: str = Field(default_factory=locale_from_env)
     model: str = "claude-3-7-sonnet-latest"
     max_tokens: int = 2048
     max_turns: int = 100
@@ -160,6 +162,7 @@ class Settings(BaseSettings):
         _set_if_present(values, "openai_api_key", os.environ.get("HERMIT_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"))
         _set_if_present(values, "openai_base_url", os.environ.get("HERMIT_OPENAI_BASE_URL"))
         _set_if_present(values, "openai_headers", os.environ.get("HERMIT_OPENAI_HEADERS"))
+        _set_if_present(values, "locale", os.environ.get("HERMIT_LOCALE"))
         _set_if_present(values, "feishu_app_id", os.environ.get("HERMIT_FEISHU_APP_ID") or os.environ.get("FEISHU_APP_ID"))
         _set_if_present(values, "feishu_app_secret", os.environ.get("HERMIT_FEISHU_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET"))
         _set_if_present(values, "feishu_thread_progress", os.environ.get("HERMIT_FEISHU_THREAD_PROGRESS"))
@@ -173,6 +176,11 @@ class Settings(BaseSettings):
         _set_if_present(values, "webhook_host", os.environ.get("HERMIT_WEBHOOK_HOST"))
         _set_if_present(values, "webhook_port", os.environ.get("HERMIT_WEBHOOK_PORT"))
         return values
+
+    @model_validator(mode="after")
+    def _normalize_locale_value(self) -> "Settings":
+        self.locale = normalize_locale(self.locale)
+        return self
 
     def effective_max_tokens(self) -> int:
         if self.thinking_budget > 0 and self.max_tokens <= self.thinking_budget:

@@ -14,10 +14,25 @@ def _make_pm() -> PluginManager:
     return pm
 
 
-def test_github_builtin_plugin_is_discovered() -> None:
+def test_github_builtin_plugin_is_discovered(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(tmp_path / ".hermit"))
     pm = _make_pm()
     names = [manifest.name for manifest in pm.manifests]
     assert "github" in names
+
+
+def test_github_builtin_plugin_can_be_disabled(tmp_path, monkeypatch) -> None:
+    base_dir = tmp_path / ".hermit"
+    base_dir.mkdir(parents=True)
+    (base_dir / "config.toml").write_text(
+        'disabled_builtin_plugins = ["github"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+
+    pm = _make_pm()
+    names = [manifest.name for manifest in pm.manifests]
+    assert "github" not in names
 
 
 def test_github_plugin_registers_http_mcp_spec(monkeypatch) -> None:
@@ -41,13 +56,15 @@ def test_github_plugin_supports_custom_mcp_url(monkeypatch) -> None:
     assert spec.url == "https://example.enterprise.github/mcp"
 
 
-def test_github_skill_is_discovered() -> None:
+def test_github_skill_is_discovered(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(tmp_path / ".hermit"))
     pm = _make_pm()
     names = [skill.name for skill in pm._all_skills]
     assert "github" in names
 
 
-def test_github_skill_appears_in_system_prompt_catalog() -> None:
+def test_github_skill_appears_in_system_prompt_catalog(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(tmp_path / ".hermit"))
     pm = _make_pm()
     prompt = pm.build_system_prompt("BASE")
     assert "<available_skills>" in prompt

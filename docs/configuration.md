@@ -48,6 +48,49 @@ Hermit 当前有四类配置来源：
 | `~/.hermit/rules/` | 规则文本 |
 | `~/.hermit/hooks/` | 预留 hooks 目录 |
 
+## 多环境隔离建议
+
+如果同一台机器同时承担开发、测试和实际用户服务，不要共用一个 `HERMIT_BASE_DIR`。
+
+推荐目录：
+
+| 环境 | `HERMIT_BASE_DIR` |
+| --- | --- |
+| 实际用户 | `~/.hermit` |
+| 开发 | `~/.hermit-dev` |
+| 测试 | `~/.hermit-test` |
+
+至少要隔离这些状态：
+
+- `.env`
+- `config.toml`
+- `memory/`
+- `sessions/`
+- `logs/`
+- `schedules/`
+- `plugins/`
+- `serve-*.pid`
+
+否则常见干扰包括：
+
+- dev 改了人格 / context，实际用户回复跟着变
+- test 禁了 plugin，prod 也被禁
+- 日志、pid、定时任务、session 全部混在一起
+
+推荐直接用仓库脚本：
+
+```bash
+scripts/hermit-env.sh dev serve --adapter feishu
+scripts/hermit-env.sh test chat
+scripts/hermit-env.sh prod config show
+```
+
+如果使用 `autostart`，非默认目录也会自动生成独立 label：
+
+- `com.hermit.serve.feishu`
+- `com.hermit.serve.hermit-dev.feishu`
+- `com.hermit.serve.hermit-test.feishu`
+
 ## 核心配置项
 
 ### 通用运行时

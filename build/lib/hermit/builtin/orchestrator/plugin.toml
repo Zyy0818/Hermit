@@ -1,6 +1,7 @@
 [plugin]
 name = "orchestrator"
 version = "0.1.0"
+description_key = "plugin.orchestrator.description"
 description = "Multi-agent delegation with researcher and coder subagents"
 builtin = true
 

@@ -84,3 +84,29 @@ def test_enable_replaces_legacy_plist_for_same_adapter(tmp_path, monkeypatch) ->
     assert not legacy_plist.exists()
     assert (launch_agents_dir / "com.hermit.serve.feishu.plist").exists()
     assert ("load", str(launch_agents_dir / "com.hermit.serve.feishu.plist")) in calls
+
+
+def test_enable_uses_base_dir_suffix_for_non_default_workspace(tmp_path, monkeypatch) -> None:
+    launch_agents_dir = tmp_path / "LaunchAgents"
+    launch_agents_dir.mkdir()
+    log_dir = tmp_path / "logs"
+    exe = tmp_path / "bin" / "hermit"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(autostart, "_LAUNCH_AGENTS_DIR", launch_agents_dir)
+    monkeypatch.setattr(autostart.sys, "platform", "darwin")
+    monkeypatch.setattr(autostart, "_find_executable", lambda: exe)
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(tmp_path / ".hermit-dev"))
+
+    class _Result:
+        def __init__(self, returncode: int = 0, stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stderr = stderr
+
+    monkeypatch.setattr(autostart, "_launchctl", lambda *args: _Result())
+
+    message = autostart.enable(adapter="feishu", log_dir=log_dir)
+
+    assert "com.hermit.serve.hermit-dev.feishu" in message
+    assert (launch_agents_dir / "com.hermit.serve.hermit-dev.feishu.plist").exists()

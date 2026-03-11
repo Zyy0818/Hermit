@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_NAME="${1:-}"
+
+if [[ -z "${ENV_NAME}" ]]; then
+  echo "Usage: scripts/hermit-env.sh <prod|dev|test> <hermit args...>" >&2
+  exit 1
+fi
+
+shift
+
+# Clear runtime overrides from the current shell so environments do not bleed
+# into each other. Hermit will read the selected base dir's `.env` itself.
+for key in \
+  HERMIT_PROFILE \
+  HERMIT_PROVIDER \
+  HERMIT_MODEL \
+  HERMIT_AUTH_TOKEN \
+  HERMIT_BASE_URL \
+  HERMIT_CUSTOM_HEADERS \
+  HERMIT_CLAUDE_API_KEY \
+  HERMIT_CLAUDE_AUTH_TOKEN \
+  HERMIT_CLAUDE_BASE_URL \
+  HERMIT_CLAUDE_HEADERS \
+  HERMIT_OPENAI_API_KEY \
+  HERMIT_OPENAI_BASE_URL \
+  HERMIT_OPENAI_HEADERS \
+  HERMIT_FEISHU_APP_ID \
+  HERMIT_FEISHU_APP_SECRET \
+  HERMIT_SCHEDULER_FEISHU_CHAT_ID \
+  ANTHROPIC_API_KEY \
+  OPENAI_API_KEY \
+  FEISHU_APP_ID \
+  FEISHU_APP_SECRET; do
+  unset "${key}" || true
+done
+
+case "${ENV_NAME}" in
+  prod)
+    export HERMIT_BASE_DIR="${HOME}/.hermit"
+    ;;
+  dev)
+    export HERMIT_BASE_DIR="${HOME}/.hermit-dev"
+    ;;
+  test)
+    export HERMIT_BASE_DIR="${HOME}/.hermit-test"
+    ;;
+  *)
+    echo "Unknown environment: ${ENV_NAME}" >&2
+    echo "Allowed values: prod, dev, test" >&2
+    exit 1
+    ;;
+esac
+
+exec /opt/homebrew/bin/uv run --project "${ROOT_DIR}" --python 3.11 python -m hermit.main "$@"

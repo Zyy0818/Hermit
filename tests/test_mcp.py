@@ -250,6 +250,26 @@ github_mcp_url = "https://example.github.test/mcp"
         assert spec.url == "https://example.github.test/mcp"
         assert spec.headers == {"Authorization": "Bearer ghp_test_123"}
 
+    def test_disabled_builtin_plugin_is_skipped(self, tmp_path: Path):
+        base_dir = tmp_path / ".hermit"
+        base_dir.mkdir(parents=True)
+        (base_dir / "config.toml").write_text(
+            """
+disabled_builtin_plugins = ["github"]
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        settings = MagicMock()
+        settings.base_dir = base_dir
+        settings.disabled_builtin_plugins = ["github"]
+
+        pm = PluginManager(settings=settings)
+        pm.discover_and_load(Path("hermit/builtin/github").resolve().parent)
+
+        assert all(manifest.name != "github" for manifest in pm.manifests)
+        assert pm.mcp_specs == []
+
     def test_resolve_plugin_context_renders_lists_and_warns_for_required_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

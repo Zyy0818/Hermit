@@ -8,6 +8,7 @@ from typing import Any, Callable, List, Optional
 
 import structlog
 
+from hermit.i18n import tr
 from hermit.plugin.base import PluginContext, PluginManifest
 from hermit.plugin.base import PluginVariableSpec
 from hermit.plugin.config import resolve_plugin_context
@@ -45,13 +46,19 @@ def parse_manifest(plugin_dir: Path) -> Optional[PluginManifest]:
                 default=spec.get("default"),
                 required=bool(spec.get("required", False)),
                 secret=bool(spec.get("secret", False)),
-                description=str(spec.get("description", "")),
+                description=tr(
+                    str(spec.get("description_key", "")),
+                    default=str(spec.get("description", "")),
+                ) if spec.get("description_key") or spec.get("description") else "",
             )
 
     return PluginManifest(
         name=str(plugin_sec.get("name", plugin_dir.name)),
         version=str(plugin_sec.get("version", "0.0.0")),
-        description=str(plugin_sec.get("description", "")),
+        description=tr(
+            str(plugin_sec.get("description_key", "")),
+            default=str(plugin_sec.get("description", "")),
+        ) if plugin_sec.get("description_key") or plugin_sec.get("description") else "",
         author=str(plugin_sec.get("author", "")),
         builtin=bool(plugin_sec.get("builtin", False)),
         entry=dict(entry_sec),

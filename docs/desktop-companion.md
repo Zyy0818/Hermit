@@ -121,7 +121,8 @@ menu bar 并不直接嵌入 runtime，而是通过命令行控制：
 
 当前设计：
 
-- app 默认位于 `~/Applications/Hermit Menu.app`
+- prod app 默认位于 `~/Applications/Hermit Menu.app`
+- dev/test 会自动带环境后缀，例如 `~/Applications/Hermit Menu Dev.app`
 - launcher 会把 adapter / profile / base-dir 以环境变量和命令参数方式传入
 - Login Item 是菜单栏 app 自身，不是 `hermit serve`
 
@@ -130,6 +131,25 @@ menu bar 并不直接嵌入 runtime，而是通过命令行控制：
 - 菜单栏 app 可以在登录时启动
 - app 再去控制后台 `serve`
 - GUI 层与 runtime 生命周期仍然解耦
+
+## 多环境建议
+
+如果同机维护 prod / dev / test，建议不要直接手敲 `HERMIT_BASE_DIR`，而是统一用包装脚本：
+
+```bash
+scripts/hermit-menubar-env.sh prod --adapter feishu
+scripts/hermit-menubar-env.sh dev --adapter feishu
+scripts/hermit-menubar-install-env.sh dev --open
+scripts/hermit-autostart-env.sh test enable --adapter feishu
+```
+
+区分规则：
+
+- prod app: `Hermit Menu.app`
+- dev app: `Hermit Menu Dev.app`
+- test app: `Hermit Menu Test.app`
+
+对应 login item 名称也跟随 app 名，不会互相覆盖。
 
 ## 配置文件行为
 

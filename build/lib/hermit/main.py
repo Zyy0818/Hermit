@@ -55,16 +55,19 @@ from hermit.core.sandbox import CommandSandbox
 from hermit.core.session import SessionManager
 from hermit.core.tools import create_builtin_tool_registry
 from hermit.logging import configure_logging
+from hermit.i18n import resolve_locale, tr
 from hermit.plugin.manager import PluginManager
 from hermit.provider.services import build_provider_client_kwargs, build_runtime
 
-app = typer.Typer(help="Hermit personal AI agent CLI.")
-plugin_app = typer.Typer(help="Manage plugins.")
-autostart_app = typer.Typer(help="Manage auto-start at login (macOS launchd).")
-schedule_app = typer.Typer(help="Manage scheduled tasks.")
-config_app = typer.Typer(help="Inspect resolved configuration.")
-profiles_app = typer.Typer(help="Inspect provider profiles.")
-auth_app = typer.Typer(help="Inspect authentication sources.")
+CLI_LOCALE = resolve_locale()
+
+app = typer.Typer(help=tr("cli.app.help", locale=CLI_LOCALE))
+plugin_app = typer.Typer(help=tr("cli.plugin.help", locale=CLI_LOCALE))
+autostart_app = typer.Typer(help=tr("cli.autostart.help", locale=CLI_LOCALE))
+schedule_app = typer.Typer(help=tr("cli.schedule.help", locale=CLI_LOCALE))
+config_app = typer.Typer(help=tr("cli.config.help", locale=CLI_LOCALE))
+profiles_app = typer.Typer(help=tr("cli.profiles.help", locale=CLI_LOCALE))
+auth_app = typer.Typer(help=tr("cli.auth.help", locale=CLI_LOCALE))
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(autostart_app, name="autostart")
 app.add_typer(schedule_app, name="schedule")

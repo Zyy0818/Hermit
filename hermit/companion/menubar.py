@@ -14,10 +14,15 @@ from hermit.companion.appbundle import (
 )
 from hermit.companion.control import (
     config_path,
+    companion_log_path,
     ensure_base_dir,
     ensure_config_file,
+    format_exception_message,
     hermit_base_dir,
     hermit_log_dir,
+    load_profile_runtime_settings,
+    load_runtime_settings,
+    log_companion_event,
     open_in_textedit,
     open_path,
     reload_service,
@@ -25,6 +30,8 @@ from hermit.companion.control import (
     service_status,
     start_service,
     stop_service,
+    switch_profile,
+    update_profile_bool_and_restart,
 )
 from hermit.config import get_settings
 from hermit.i18n import resolve_locale, tr
@@ -44,6 +51,13 @@ def _t(key: str, **kwargs: object) -> str:
     return tr(key, locale=locale, **kwargs)
 
 
+def _profile_menu_entry(profile_name: str, *, base_dir: Path) -> tuple[str, bool]:
+    settings = load_profile_runtime_settings(profile_name, base_dir=base_dir)
+    if settings.has_auth:
+        return profile_name, True
+    return _t("menubar.profile.entry", profile=profile_name, status=_t("menubar.profile.auth.missing")), False
+
+
 if rumps is not None:  # pragma: no branch - class only exists when dependency is available
     class HermitMenuApp(rumps.App):  # pragma: no cover - macOS UI exercised manually
         def __init__(self, *, adapter: str, profile: str | None = None, base_dir: Path | None = None) -> None:
@@ -51,6 +65,7 @@ if rumps is not None:  # pragma: no branch - class only exists when dependency i
             self.adapter = adapter
             self.profile = profile
             self.base_dir = base_dir or hermit_base_dir()
+            self.busy_label: str | None = None
             self.status_item = rumps.MenuItem(_t("menubar.status.checking"))
             self.profile_item = rumps.MenuItem(_t("menubar.profile.pending"))
             self.provider_item = rumps.MenuItem(_t("menubar.provider.pending"))
@@ -58,7 +73,14 @@ if rumps is not None:  # pragma: no branch - class only exists when dependency i
             self.start_item = rumps.MenuItem(_t("menubar.action.start"), callback=self._start_service)
             self.stop_item = rumps.MenuItem(_t("menubar.action.stop"), callback=self._stop_service)
             self.reload_item = rumps.MenuItem(_t("menubar.action.reload"), callback=self._reload_service)
-            self.menu_login_item = rumps.MenuItem(_t("menubar.action.enable_login_item"), callback=self._enable_menu_login_item)
+            self.switch_profile_item = rumps.MenuItem(_t("menubar.action.switch_profile"))
+            self.feature_toggles_item = rumps.MenuItem(_t("menubar.action.feature_toggles"))
+            self.thread_progress_item = rumps.MenuItem(_t("plugin.feishu.variable.thread_progress"), callback=self._toggle_thread_progress)
+            self.reaction_enabled_item = rumps.MenuItem(_t("plugin.feishu.variable.reaction_enabled"), callback=self._toggle_reaction_enabled)
+            self.scheduler_enabled_item = rumps.MenuItem(_t("plugin.scheduler.variable.enabled"), callback=self._toggle_scheduler_enabled)
+            self.webhook_enabled_item = rumps.MenuItem(_t("plugin.webhook.variable.enabled"), callback=self._toggle_webhook_enabled)
+            self.autostart_item = rumps.MenuItem(_t("menubar.action.autostart"), callback=self._toggle_autostart)
+            self.menu_login_item = rumps.MenuItem(_t("menubar.action.menu_login_item"), callback=self._toggle_menu_login_item)
             self.install_app_item = rumps.MenuItem(_t("menubar.action.install_or_open"), callback=self._install_or_open_menu_app)
             self.menu = [
                 self.status_item,
@@ -69,126 +91,285 @@ if rumps is not None:  # pragma: no branch - class only exists when dependency i
                 self.start_item,
                 self.stop_item,
                 self.reload_item,
+                self.switch_profile_item,
+                self.feature_toggles_item,
                 None,
-                rumps.MenuItem(_t("menubar.action.enable_autostart"), callback=self._enable_autostart),
-                rumps.MenuItem(_t("menubar.action.disable_autostart"), callback=self._disable_autostart),
+                self.autostart_item,
                 self.menu_login_item,
                 self.install_app_item,
                 None,
                 rumps.MenuItem(_t("menubar.action.open_config"), callback=self._open_config),
                 rumps.MenuItem(_t("menubar.action.open_logs"), callback=self._open_logs),
                 rumps.MenuItem(_t("menubar.action.open_home"), callback=self._open_base_dir),
+                None,
+                rumps.MenuItem(_t("menubar.action.quit"), callback=self._quit_app),
             ]
+            self.feature_toggles_item.add(self.thread_progress_item)
+            self.feature_toggles_item.add(self.reaction_enabled_item)
+            self.feature_toggles_item.add(self.scheduler_enabled_item)
+            self.feature_toggles_item.add(self.webhook_enabled_item)
             self.refresh_status(None)
 
         def _notify(self, title: str, message: str) -> None:
             rumps.notification(title, "", message)
 
-        def _show_result(self, title: str, fn, *args, **kwargs) -> None:
+        def _alert(self, title: str, message: str) -> None:
+            try:
+                rumps.alert(title=title, message=message)
+            except Exception:
+                self._notify(title, message)
+
+        def _record_result(self, action: str, message: str, *, level: str = "INFO", detail: str | None = None) -> None:
+            log_companion_event(action, message, base_dir=self.base_dir, level=level, detail=detail)
+
+        def _handle_failure(self, title: str, action: str, message: str, *, detail: str | None = None) -> None:
+            self._record_result(action, message, level="ERROR", detail=detail)
+            open_path(hermit_log_dir(self.base_dir))
+            self._alert(title, f"{message}\n\nLogs: {companion_log_path(self.base_dir)}")
+
+        def _set_busy(self, label: str | None) -> None:
+            self.busy_label = label
+            if label:
+                self.title = _t("menubar.title.loading")
+                self.status_item.title = _t("menubar.status.loading", action=label)
+            else:
+                self.title = _t("menubar.title")
+
+        def _show_result(self, title: str, action: str, fn, *args, busy_label: str | None = None, **kwargs) -> None:
+            self._set_busy(busy_label)
             try:
                 result = fn(*args, **kwargs)
             except Exception as exc:
-                self._notify(title, str(exc))
+                message, detail = format_exception_message(exc)
+                self._handle_failure(title, action, message, detail=detail)
             else:
-                self._notify(title, str(result))
+                message = str(result)
+                if message.startswith("Failed") or message.startswith("Error"):
+                    self._handle_failure(title, action, message)
+                else:
+                    self._record_result(action, message)
+                    self._notify(title, message)
+            finally:
+                self._set_busy(None)
                 self.refresh_status(None)
 
         @rumps.timer(5)
         def refresh_status(self, _sender) -> None:
-            get_settings.cache_clear()
-            settings = get_settings()
-            state = service_status(self.adapter, base_dir=self.base_dir)
-            running_text = _t("menubar.status.running") if state.running else _t("menubar.status.stopped")
-            if state.running and state.pid is not None:
-                running_text = _t("menubar.status.pid", text=running_text, pid=state.pid)
-            autostart = _t("menubar.status.launchd_on") if state.autostart_loaded else _t("menubar.status.launchd_off")
-            self.status_item.title = _t("menubar.status.summary", running=running_text, autostart=autostart)
-            resolved_profile = self.profile or settings.resolved_profile or _t("menubar.profile.default")
-            self.profile_item.title = _t("menubar.profile.title", profile=resolved_profile)
-            self.provider_item.title = _t("menubar.provider.title", provider=settings.provider)
-            self.model_item.title = _t("menubar.model.title", model=settings.model)
-            if state.autostart_loaded:
-                self.start_item.title = _t("menubar.action.start.managed")
-                self.start_item.set_callback(None)
-                self.stop_item.title = _t("menubar.action.stop.disable_autostart")
-                self.stop_item.set_callback(None)
-            elif state.running:
-                self.start_item.title = _t("menubar.action.start.running")
-                self.start_item.set_callback(None)
-                self.stop_item.title = _t("menubar.action.stop")
-                self.stop_item.set_callback(self._stop_service)
-            else:
-                self.start_item.title = _t("menubar.action.start")
-                self.start_item.set_callback(self._start_service)
-                self.stop_item.title = _t("menubar.action.stop.not_running")
-                self.stop_item.set_callback(None)
-            self.reload_item.title = _t("menubar.action.reload") if state.running else _t("menubar.action.reload.not_running")
-            self.reload_item.set_callback(self._reload_service if state.running else None)
-            if login_item_enabled():
-                self.menu_login_item.title = _t("menubar.action.disable_login_item")
-                self.menu_login_item.set_callback(self._disable_menu_login_item)
-                self.install_app_item.title = _t("menubar.action.open_menu_app")
-            else:
-                self.menu_login_item.title = _t("menubar.action.enable_login_item")
-                self.menu_login_item.set_callback(self._enable_menu_login_item)
-                self.install_app_item.title = _t("menubar.action.install_or_open")
+            if self.busy_label:
+                self.status_item.title = _t("menubar.status.loading", action=self.busy_label)
+                return
+            try:
+                settings = load_runtime_settings(self.base_dir)
+                state = service_status(self.adapter, base_dir=self.base_dir)
+                running_text = _t("menubar.status.running") if state.running else _t("menubar.status.stopped")
+                if state.running and state.pid is not None:
+                    running_text = _t("menubar.status.pid", text=running_text, pid=state.pid)
+                autostart = _t("menubar.status.launchd_on") if state.autostart_loaded else _t("menubar.status.launchd_off")
+                self.status_item.title = _t("menubar.status.summary", running=running_text, autostart=autostart)
+                resolved_profile = settings.resolved_profile or _t("menubar.profile.default")
+                self.profile_item.title = _t("menubar.profile.title", profile=resolved_profile)
+                self.provider_item.title = _t("menubar.provider.title", provider=settings.provider)
+                self.model_item.title = _t("menubar.model.title", model=settings.model)
+                self._refresh_profile_menu(settings.resolved_profile, list(settings.config_profiles))
+                self.autostart_item.state = 1 if state.autostart_loaded else 0
+                self.menu_login_item.state = 1 if login_item_enabled() else 0
+                self.thread_progress_item.state = 1 if bool(settings.feishu_thread_progress) else 0
+                self.reaction_enabled_item.state = 1 if bool(settings.feishu_reaction_enabled) else 0
+                self.scheduler_enabled_item.state = 1 if bool(settings.scheduler_enabled) else 0
+                self.webhook_enabled_item.state = 1 if bool(settings.webhook_enabled) else 0
+                if state.autostart_loaded:
+                    self.start_item.title = _t("menubar.action.start.managed")
+                    self.start_item.set_callback(None)
+                    self.stop_item.title = _t("menubar.action.stop.disable_autostart")
+                    self.stop_item.set_callback(None)
+                elif state.running:
+                    self.start_item.title = _t("menubar.action.start.running")
+                    self.start_item.set_callback(None)
+                    self.stop_item.title = _t("menubar.action.stop")
+                    self.stop_item.set_callback(self._stop_service)
+                else:
+                    self.start_item.title = _t("menubar.action.start")
+                    self.start_item.set_callback(self._start_service)
+                    self.stop_item.title = _t("menubar.action.stop.not_running")
+                    self.stop_item.set_callback(None)
+                self.reload_item.title = _t("menubar.action.reload") if state.running else _t("menubar.action.reload.not_running")
+                self.reload_item.set_callback(self._reload_service if state.running else None)
+                self.install_app_item.title = (
+                    _t("menubar.action.open_menu_app") if login_item_enabled() else _t("menubar.action.install_or_open")
+                )
+            except Exception as exc:
+                message, detail = format_exception_message(exc)
+                self.status_item.title = _t("menubar.status.error")
+                self._record_result("refresh_status", message, level="ERROR", detail=detail)
+
+        def _refresh_profile_menu(self, current_profile: str | None, profiles: list[str]) -> None:
+            if getattr(self.switch_profile_item, "_menu", None) is not None:
+                self.switch_profile_item.clear()
+            if not profiles:
+                item = rumps.MenuItem(_t("menubar.profile.none"))
+                item.set_callback(None)
+                self.switch_profile_item.add(item)
+                return
+            for name in sorted(profiles):
+                title, available = _profile_menu_entry(name, base_dir=self.base_dir)
+                item = rumps.MenuItem(title)
+                item.state = 1 if name == current_profile else 0
+                if name == current_profile or not available:
+                    item.set_callback(None)
+                else:
+                    item.set_callback(self._make_switch_profile_callback(name))
+                self.switch_profile_item.add(item)
+
+        def _make_switch_profile_callback(self, profile_name: str):
+            def _callback(_sender) -> None:
+                self._show_result(
+                    _t("menubar.title"),
+                    f"switch_profile:{profile_name}",
+                    switch_profile,
+                    self.adapter,
+                    profile_name,
+                    base_dir=self.base_dir,
+                    busy_label=_t("menubar.status.loading.switch_profile"),
+                )
+
+            return _callback
 
         def _start_service(self, _sender) -> None:
-            self._show_result(_t("menubar.title"), start_service, self.adapter, base_dir=self.base_dir, profile=self.profile)
+            self._show_result(
+                _t("menubar.title"),
+                "start_service",
+                start_service,
+                self.adapter,
+                base_dir=self.base_dir,
+                busy_label=_t("menubar.status.loading.start"),
+            )
 
         def _stop_service(self, _sender) -> None:
-            self._show_result(_t("menubar.title"), stop_service, self.adapter, base_dir=self.base_dir)
+            self._show_result(
+                _t("menubar.title"),
+                "stop_service",
+                stop_service,
+                self.adapter,
+                base_dir=self.base_dir,
+                busy_label=_t("menubar.status.loading.stop"),
+            )
 
         def _reload_service(self, _sender) -> None:
-            self._show_result(_t("menubar.title"), reload_service, self.adapter, base_dir=self.base_dir, profile=self.profile)
-
-        def _enable_autostart(self, _sender) -> None:
             self._show_result(
                 _t("menubar.title"),
-                lambda: run_hermit_command(
-                    ["autostart", "enable", "--adapter", self.adapter],
-                    base_dir=self.base_dir,
-                    profile=self.profile,
-                ).stdout.strip(),
+                "reload_service",
+                reload_service,
+                self.adapter,
+                base_dir=self.base_dir,
+                busy_label=_t("menubar.status.loading.reload"),
             )
 
-        def _disable_autostart(self, _sender) -> None:
+        def _toggle_autostart(self, _sender) -> None:
+            state = service_status(self.adapter, base_dir=self.base_dir)
+            command = ["autostart", "disable" if state.autostart_loaded else "enable", "--adapter", self.adapter]
             self._show_result(
                 _t("menubar.title"),
+                "toggle_autostart",
                 lambda: run_hermit_command(
-                    ["autostart", "disable", "--adapter", self.adapter],
+                    command,
                     base_dir=self.base_dir,
-                    profile=self.profile,
                 ).stdout.strip(),
+                busy_label=_t("menubar.status.loading.autostart"),
             )
 
-        def _enable_menu_login_item(self, _sender) -> None:
-            bundle = install_app_bundle(adapter=self.adapter, profile=self.profile, base_dir=self.base_dir)
-            self._show_result(_t("menubar.title"), enable_login_item, bundle)
+        def _toggle_menu_login_item(self, _sender) -> None:
+            if login_item_enabled():
+                self._show_result(
+                    _t("menubar.title"),
+                    "disable_menu_login_item",
+                    disable_login_item,
+                    busy_label=_t("menubar.status.loading.menu_login_item"),
+                )
+                return
+            bundle = install_app_bundle(adapter=self.adapter, base_dir=self.base_dir)
+            self._show_result(
+                _t("menubar.title"),
+                "enable_menu_login_item",
+                enable_login_item,
+                bundle,
+                busy_label=_t("menubar.status.loading.menu_login_item"),
+            )
 
-        def _disable_menu_login_item(self, _sender) -> None:
-            self._show_result(_t("menubar.title"), disable_login_item)
+        def _current_profile_name(self) -> str:
+            settings = load_runtime_settings(self.base_dir)
+            return settings.resolved_profile or settings.default_profile or "default"
+
+        def _toggle_profile_bool(self, key: str, current_value: bool) -> None:
+            profile_name = self._current_profile_name()
+            self._show_result(
+                _t("menubar.title"),
+                f"toggle_profile_bool:{key}",
+                update_profile_bool_and_restart,
+                self.adapter,
+                profile_name,
+                key,
+                not current_value,
+                base_dir=self.base_dir,
+                busy_label=_t("menubar.status.loading.restart"),
+            )
+
+        def _toggle_thread_progress(self, _sender) -> None:
+            self._toggle_profile_bool("feishu_thread_progress", bool(load_runtime_settings(self.base_dir).feishu_thread_progress))
+
+        def _toggle_reaction_enabled(self, _sender) -> None:
+            self._toggle_profile_bool("feishu_reaction_enabled", bool(load_runtime_settings(self.base_dir).feishu_reaction_enabled))
+
+        def _toggle_scheduler_enabled(self, _sender) -> None:
+            self._toggle_profile_bool("scheduler_enabled", bool(load_runtime_settings(self.base_dir).scheduler_enabled))
+
+        def _toggle_webhook_enabled(self, _sender) -> None:
+            self._toggle_profile_bool("webhook_enabled", bool(load_runtime_settings(self.base_dir).webhook_enabled))
 
         def _install_or_open_menu_app(self, _sender) -> None:
-            bundle = app_path()
-            if not bundle.exists():
-                bundle = install_app_bundle(adapter=self.adapter, profile=self.profile, base_dir=self.base_dir)
-                self._notify(_t("menubar.title"), _t("menubar.notify.installed_menu_app", bundle=bundle))
-            open_app_bundle(bundle)
+            try:
+                bundle = app_path()
+                if not bundle.exists():
+                    bundle = install_app_bundle(adapter=self.adapter, base_dir=self.base_dir)
+                    message = _t("menubar.notify.installed_menu_app", bundle=bundle)
+                    self._record_result("install_menu_app", message)
+                    self._notify(_t("menubar.title"), message)
+                open_app_bundle(bundle)
+                self._record_result("open_menu_app", str(bundle))
+            except Exception as exc:
+                message, detail = format_exception_message(exc)
+                self._handle_failure(_t("menubar.title"), "open_menu_app", message, detail=detail)
 
         def _open_config(self, _sender) -> None:
-            ensure_base_dir(self.base_dir)
-            target = config_path(self.base_dir)
-            if not target.exists():
-                target = ensure_config_file(self.base_dir)
-                self._notify(_t("menubar.title"), _t("menubar.notify.config_missing", base_dir=self.base_dir))
-            open_in_textedit(target)
+            try:
+                ensure_base_dir(self.base_dir)
+                target = config_path(self.base_dir)
+                if not target.exists():
+                    target = ensure_config_file(self.base_dir)
+                    message = _t("menubar.notify.config_missing", base_dir=self.base_dir)
+                    self._record_result("open_config", message)
+                    self._notify(_t("menubar.title"), message)
+                open_in_textedit(target)
+                self._record_result("open_config", str(target))
+            except Exception as exc:
+                message, detail = format_exception_message(exc)
+                self._handle_failure(_t("menubar.title"), "open_config", message, detail=detail)
 
         def _open_logs(self, _sender) -> None:
-            open_path(hermit_log_dir(self.base_dir))
+            try:
+                target = hermit_log_dir(self.base_dir)
+                open_path(target)
+                self._record_result("open_logs", str(target))
+            except Exception as exc:
+                message, detail = format_exception_message(exc)
+                self._handle_failure(_t("menubar.title"), "open_logs", message, detail=detail)
 
         def _open_base_dir(self, _sender) -> None:
-            open_path(self.base_dir)
+            try:
+                open_path(self.base_dir)
+                self._record_result("open_home", str(self.base_dir))
+            except Exception as exc:
+                message, detail = format_exception_message(exc)
+                self._handle_failure(_t("menubar.title"), "open_home", message, detail=detail)
 
         def _quit_app(self, _sender) -> None:
             rumps.quit_application()
