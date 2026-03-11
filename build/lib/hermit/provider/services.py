@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,7 +14,7 @@ from hermit.core.tools import ToolRegistry, create_builtin_tool_registry
 from hermit.plugin.manager import PluginManager
 from hermit.provider.contracts import Provider, ProviderResponse
 from hermit.provider.messages import extract_text
-from hermit.provider.providers import CodexProvider, build_claude_provider
+from hermit.provider.providers import CodexOAuthProvider, CodexOAuthTokenManager, CodexProvider, build_claude_provider
 from hermit.provider.runtime import AgentRuntime
 
 log = structlog.get_logger()
@@ -24,7 +25,41 @@ def build_provider(settings: Any, *, model: str, system_prompt: str | None = Non
     if provider_name == "claude":
         return build_claude_provider(settings, model=model, system_prompt=system_prompt)
     if provider_name == "codex":
-        return CodexProvider(model=model, system_prompt=system_prompt)
+        resolved_model = _resolve_codex_model(settings, model)
+        api_key = getattr(settings, "resolved_openai_api_key", None)
+        if not api_key:
+            auth_mode = getattr(settings, "codex_auth_mode", None) or "unknown"
+            if getattr(settings, "codex_auth_file_exists", False):
+                raise RuntimeError(
+                    "Codex provider now uses the OpenAI Responses API. "
+                    f"Detected ~/.codex/auth.json auth_mode={auth_mode!r}, but no local OpenAI API key is available. "
+                    "ChatGPT/Codex desktop login alone cannot call /v1/responses; "
+                    "set HERMIT_OPENAI_API_KEY or log in with an API-key-backed Codex auth state."
+                )
+            raise RuntimeError(
+                "Codex provider now uses the OpenAI Responses API and requires an OpenAI API key. "
+                "Set HERMIT_OPENAI_API_KEY or OPENAI_API_KEY."
+            )
+        return CodexProvider(
+            api_key=api_key,
+            model=resolved_model,
+            cwd=Path.cwd(),
+            system_prompt=system_prompt,
+            base_url=settings.openai_base_url or "https://api.openai.com/v1",
+            default_headers=settings.parsed_openai_headers,
+        )
+    if provider_name == "codex-oauth":
+        resolved_model = _resolve_codex_model(settings, model)
+        if not getattr(settings, "codex_auth_file_exists", False):
+            raise RuntimeError(
+                "Codex OAuth provider requires a local Codex login. Expected ~/.codex/auth.json."
+            )
+        return CodexOAuthProvider(
+            token_manager=CodexOAuthTokenManager(auth_path=Path.home() / ".codex" / "auth.json"),
+            model=resolved_model,
+            system_prompt=system_prompt,
+            default_headers=settings.parsed_openai_headers,
+        )
     raise RuntimeError(f"Unsupported provider: {provider_name}")
 
 
@@ -43,10 +78,17 @@ def build_provider_client_kwargs(settings: Any, provider: Optional[str] = None) 
         return kwargs
     if selected == "codex":
         kwargs = {}
-        if settings.openai_api_key:
-            kwargs["api_key"] = settings.openai_api_key
+        if settings.resolved_openai_api_key:
+            kwargs["api_key"] = settings.resolved_openai_api_key
         if settings.openai_base_url:
             kwargs["base_url"] = settings.openai_base_url
+        if settings.parsed_openai_headers:
+            kwargs["default_headers"] = settings.parsed_openai_headers
+        return kwargs
+    if selected == "codex-oauth":
+        kwargs = {}
+        if settings.codex_access_token:
+            kwargs["access_token"] = settings.codex_access_token
         if settings.parsed_openai_headers:
             kwargs["default_headers"] = settings.parsed_openai_headers
         return kwargs
@@ -100,10 +142,11 @@ def build_runtime(
 
     system_prompt = pm.build_system_prompt(base_prompt, preloaded_skills=preloaded_skills)
     provider = build_provider(settings, model=settings.model, system_prompt=system_prompt)
+    runtime_model = getattr(provider, "model", settings.model)
     runtime = AgentRuntime(
         provider=provider,
         registry=registry,
-        model=settings.model,
+        model=runtime_model,
         max_tokens=settings.effective_max_tokens(),
         max_turns=settings.max_turns,
         tool_output_limit=settings.tool_output_limit,
@@ -159,6 +202,21 @@ class VisionAnalysisService:
 
 def build_background_runtime(settings: Any, *, cwd: Path) -> tuple[AgentRuntime, PluginManager]:
     return build_runtime(settings, cwd=cwd)
+
+
+def _resolve_codex_model(settings: Any, requested_model: str) -> str:
+    if requested_model and not requested_model.startswith("claude"):
+        return requested_model
+    config_path = Path.home() / ".codex" / "config.toml"
+    if config_path.exists():
+        try:
+            data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            configured = str(data.get("model", "")).strip()
+            if configured:
+                return configured
+        except Exception:
+            log.debug("codex_config_model_read_failed", path=str(config_path))
+    return "gpt-5.4"
 
 
 def _parse_json_response(response: ProviderResponse) -> dict[str, Any] | None:

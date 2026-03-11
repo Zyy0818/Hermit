@@ -164,6 +164,11 @@ class WebhookServer:
             success = False
             error = str(exc)
             _log.exception("webhook_dispatch_error", route=route.name, error=error)  # type: ignore[call-arg]
+        finally:
+            try:
+                self._runner.close_session(session_id)
+            except Exception:
+                _log.exception("webhook_close_session_error", route=route.name, session_id=session_id)  # type: ignore[call-arg]
 
         self._hooks.fire(
             HookEvent.DISPATCH_RESULT,

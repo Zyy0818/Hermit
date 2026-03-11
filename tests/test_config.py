@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hermit.config import Settings
+from hermit.provider.profiles import load_plugin_variables
 from hermit.main import _build_anthropic_client_kwargs
 
 
@@ -59,3 +60,76 @@ def test_custom_headers_requires_colon_separator() -> None:
         assert "Invalid HERMIT_CUSTOM_HEADERS format" in str(exc)
     else:
         raise AssertionError("Expected custom header parsing failure")
+
+
+def test_settings_load_default_profile_from_config_toml(tmp_path, monkeypatch) -> None:
+    base_dir = tmp_path / ".hermit"
+    base_dir.mkdir(parents=True)
+    (base_dir / "config.toml").write_text(
+        """
+default_profile = "codex-local"
+
+[profiles.codex-local]
+provider = "codex-oauth"
+model = "gpt-5.4"
+max_turns = 42
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    monkeypatch.delenv("HERMIT_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMIT_MODEL", raising=False)
+
+    settings = Settings()
+
+    assert settings.resolved_profile == "codex-local"
+    assert settings.provider == "codex-oauth"
+    assert settings.model == "gpt-5.4"
+    assert settings.max_turns == 42
+    assert settings.config_file == base_dir / "config.toml"
+
+
+def test_env_overrides_profile_values(tmp_path, monkeypatch) -> None:
+    base_dir = tmp_path / ".hermit"
+    base_dir.mkdir(parents=True)
+    (base_dir / "config.toml").write_text(
+        """
+[profiles.shared]
+provider = "claude"
+model = "claude-3-7-sonnet-latest"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    monkeypatch.setenv("HERMIT_PROFILE", "shared")
+    monkeypatch.setenv("HERMIT_PROVIDER", "codex-oauth")
+    monkeypatch.delenv("HERMIT_MODEL", raising=False)
+
+    settings = Settings()
+
+    assert settings.resolved_profile == "shared"
+    assert settings.provider == "codex-oauth"
+    assert settings.model == "claude-3-7-sonnet-latest"
+
+
+def test_load_plugin_variables_from_config_toml(tmp_path) -> None:
+    base_dir = tmp_path / ".hermit"
+    base_dir.mkdir(parents=True)
+    (base_dir / "config.toml").write_text(
+        """
+[plugins.github.variables]
+github_pat = "ghp_test_123"
+github_mcp_url = "https://example.github.test/mcp"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    variables = load_plugin_variables(base_dir, "github")
+
+    assert variables == {
+        "github_pat": "ghp_test_123",
+        "github_mcp_url": "https://example.github.test/mcp",
+    }

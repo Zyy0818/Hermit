@@ -8,3 +8,20 @@ builtin = true
 [entry]
 tools = "tools:register"
 hooks = "hooks:register"
+
+[variables.scheduler_enabled]
+setting = "scheduler_enabled"
+env = ["HERMIT_SCHEDULER_ENABLED"]
+default = true
+description = "Enable scheduler lifecycle on serve"
+
+[variables.scheduler_catch_up]
+setting = "scheduler_catch_up"
+env = ["HERMIT_SCHEDULER_CATCH_UP"]
+default = true
+description = "Catch up missed jobs on startup"
+
+[variables.scheduler_feishu_chat_id]
+setting = "scheduler_feishu_chat_id"
+env = ["HERMIT_SCHEDULER_FEISHU_CHAT_ID"]
+description = "Default Feishu chat for scheduler notifications"

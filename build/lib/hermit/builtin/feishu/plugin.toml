@@ -8,3 +8,40 @@ builtin = true
 [entry]
 adapter = "adapter:register"
 hooks = "hooks:register"
+
+[variables.feishu_app_id]
+setting = "feishu_app_id"
+env = ["HERMIT_FEISHU_APP_ID", "FEISHU_APP_ID"]
+required = true
+description = "Feishu app id"
+
+[variables.feishu_app_secret]
+setting = "feishu_app_secret"
+env = ["HERMIT_FEISHU_APP_SECRET", "FEISHU_APP_SECRET"]
+required = true
+secret = true
+description = "Feishu app secret"
+
+[variables.feishu_thread_progress]
+setting = "feishu_thread_progress"
+env = ["HERMIT_FEISHU_THREAD_PROGRESS"]
+default = true
+description = "Enable progress card patching in Feishu threads"
+
+[variables.feishu_reaction_enabled]
+setting = "feishu_reaction_enabled"
+env = ["HERMIT_FEISHU_REACTION_ENABLED"]
+default = true
+description = "Enable automatic emoji reactions"
+
+[variables.feishu_reaction_ack]
+setting = "feishu_reaction_ack"
+env = ["HERMIT_FEISHU_REACTION_ACK"]
+default = "EYES"
+description = "Emoji reaction for acknowledgement"
+
+[variables.feishu_reaction_done]
+setting = "feishu_reaction_done"
+env = ["HERMIT_FEISHU_REACTION_DONE"]
+default = ""
+description = "Emoji reaction for completion"

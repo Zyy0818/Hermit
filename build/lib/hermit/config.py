@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
@@ -8,6 +9,8 @@ from typing import Dict, Optional
 from pydantic import Field
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from hermit.provider.profiles import config_path_for_base_dir, load_profile_catalog, resolve_profile
 
 
 def _parse_headers_str(raw_headers: Optional[str]) -> Dict[str, str]:
@@ -28,6 +31,63 @@ def _parse_headers_str(raw_headers: Optional[str]) -> Dict[str, str]:
     return headers
 
 
+def _set_if_present(values: dict[str, object], key: str, value: object | None) -> None:
+    if value is not None:
+        values.setdefault(key, value)
+
+
+def _codex_auth_path() -> Path:
+    return Path.home() / ".codex" / "auth.json"
+
+
+def _read_codex_auth() -> Dict[str, object]:
+    auth_path = _codex_auth_path()
+    if not auth_path.exists():
+        return {}
+    try:
+        raw = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _codex_auth_exists() -> bool:
+    return _codex_auth_path().exists()
+
+
+def _codex_auth_mode() -> Optional[str]:
+    raw = _read_codex_auth()
+    value = raw.get("auth_mode")
+    return str(value).strip() if value is not None else None
+
+
+def _codex_auth_api_key() -> Optional[str]:
+    raw = _read_codex_auth()
+    for key in ("OPENAI_API_KEY", "openai_api_key", "api_key"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _codex_access_token() -> Optional[str]:
+    raw = _read_codex_auth()
+    tokens = raw.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    value = tokens.get("access_token")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _codex_refresh_token() -> Optional[str]:
+    raw = _read_codex_auth()
+    tokens = raw.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    value = tokens.get("refresh_token")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 class Settings(BaseSettings):
     """Runtime configuration for Hermit."""
 
@@ -39,6 +99,7 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
+    profile: Optional[str] = None
     provider: str = "claude"
     claude_api_key: Optional[str] = Field(default=None, alias="CLAUDE_API_KEY")
     claude_auth_token: Optional[str] = None
@@ -47,6 +108,7 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
     openai_base_url: Optional[str] = None
     openai_headers: Optional[str] = None
+    codex_command: str = "codex"
     model: str = "claude-3-7-sonnet-latest"
     max_tokens: int = 2048
     max_turns: int = 100
@@ -54,6 +116,18 @@ class Settings(BaseSettings):
     thinking_budget: int = 0
     image_model: Optional[str] = None
     image_context_limit: int = 3
+    feishu_app_id: Optional[str] = None
+    feishu_app_secret: Optional[str] = None
+    feishu_thread_progress: bool = True
+    feishu_reaction_enabled: bool = True
+    feishu_reaction_ack: str = "EYES"
+    feishu_reaction_done: str = ""
+    scheduler_enabled: bool = True
+    scheduler_catch_up: bool = True
+    scheduler_feishu_chat_id: Optional[str] = None
+    webhook_enabled: bool = True
+    webhook_host: Optional[str] = None
+    webhook_port: Optional[int] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -61,6 +135,14 @@ class Settings(BaseSettings):
         if not isinstance(data, dict):
             data = {}
         values = dict(data)
+        base_dir_raw = values.get("base_dir") or os.environ.get("HERMIT_BASE_DIR")
+        base_dir = Path(base_dir_raw).expanduser() if base_dir_raw else Path.home() / ".hermit"
+        profile_name = values.get("profile") or os.environ.get("HERMIT_PROFILE")
+        resolved_profile = resolve_profile(base_dir, str(profile_name) if profile_name is not None else None)
+        if resolved_profile.name and "profile" not in values:
+            values["profile"] = resolved_profile.name
+        for key, value in resolved_profile.values.items():
+            values.setdefault(key, value)
         if "anthropic_api_key" in values and "claude_api_key" not in values:
             values["claude_api_key"] = values["anthropic_api_key"]
         if "auth_token" in values and "claude_auth_token" not in values:
@@ -71,13 +153,25 @@ class Settings(BaseSettings):
             values["claude_headers"] = values["custom_headers"]
         if not values.get("provider"):
             values["provider"] = os.environ.get("HERMIT_PROVIDER", "claude")
-        values.setdefault("claude_api_key", os.environ.get("HERMIT_CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
-        values.setdefault("claude_auth_token", os.environ.get("HERMIT_CLAUDE_AUTH_TOKEN") or os.environ.get("HERMIT_AUTH_TOKEN"))
-        values.setdefault("claude_base_url", os.environ.get("HERMIT_CLAUDE_BASE_URL") or os.environ.get("HERMIT_BASE_URL"))
-        values.setdefault("claude_headers", os.environ.get("HERMIT_CLAUDE_HEADERS") or os.environ.get("HERMIT_CUSTOM_HEADERS"))
-        values.setdefault("openai_api_key", os.environ.get("HERMIT_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"))
-        values.setdefault("openai_base_url", os.environ.get("HERMIT_OPENAI_BASE_URL"))
-        values.setdefault("openai_headers", os.environ.get("HERMIT_OPENAI_HEADERS"))
+        _set_if_present(values, "claude_api_key", os.environ.get("HERMIT_CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+        _set_if_present(values, "claude_auth_token", os.environ.get("HERMIT_CLAUDE_AUTH_TOKEN") or os.environ.get("HERMIT_AUTH_TOKEN"))
+        _set_if_present(values, "claude_base_url", os.environ.get("HERMIT_CLAUDE_BASE_URL") or os.environ.get("HERMIT_BASE_URL"))
+        _set_if_present(values, "claude_headers", os.environ.get("HERMIT_CLAUDE_HEADERS") or os.environ.get("HERMIT_CUSTOM_HEADERS"))
+        _set_if_present(values, "openai_api_key", os.environ.get("HERMIT_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+        _set_if_present(values, "openai_base_url", os.environ.get("HERMIT_OPENAI_BASE_URL"))
+        _set_if_present(values, "openai_headers", os.environ.get("HERMIT_OPENAI_HEADERS"))
+        _set_if_present(values, "feishu_app_id", os.environ.get("HERMIT_FEISHU_APP_ID") or os.environ.get("FEISHU_APP_ID"))
+        _set_if_present(values, "feishu_app_secret", os.environ.get("HERMIT_FEISHU_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET"))
+        _set_if_present(values, "feishu_thread_progress", os.environ.get("HERMIT_FEISHU_THREAD_PROGRESS"))
+        _set_if_present(values, "feishu_reaction_enabled", os.environ.get("HERMIT_FEISHU_REACTION_ENABLED"))
+        _set_if_present(values, "feishu_reaction_ack", os.environ.get("HERMIT_FEISHU_REACTION_ACK"))
+        _set_if_present(values, "feishu_reaction_done", os.environ.get("HERMIT_FEISHU_REACTION_DONE"))
+        _set_if_present(values, "scheduler_enabled", os.environ.get("HERMIT_SCHEDULER_ENABLED"))
+        _set_if_present(values, "scheduler_catch_up", os.environ.get("HERMIT_SCHEDULER_CATCH_UP"))
+        _set_if_present(values, "scheduler_feishu_chat_id", os.environ.get("HERMIT_SCHEDULER_FEISHU_CHAT_ID"))
+        _set_if_present(values, "webhook_enabled", os.environ.get("HERMIT_WEBHOOK_ENABLED"))
+        _set_if_present(values, "webhook_host", os.environ.get("HERMIT_WEBHOOK_HOST"))
+        _set_if_present(values, "webhook_port", os.environ.get("HERMIT_WEBHOOK_PORT"))
         return values
 
     def effective_max_tokens(self) -> int:
@@ -94,6 +188,23 @@ class Settings(BaseSettings):
     @property
     def memory_dir(self) -> Path:
         return self.base_dir / "memory"
+
+    @property
+    def config_file(self) -> Path:
+        return config_path_for_base_dir(self.base_dir)
+
+    @property
+    def config_profiles(self) -> dict[str, dict[str, object]]:
+        return load_profile_catalog(self.base_dir).profiles
+
+    @property
+    def default_profile(self) -> Optional[str]:
+        return load_profile_catalog(self.base_dir).default_profile
+
+    @property
+    def resolved_profile(self) -> Optional[str]:
+        resolved = resolve_profile(self.base_dir, self.profile)
+        return resolved.name
 
     @property
     def memory_file(self) -> Path:
@@ -144,12 +255,42 @@ class Settings(BaseSettings):
         return _parse_headers_str(self.openai_headers)
 
     @property
+    def resolved_webhook_host(self) -> str:
+        return self.webhook_host or "0.0.0.0"
+
+    @property
+    def resolved_webhook_port(self) -> int:
+        return self.webhook_port or 8321
+
+    @property
     def has_auth(self) -> bool:
         if self.provider == "claude":
             return bool(self.claude_api_key or self.claude_auth_token)
         if self.provider == "codex":
-            return bool(self.openai_api_key)
+            return bool(self.openai_api_key or _codex_auth_api_key())
+        if self.provider == "codex-oauth":
+            return bool(_codex_access_token() and _codex_refresh_token())
         return bool(self.claude_api_key or self.claude_auth_token or self.openai_api_key)
+
+    @property
+    def resolved_openai_api_key(self) -> Optional[str]:
+        return self.openai_api_key or _codex_auth_api_key()
+
+    @property
+    def codex_auth_mode(self) -> Optional[str]:
+        return _codex_auth_mode()
+
+    @property
+    def codex_auth_file_exists(self) -> bool:
+        return _codex_auth_exists()
+
+    @property
+    def codex_access_token(self) -> Optional[str]:
+        return _codex_access_token()
+
+    @property
+    def codex_refresh_token(self) -> Optional[str]:
+        return _codex_refresh_token()
 
     @property
     def anthropic_api_key(self) -> Optional[str]:

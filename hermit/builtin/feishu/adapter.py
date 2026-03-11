@@ -37,13 +37,6 @@ log = logging.getLogger(__name__)
 # How often (seconds) to check for idle sessions and fire SESSION_END.
 _SWEEP_INTERVAL_SECONDS = 300  # 5 minutes
 
-# When True, send a "thinking" card on the first tool call and PATCH it with
-# progress after each subsequent tool.  Set HERMIT_FEISHU_THREAD_PROGRESS=false
-# to revert to the original single-shot reply behaviour.
-_THREAD_PROGRESS: bool = (
-    os.environ.get("HERMIT_FEISHU_THREAD_PROGRESS", "true").lower() != "false"
-)
-
 # Minimum seconds between consecutive PATCH calls on the progress card.
 _PATCH_MIN_INTERVAL = 1.0
 
@@ -59,11 +52,14 @@ class FeishuAdapter:
         return ["feishu-output-format", "feishu-emoji-reaction"]
 
     def __init__(self, settings: Any = None) -> None:
-        self._app_id = os.environ.get(
-            "HERMIT_FEISHU_APP_ID", os.environ.get("FEISHU_APP_ID", "")
+        self._settings = settings
+        self._app_id = str(
+            getattr(settings, "feishu_app_id", None)
+            or os.environ.get("HERMIT_FEISHU_APP_ID", os.environ.get("FEISHU_APP_ID", ""))
         )
-        self._app_secret = os.environ.get(
-            "HERMIT_FEISHU_APP_SECRET", os.environ.get("FEISHU_APP_SECRET", "")
+        self._app_secret = str(
+            getattr(settings, "feishu_app_secret", None)
+            or os.environ.get("HERMIT_FEISHU_APP_SECRET", os.environ.get("FEISHU_APP_SECRET", ""))
         )
         self._client: Any = None
         self._ws_client: Any = None
@@ -335,7 +331,7 @@ class FeishuAdapter:
             return
 
         if self._client and msg.message_id:
-            send_ack(self._client, msg.message_id)
+            send_ack(self._client, msg.message_id, self._settings)
 
         session_id = self._build_session_id(msg)
 
@@ -349,7 +345,7 @@ class FeishuAdapter:
             dispatch_text = self._build_prompt(session_id, msg)
 
         use_progress = (
-            _THREAD_PROGRESS
+            bool(getattr(self._settings, "feishu_thread_progress", True))
             and not raw_text.startswith("/")
             and bool(self._client)
             and bool(msg.message_id)
@@ -434,7 +430,7 @@ class FeishuAdapter:
             else:
                 smart_reply(self._client, msg.message_id, result.text)
 
-            send_done(self._client, msg.message_id)
+            send_done(self._client, msg.message_id, self._settings)
 
     def _build_prompt(self, session_id: str, msg: FeishuMessage) -> str:
         """Build the agent prompt, injecting message_id and chat_id for tool use."""

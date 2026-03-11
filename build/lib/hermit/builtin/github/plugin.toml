@@ -6,3 +6,19 @@ builtin = true
 
 [entry]
 mcp = "mcp:register"
+
+[config]
+url = "{{ github_mcp_url }}"
+
+[config.headers]
+Authorization = "Bearer {{ github_pat }}"
+
+[variables.github_pat]
+env = ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_PAT", "GITHUB_TOKEN"]
+secret = true
+description = "GitHub personal access token for authenticating the GitHub MCP server"
+
+[variables.github_mcp_url]
+env = ["GITHUB_MCP_URL"]
+default = "https://api.githubcopilot.com/mcp/"
+description = "GitHub MCP base URL"

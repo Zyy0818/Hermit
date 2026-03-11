@@ -9,6 +9,8 @@ from typing import Any, Callable, List, Optional
 import structlog
 
 from hermit.plugin.base import PluginContext, PluginManifest
+from hermit.plugin.base import PluginVariableSpec
+from hermit.plugin.config import resolve_plugin_context
 from hermit.plugin.hooks import HooksEngine
 
 import tomllib
@@ -28,6 +30,23 @@ def parse_manifest(plugin_dir: Path) -> Optional[PluginManifest]:
     entry_sec = data.get("entry", {})
     config_sec = data.get("config", {})
     deps_sec = data.get("dependencies", {})
+    variables_sec = data.get("variables", {})
+
+    variables: dict[str, PluginVariableSpec] = {}
+    if isinstance(variables_sec, dict):
+        for name, spec in variables_sec.items():
+            if not isinstance(spec, dict):
+                continue
+            env = spec.get("env", [])
+            variables[str(name)] = PluginVariableSpec(
+                name=str(name),
+                setting=str(spec["setting"]) if "setting" in spec and spec["setting"] is not None else None,
+                env=[str(item) for item in env] if isinstance(env, list) else [],
+                default=spec.get("default"),
+                required=bool(spec.get("required", False)),
+                secret=bool(spec.get("secret", False)),
+                description=str(spec.get("description", "")),
+            )
 
     return PluginManifest(
         name=str(plugin_sec.get("name", plugin_dir.name)),
@@ -37,6 +56,7 @@ def parse_manifest(plugin_dir: Path) -> Optional[PluginManifest]:
         builtin=bool(plugin_sec.get("builtin", False)),
         entry=dict(entry_sec),
         config=dict(config_sec),
+        variables=variables,
         dependencies=list(deps_sec.get("requires", [])),
         plugin_dir=plugin_dir,
     )
@@ -63,6 +83,8 @@ def load_plugin_entries(
 ) -> PluginContext:
     plugin_dir = Path(manifest.plugin_dir)
     ctx = PluginContext(hooks_engine, settings=settings)
+    ctx.manifest = manifest
+    ctx.plugin_vars, ctx.config = resolve_plugin_context(manifest, settings)
 
     for dimension, entry_spec in manifest.entry.items():
         if ":" not in entry_spec:

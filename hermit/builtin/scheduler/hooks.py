@@ -1,7 +1,6 @@
 """Scheduler plugin hooks — lifecycle management and result logging."""
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import structlog
@@ -18,8 +17,7 @@ _hooks_ref: Any = None
 
 def _on_serve_start(*, settings: Any, runner: Any = None, **kw: Any) -> None:
     global _engine
-    enabled = os.environ.get("HERMIT_SCHEDULER_ENABLED", "true").lower()
-    if enabled not in ("true", "1", "yes"):
+    if not bool(getattr(settings, "scheduler_enabled", True)):
         log.info("scheduler_disabled")
         return
 
@@ -27,7 +25,7 @@ def _on_serve_start(*, settings: Any, runner: Any = None, **kw: Any) -> None:
         log.warning("scheduler_no_hooks_engine")
         return
 
-    catch_up = os.environ.get("HERMIT_SCHEDULER_CATCH_UP", "true").lower() in ("true", "1", "yes")
+    catch_up = bool(getattr(settings, "scheduler_catch_up", True))
 
     _engine = SchedulerEngine(settings, _hooks_ref)
     if runner is not None:

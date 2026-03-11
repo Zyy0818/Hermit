@@ -53,6 +53,17 @@ class CommandSpec:
 
 
 @dataclass
+class PluginVariableSpec:
+    name: str
+    setting: Optional[str] = None
+    env: List[str] = field(default_factory=list)
+    default: Any = None
+    required: bool = False
+    secret: bool = False
+    description: str = ""
+
+
+@dataclass
 class AdapterSpec:
     """Describes an adapter that bridges an external messaging platform to Hermit."""
     name: str
@@ -91,6 +102,7 @@ class PluginManifest:
     builtin: bool = False
     entry: dict[str, str] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
+    variables: dict[str, PluginVariableSpec] = field(default_factory=dict)
     dependencies: List[str] = field(default_factory=list)
     plugin_dir: Optional[Any] = None
 
@@ -101,6 +113,9 @@ class PluginContext:
     def __init__(self, hooks_engine: HooksEngine, settings: Any = None) -> None:
         self._hooks = hooks_engine
         self.settings = settings
+        self.manifest: PluginManifest | None = None
+        self.plugin_vars: dict[str, Any] = {}
+        self.config: dict[str, Any] = {}
         self.tools: list[Any] = []
         self.subagents: list[SubagentSpec] = []
         self.adapters: list[AdapterSpec] = []
@@ -126,3 +141,6 @@ class PluginContext:
 
     def add_command(self, spec: CommandSpec) -> None:
         self.commands.append(spec)
+
+    def get_var(self, name: str, default: Any = None) -> Any:
+        return self.plugin_vars.get(name, default)

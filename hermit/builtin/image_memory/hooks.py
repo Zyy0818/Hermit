@@ -360,22 +360,12 @@ def _analyze_image(settings: Any, mime_type: str, image_bytes: bytes) -> dict[st
 
 
 def _build_lark_client() -> Any:
-    app_id = os.environ.get("HERMIT_FEISHU_APP_ID", os.environ.get("FEISHU_APP_ID", ""))
-    app_secret = os.environ.get(
-        "HERMIT_FEISHU_APP_SECRET",
-        os.environ.get("FEISHU_APP_SECRET", ""),
-    )
-    if not app_id or not app_secret:
-        raise RuntimeError("Feishu app credentials are required for image operations")
+    from hermit.builtin.feishu._client import build_lark_client
 
-    import lark_oapi as lark
-
-    return (
-        lark.Client.builder()
-        .app_id(app_id)
-        .app_secret(app_secret)
-        .build()
-    )
+    try:
+        return build_lark_client()
+    except RuntimeError as exc:
+        raise RuntimeError("Feishu app credentials are required for image operations") from exc
 
 
 def _upload_image_to_feishu(client: Any, path: Path) -> str:

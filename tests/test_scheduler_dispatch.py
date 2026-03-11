@@ -21,6 +21,7 @@ def tmp_settings(tmp_path: Path) -> Any:
     settings.sandbox_mode = "l0"
     settings.command_timeout_seconds = 30
     settings.model = "test-model"
+    settings.scheduler_feishu_chat_id = ""
     return settings
 
 
@@ -87,10 +88,10 @@ class TestSchedulerFiresDispatchResult:
         assert ev["error"] is None
         assert "job_id" in ev["metadata"]
 
-    def test_notify_includes_feishu_chat_id_from_env(
-        self, engine: SchedulerEngine, hooks: HooksEngine, monkeypatch: pytest.MonkeyPatch
+    def test_notify_includes_feishu_chat_id_from_settings(
+        self, engine: SchedulerEngine, hooks: HooksEngine
     ) -> None:
-        monkeypatch.setenv("HERMIT_SCHEDULER_FEISHU_CHAT_ID", "oc_env_chat")
+        engine._settings.scheduler_feishu_chat_id = "oc_env_chat"
         dispatch_events: list[dict[str, Any]] = []
         hooks.register(str(HookEvent.DISPATCH_RESULT), lambda **kw: dispatch_events.append(kw))
 

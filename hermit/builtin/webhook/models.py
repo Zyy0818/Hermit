@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,9 +35,10 @@ def load_config(settings: Any = None) -> WebhookConfig:
     except Exception:
         return WebhookConfig()
 
-    host = os.environ.get("HERMIT_WEBHOOK_HOST", raw.get("host", "0.0.0.0"))
-    port_env = os.environ.get("HERMIT_WEBHOOK_PORT")
-    port = int(port_env) if port_env else int(raw.get("port", 8321))
+    host_override = getattr(settings, "webhook_host", None)
+    port_override = getattr(settings, "webhook_port", None)
+    host = str(host_override or raw.get("host", "0.0.0.0"))
+    port = int(port_override or raw.get("port", 8321))
 
     routes: list[WebhookRoute] = []
     for name, route_raw in raw.get("routes", {}).items():
@@ -59,7 +59,5 @@ def load_config(settings: Any = None) -> WebhookConfig:
 
 
 def _resolve_config_path(settings: Any) -> Path:
-    base = (
-        Path(getattr(settings, "workspace_dir", None) or Path.home() / ".hermit")
-    )
+    base = Path(getattr(settings, "base_dir", None) or Path.home() / ".hermit")
     return base / "webhooks.json"

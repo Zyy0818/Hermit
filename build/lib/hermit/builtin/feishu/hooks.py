@@ -21,6 +21,7 @@ def _on_dispatch_result(
     success: bool = True,
     error: str | None = None,
     notify: dict[str, Any] | None = None,
+    settings: Any = None,
     **kw: Any,
 ) -> None:
     """Push agent dispatch results to Feishu via proactive messaging."""
@@ -36,7 +37,7 @@ def _on_dispatch_result(
             _should_use_card,
         )
 
-        client = build_lark_client()
+        client = build_lark_client(settings) if settings is not None else build_lark_client()
         display_title = title or source or "Result"
         if success:
             text = f"# {display_title}\n\n{result_text}"
@@ -54,12 +55,12 @@ def _on_dispatch_result(
 
 
 def register(ctx: PluginContext) -> None:
-    ctx.add_tool(_build_react_tool())
+    ctx.add_tool(_build_react_tool(ctx.settings))
     register_tools(ctx)
     ctx.add_hook(HookEvent.DISPATCH_RESULT, _on_dispatch_result, priority=50)
 
 
-def _build_react_tool() -> ToolSpec:
+def _build_react_tool(settings: Any = None) -> ToolSpec:
     alias_examples = ", ".join(
         f'"{k}"' for k in list(EMOJI_ALIASES)[:12]
     )
@@ -74,7 +75,7 @@ def _build_react_tool() -> ToolSpec:
 
         emoji_type = resolve_emoji(emoji_raw)
         try:
-            client = build_lark_client()
+            client = build_lark_client(settings) if settings is not None else build_lark_client()
         except RuntimeError as exc:
             return {"success": False, "error": str(exc)}
 

@@ -145,7 +145,7 @@ class AgentRunner:
 
         session.messages = result.messages
         self.session_manager.save(session)
-        self.pm.on_post_run(result)
+        self.pm.on_post_run(result, session_id=session_id, session=session)
         return result
 
     def close_session(self, session_id: str) -> None:

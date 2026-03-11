@@ -195,8 +195,8 @@ class PluginManager:
                 run_opts.update(result)
         return prompt, run_opts
 
-    def on_post_run(self, result: Any) -> None:
-        self.hooks.fire(HookEvent.POST_RUN, result=result)
+    def on_post_run(self, result: Any, **kwargs: Any) -> None:
+        self.hooks.fire(HookEvent.POST_RUN, result=result, **kwargs)
 
     def get_adapter(self, name: str) -> AdapterProtocol:
         """Instantiate a registered adapter by name."""

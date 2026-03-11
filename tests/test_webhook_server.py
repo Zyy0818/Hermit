@@ -229,7 +229,9 @@ class TestDispatchResultFired:
 class TestLoadConfig:
     def test_empty_config_returns_defaults(self, tmp_path: Path) -> None:
         settings = MagicMock()
-        settings.workspace_dir = str(tmp_path)
+        settings.base_dir = tmp_path
+        settings.webhook_host = None
+        settings.webhook_port = None
         config = load_config(settings)
         assert config.routes == []
         assert config.port == 8321
@@ -249,7 +251,9 @@ class TestLoadConfig:
             },
         }))
         settings = MagicMock()
-        settings.workspace_dir = str(tmp_path)
+        settings.base_dir = tmp_path
+        settings.webhook_host = None
+        settings.webhook_port = None
         config = load_config(settings)
         assert config.port == 9000
         assert config.host == "127.0.0.1"
@@ -261,6 +265,21 @@ class TestLoadConfig:
 
     def test_missing_file_returns_empty_config(self, tmp_path: Path) -> None:
         settings = MagicMock()
-        settings.workspace_dir = str(tmp_path / "nonexistent")
+        settings.base_dir = tmp_path / "nonexistent"
+        settings.webhook_host = None
+        settings.webhook_port = None
         config = load_config(settings)
         assert config.routes == []
+
+    def test_settings_override_host_and_port(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "webhooks.json"
+        cfg_file.write_text(json.dumps({"host": "127.0.0.1", "port": 9000, "routes": {}}))
+        settings = MagicMock()
+        settings.base_dir = tmp_path
+        settings.webhook_host = "0.0.0.0"
+        settings.webhook_port = 8321
+
+        config = load_config(settings)
+
+        assert config.host == "0.0.0.0"
+        assert config.port == 8321

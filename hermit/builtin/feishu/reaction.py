@@ -87,7 +87,10 @@ def add_reaction(client: Any, message_id: str, emoji_type: str) -> bool:
         return False
 
 
-def _is_enabled() -> bool:
+def _is_enabled(settings: object | None = None) -> bool:
+    raw = getattr(settings, "feishu_reaction_enabled", None)
+    if raw is not None:
+        return bool(raw)
     return os.environ.get("HERMIT_FEISHU_REACTION_ENABLED", "true").lower() not in (
         "0",
         "false",
@@ -96,27 +99,33 @@ def _is_enabled() -> bool:
     )
 
 
-def _ack_emoji() -> str:
+def _ack_emoji(settings: object | None = None) -> str:
+    raw = getattr(settings, "feishu_reaction_ack", None)
+    if raw is not None:
+        return str(raw)
     return os.environ.get("HERMIT_FEISHU_REACTION_ACK", "EYES")
 
 
-def _done_emoji() -> str:
+def _done_emoji(settings: object | None = None) -> str:
+    raw = getattr(settings, "feishu_reaction_done", None)
+    if raw is not None:
+        return str(raw)
     return os.environ.get("HERMIT_FEISHU_REACTION_DONE", "")
 
 
-def send_ack(client: Any, message_id: str) -> None:
+def send_ack(client: Any, message_id: str, settings: object | None = None) -> None:
     """Send 'received / working on it' reaction (configurable, default: 👀 EYES)."""
-    if not _is_enabled():
+    if not _is_enabled(settings):
         return
-    emoji = _ack_emoji()
+    emoji = _ack_emoji(settings)
     if emoji:
         add_reaction(client, message_id, emoji)
 
 
-def send_done(client: Any, message_id: str) -> None:
+def send_done(client: Any, message_id: str, settings: object | None = None) -> None:
     """Send 'reply done' reaction if configured (default: disabled)."""
-    if not _is_enabled():
+    if not _is_enabled(settings):
         return
-    emoji = _done_emoji()
+    emoji = _done_emoji(settings)
     if emoji:
         add_reaction(client, message_id, emoji)

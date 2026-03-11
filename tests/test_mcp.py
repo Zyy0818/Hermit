@@ -9,7 +9,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from hermit.core.tools import ToolRegistry
-from hermit.plugin.base import McpServerSpec, PluginContext
+from hermit.plugin.config import resolve_plugin_context
+from hermit.plugin.loader import load_plugin_entries, parse_manifest
+from hermit.plugin.base import McpServerSpec, PluginContext, PluginManifest, PluginVariableSpec
 from hermit.plugin.hooks import HooksEngine
 from hermit.plugin.manager import PluginManager
 from hermit.plugin.mcp_client import (
@@ -167,6 +169,118 @@ class TestPluginManagerMcpCollection:
 
         assert pm._mcp_manager is not None
         assert pm._mcp_manager.get_tool_specs() == []
+
+    def test_manifest_variables_resolve_from_config_toml(self, tmp_path: Path, monkeypatch):
+        base_dir = tmp_path / ".hermit"
+        plugin_root = tmp_path / "plugins"
+        plugin_dir = plugin_root / "demo"
+        base_dir.mkdir(parents=True)
+        plugin_dir.mkdir(parents=True)
+        (base_dir / "config.toml").write_text(
+            """
+[plugins.demo.variables]
+api_token = "cfg-token"
+base_url = "https://cfg.example.com/mcp"
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "plugin.toml").write_text(
+            """
+[plugin]
+name = "demo"
+version = "0.1.0"
+
+[entry]
+mcp = "entry:register"
+
+[config]
+url = "{{ base_url }}"
+
+[config.headers]
+Authorization = "Bearer {{ api_token }}"
+
+[variables.api_token]
+env = ["DEMO_API_TOKEN"]
+
+[variables.base_url]
+default = "https://default.example.com/mcp"
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "entry.py").write_text(
+            'from hermit.plugin.base import PluginContext\n'
+            'def register(ctx: PluginContext) -> None:\n'
+            '    pass\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+
+        manifest = parse_manifest(plugin_dir)
+        settings = MagicMock()
+        settings.base_dir = base_dir
+        ctx = load_plugin_entries(manifest, HooksEngine(), settings=settings)  # type: ignore[arg-type]
+
+        assert ctx.plugin_vars["api_token"] == "cfg-token"
+        assert ctx.config["url"] == "https://cfg.example.com/mcp"
+        assert ctx.config["headers"]["Authorization"] == "Bearer cfg-token"
+
+    def test_github_plugin_uses_declared_variables(self, tmp_path: Path):
+        base_dir = tmp_path / ".hermit"
+        base_dir.mkdir(parents=True)
+        (base_dir / "config.toml").write_text(
+            """
+[plugins.github.variables]
+github_pat = "ghp_test_123"
+github_mcp_url = "https://example.github.test/mcp"
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        settings = MagicMock()
+        settings.base_dir = base_dir
+
+        pm = PluginManager(settings=settings)
+        pm.discover_and_load(Path("hermit/builtin/github").resolve().parent)
+
+        github_specs = [spec for spec in pm.mcp_specs if spec.name == "github"]
+        assert len(github_specs) == 1
+        spec = github_specs[0]
+        assert spec.url == "https://example.github.test/mcp"
+        assert spec.headers == {"Authorization": "Bearer ghp_test_123"}
+
+    def test_resolve_plugin_context_renders_lists_and_warns_for_required_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base_dir = tmp_path / ".hermit"
+        base_dir.mkdir(parents=True)
+        settings = MagicMock()
+        settings.base_dir = base_dir
+        settings.api_token = None
+        manifest = PluginManifest(
+            name="demo",
+            config={
+                "argv": ["run", "{{ api_token }}", "{{ optional_value }}"],
+                "headers": {"Authorization": "Bearer {{ api_token }}"},
+            },
+            variables={
+                "api_token": PluginVariableSpec(name="api_token", setting="api_token", required=True),
+                "optional_value": PluginVariableSpec(name="optional_value"),
+            },
+        )
+
+        warnings: list[dict[str, object]] = []
+        import hermit.plugin.config as plugin_config
+
+        monkeypatch.setattr(plugin_config.log, "warning", lambda *args, **kwargs: warnings.append(kwargs))
+
+        vars_resolved, config_resolved = resolve_plugin_context(manifest, settings)
+
+        assert vars_resolved["api_token"] is None
+        assert config_resolved["argv"] == ["run"]
+        assert config_resolved["headers"]["Authorization"] == "Bearer "
+        assert warnings == [{"plugin": "demo", "variable": "api_token"}]
 
 
 # ── mcp_loader plugin (.mcp.json parsing) ────────────────────────

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import signal
@@ -15,6 +16,7 @@ from typing import Any, Optional
 import typer
 
 from hermit.config import Settings, get_settings
+from hermit.provider.profiles import load_profile_catalog, resolve_profile
 
 
 def _hermit_env_path() -> Path:
@@ -53,16 +55,25 @@ from hermit.core.sandbox import CommandSandbox
 from hermit.core.session import SessionManager
 from hermit.core.tools import create_builtin_tool_registry
 from hermit.logging import configure_logging
+from hermit.i18n import resolve_locale, tr
 from hermit.plugin.manager import PluginManager
 from hermit.provider.services import build_provider_client_kwargs, build_runtime
 
-app = typer.Typer(help="Hermit personal AI agent CLI.")
-plugin_app = typer.Typer(help="Manage plugins.")
-autostart_app = typer.Typer(help="Manage auto-start at login (macOS launchd).")
-schedule_app = typer.Typer(help="Manage scheduled tasks.")
+CLI_LOCALE = resolve_locale()
+
+app = typer.Typer(help=tr("cli.app.help", locale=CLI_LOCALE))
+plugin_app = typer.Typer(help=tr("cli.plugin.help", locale=CLI_LOCALE))
+autostart_app = typer.Typer(help=tr("cli.autostart.help", locale=CLI_LOCALE))
+schedule_app = typer.Typer(help=tr("cli.schedule.help", locale=CLI_LOCALE))
+config_app = typer.Typer(help=tr("cli.config.help", locale=CLI_LOCALE))
+profiles_app = typer.Typer(help=tr("cli.profiles.help", locale=CLI_LOCALE))
+auth_app = typer.Typer(help=tr("cli.auth.help", locale=CLI_LOCALE))
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(autostart_app, name="autostart")
 app.add_typer(schedule_app, name="schedule")
+app.add_typer(config_app, name="config")
+app.add_typer(profiles_app, name="profiles")
+app.add_typer(auth_app, name="auth")
 
 DIM = "\033[2m"
 CYAN = "\033[36m"
@@ -130,6 +141,72 @@ def _build_anthropic_client_kwargs(settings: Settings) -> dict:
     return build_provider_client_kwargs(settings, "claude")
 
 
+def _auth_status_summary(settings: Settings) -> dict[str, str | bool | None]:
+    if settings.provider == "claude":
+        if settings.claude_api_key:
+            return {"provider": "claude", "ok": True, "source": "HERMIT_CLAUDE_API_KEY / ANTHROPIC_API_KEY"}
+        if settings.claude_auth_token:
+            return {
+                "provider": "claude",
+                "ok": True,
+                "source": "HERMIT_CLAUDE_AUTH_TOKEN / HERMIT_AUTH_TOKEN",
+                "base_url": settings.claude_base_url,
+            }
+        return {"provider": "claude", "ok": False, "source": None}
+    if settings.provider == "codex":
+        if settings.openai_api_key:
+            return {"provider": "codex", "ok": True, "source": "HERMIT_OPENAI_API_KEY / OPENAI_API_KEY"}
+        if settings.resolved_openai_api_key:
+            return {"provider": "codex", "ok": True, "source": "~/.codex/auth.json api_key"}
+        return {"provider": "codex", "ok": False, "source": None, "auth_mode": settings.codex_auth_mode}
+    if settings.provider == "codex-oauth":
+        ok = bool(settings.codex_auth_file_exists and settings.codex_access_token and settings.codex_refresh_token)
+        return {
+            "provider": "codex-oauth",
+            "ok": ok,
+            "source": "~/.codex/auth.json" if settings.codex_auth_file_exists else None,
+            "auth_mode": settings.codex_auth_mode,
+        }
+    return {"provider": settings.provider, "ok": settings.has_auth, "source": None}
+
+
+def _resolved_config_snapshot(settings: Settings) -> dict[str, object]:
+    return {
+        "base_dir": str(settings.base_dir),
+        "config_file": str(settings.config_file),
+        "config_file_exists": settings.config_file.exists(),
+        "default_profile": settings.default_profile,
+        "selected_profile": settings.resolved_profile,
+        "provider": settings.provider,
+        "model": settings.model,
+        "image_model": settings.image_model,
+        "max_tokens": settings.max_tokens,
+        "max_turns": settings.max_turns,
+        "tool_output_limit": settings.tool_output_limit,
+        "thinking_budget": settings.thinking_budget,
+        "openai_base_url": settings.openai_base_url,
+        "claude_base_url": settings.claude_base_url,
+        "sandbox_mode": settings.sandbox_mode,
+        "log_level": settings.log_level,
+        "feishu": {
+            "app_id_configured": bool(settings.feishu_app_id),
+            "thread_progress": settings.feishu_thread_progress,
+            "reaction_enabled": settings.feishu_reaction_enabled,
+        },
+        "scheduler": {
+            "enabled": settings.scheduler_enabled,
+            "catch_up": settings.scheduler_catch_up,
+            "feishu_chat_id_configured": bool(settings.scheduler_feishu_chat_id),
+        },
+        "webhook": {
+            "enabled": settings.webhook_enabled,
+            "host": settings.resolved_webhook_host,
+            "port": settings.resolved_webhook_port,
+        },
+        "auth": _auth_status_summary(settings),
+    }
+
+
 def _ensure_workspace(settings: Settings) -> None:
     for directory in (
         settings.base_dir,
@@ -174,6 +251,22 @@ def _caffeinate(settings: Settings):
 
 def _require_auth(settings: Settings) -> None:
     if not settings.has_auth:
+        if settings.provider == "codex":
+            if settings.codex_auth_file_exists:
+                auth_mode = settings.codex_auth_mode or "unknown"
+                raise typer.BadParameter(
+                    "Codex provider now uses the OpenAI Responses API, but the local "
+                    f"~/.codex/auth.json login (auth_mode={auth_mode}) does not expose an OpenAI API key. "
+                    "ChatGPT/Codex desktop login alone cannot call /v1/responses. "
+                    "Set HERMIT_OPENAI_API_KEY / OPENAI_API_KEY, or switch your local Codex auth to an API-key-backed login."
+                )
+            raise typer.BadParameter(
+                "Codex provider now uses the OpenAI Responses API and requires HERMIT_OPENAI_API_KEY / OPENAI_API_KEY."
+            )
+        if settings.provider == "codex-oauth":
+            raise typer.BadParameter(
+                "Codex OAuth provider requires a local Codex login with ~/.codex/auth.json."
+            )
         raise typer.BadParameter(
             "Missing authentication for the selected provider."
         )
@@ -233,6 +326,19 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
     errors: list[str] = []
 
     provider_key = _resolve_env_key("HERMIT_PROVIDER")
+    profile_key = _resolve_env_key("HERMIT_PROFILE")
+    if settings.resolved_profile:
+        items.append(
+            _PreflightItem(
+                label="Profile",
+                ok=True,
+                detail=(
+                    f"{settings.resolved_profile} ({_describe_env_source(profile_key, env_file_keys)})"
+                    if profile_key
+                    else f"{settings.resolved_profile} (config.toml)"
+                ),
+            )
+        )
     items.append(
         _PreflightItem(
             label="Provider",
@@ -283,9 +389,58 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
                     detail=f"{auth_key} ({_describe_env_source(auth_key, env_file_keys)})",
                 )
             )
+        elif settings.resolved_openai_api_key:
+            items.append(
+                _PreflightItem(
+                    label="Codex 鉴权",
+                    ok=True,
+                    detail="~/.codex/auth.json (包含本地 OpenAI API Key)",
+                )
+            )
+        elif settings.codex_auth_file_exists:
+            auth_mode = settings.codex_auth_mode or "unknown"
+            errors.append(
+                "检测到 `~/.codex/auth.json`，但当前登录态不包含 OpenAI API Key。"
+                "ChatGPT/Codex Desktop 登录本身不能直接调用 OpenAI Responses API；"
+                "请设置 `HERMIT_OPENAI_API_KEY` / `OPENAI_API_KEY`，或使用带 API key 的本机 Codex auth。"
+            )
+            items.append(
+                _PreflightItem(
+                    label="Codex 鉴权",
+                    ok=False,
+                    detail=f"检测到本机 Codex 登录态 (auth_mode={auth_mode})，但无可用 OpenAI API Key",
+                )
+            )
         else:
-            errors.append("缺少 Codex/OpenAI 鉴权。请设置 `HERMIT_OPENAI_API_KEY` 或 `OPENAI_API_KEY`。")
+            errors.append(
+                "缺少 Codex/OpenAI 鉴权。请设置 `HERMIT_OPENAI_API_KEY` 或 `OPENAI_API_KEY`。"
+            )
             items.append(_PreflightItem(label="Codex 鉴权", ok=False, detail="未找到 OpenAI API Key"))
+    elif settings.provider == "codex-oauth":
+        if settings.codex_auth_file_exists and settings.codex_access_token and settings.codex_refresh_token:
+            auth_mode = settings.codex_auth_mode or "unknown"
+            items.append(
+                _PreflightItem(
+                    label="Codex OAuth 鉴权",
+                    ok=True,
+                    detail=f"~/.codex/auth.json (auth_mode={auth_mode})",
+                )
+            )
+        elif settings.codex_auth_file_exists:
+            auth_mode = settings.codex_auth_mode or "unknown"
+            errors.append(
+                "检测到 `~/.codex/auth.json`，但其中缺少可用的 access_token / refresh_token。"
+            )
+            items.append(
+                _PreflightItem(
+                    label="Codex OAuth 鉴权",
+                    ok=False,
+                    detail=f"检测到本机 Codex 登录态 (auth_mode={auth_mode})，但 token 不完整",
+                )
+            )
+        else:
+            errors.append("缺少 Codex OAuth 鉴权。请先在本机完成 Codex 登录。")
+            items.append(_PreflightItem(label="Codex OAuth 鉴权", ok=False, detail="未找到 ~/.codex/auth.json"))
 
     model_key = _resolve_env_key("HERMIT_MODEL")
     items.append(
@@ -303,12 +458,16 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
     if adapter == "feishu":
         app_id_key = _resolve_env_key("HERMIT_FEISHU_APP_ID", "FEISHU_APP_ID")
         app_secret_key = _resolve_env_key("HERMIT_FEISHU_APP_SECRET", "FEISHU_APP_SECRET")
-        if app_id_key:
+        if app_id_key or settings.feishu_app_id:
             items.append(
                 _PreflightItem(
                     label="飞书 App ID",
                     ok=True,
-                    detail=f"{app_id_key} ({_describe_env_source(app_id_key, env_file_keys)})",
+                    detail=(
+                        f"{app_id_key} ({_describe_env_source(app_id_key, env_file_keys)})"
+                        if app_id_key
+                        else "config.toml profile"
+                    ),
                 )
             )
         else:
@@ -324,12 +483,16 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
                 )
             )
 
-        if app_secret_key:
+        if app_secret_key or settings.feishu_app_secret:
             items.append(
                 _PreflightItem(
                     label="飞书 App Secret",
                     ok=True,
-                    detail=f"{app_secret_key} ({_describe_env_source(app_secret_key, env_file_keys)})",
+                    detail=(
+                        f"{app_secret_key} ({_describe_env_source(app_secret_key, env_file_keys)})"
+                        if app_secret_key
+                        else "config.toml profile"
+                    ),
                 )
             )
         else:
@@ -345,27 +508,21 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
                 )
             )
 
-        thread_progress_key = _resolve_env_key("HERMIT_FEISHU_THREAD_PROGRESS")
         items.append(
             _PreflightItem(
                 label="飞书进度卡片",
                 ok=True,
-                detail=(
-                    f"{os.environ.get(thread_progress_key, '')} ({_describe_env_source(thread_progress_key, env_file_keys)})"
-                    if thread_progress_key
-                    else "true (默认值)"
-                ),
+                detail=str(settings.feishu_thread_progress).lower(),
             )
         )
 
-        scheduler_chat_key = _resolve_env_key("HERMIT_SCHEDULER_FEISHU_CHAT_ID")
         items.append(
             _PreflightItem(
                 label="Scheduler 飞书通知",
                 ok=True,
                 detail=(
-                    f"{scheduler_chat_key} ({_describe_env_source(scheduler_chat_key, env_file_keys)})"
-                    if scheduler_chat_key
+                    "已配置"
+                    if settings.scheduler_feishu_chat_id
                     else "未设置（可选；reload/scheduler 不会主动发飞书通知）"
                 ),
             )
@@ -459,6 +616,59 @@ def setup() -> None:
     if use_feishu:
         typer.echo("  hermit serve --adapter feishu")
     typer.echo("")
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Show the fully resolved runtime configuration."""
+    get_settings.cache_clear()
+    settings = get_settings()
+    typer.echo(json.dumps(_resolved_config_snapshot(settings), ensure_ascii=False, indent=2))
+
+
+@profiles_app.command("list")
+def profiles_list() -> None:
+    """List configured provider profiles from ~/.hermit/config.toml."""
+    settings = get_settings()
+    catalog = load_profile_catalog(settings.base_dir)
+    if not catalog.exists:
+        typer.echo(f"No config.toml found at {catalog.path}")
+        raise typer.Exit()
+    if not catalog.profiles:
+        typer.echo(f"No profiles defined in {catalog.path}")
+        raise typer.Exit()
+
+    for name, values in sorted(catalog.profiles.items()):
+        marker = " (default)" if name == catalog.default_profile else ""
+        provider = values.get("provider", "claude")
+        model = values.get("model", "")
+        suffix = f" provider={provider}" + (f" model={model}" if model else "")
+        typer.echo(f"{name}{marker}{suffix}")
+
+
+@profiles_app.command("resolve")
+def profiles_resolve(name: str | None = None) -> None:
+    """Resolve one profile as Hermit would read it from config.toml."""
+    settings = get_settings()
+    resolved = resolve_profile(settings.base_dir, name)
+    payload = {
+        "requested_profile": name,
+        "resolved_profile": resolved.name,
+        "config_file": str(resolved.source_path),
+        "config_file_exists": resolved.source_path.exists(),
+        "values": resolved.values,
+    }
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@auth_app.command("status")
+def auth_status() -> None:
+    """Show which auth source the current provider will use."""
+    get_settings.cache_clear()
+    settings = get_settings()
+    payload = _auth_status_summary(settings)
+    payload["selected_profile"] = settings.resolved_profile
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 @app.command()
@@ -624,7 +834,9 @@ def _notify_reload(settings: Any, adapter: str) -> None:
     """Fire a DISPATCH_RESULT so the Feishu hook sends a reload notification."""
     from hermit.plugin.base import HookEvent
 
-    chat_id = os.environ.get("HERMIT_SCHEDULER_FEISHU_CHAT_ID", "")
+    chat_id = getattr(settings, "scheduler_feishu_chat_id", "") or os.environ.get(
+        "HERMIT_SCHEDULER_FEISHU_CHAT_ID", ""
+    )
     if not chat_id:
         return
     try:

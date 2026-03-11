@@ -212,10 +212,9 @@ class SchedulerEngine:
 
         finished_at = time.time()
 
-        import os
         notify: dict[str, str] = {}
-        chat_id = getattr(job, "feishu_chat_id", None) or os.environ.get(
-            "HERMIT_SCHEDULER_FEISHU_CHAT_ID", ""
+        chat_id = getattr(job, "feishu_chat_id", None) or getattr(
+            self._settings, "scheduler_feishu_chat_id", ""
         )
         if chat_id:
             notify["feishu_chat_id"] = chat_id

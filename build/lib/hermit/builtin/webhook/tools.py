@@ -17,9 +17,7 @@ def set_settings(settings: Any) -> None:
 
 
 def _config_path() -> Path:
-    base = Path(
-        getattr(_settings, "workspace_dir", None) or Path.home() / ".hermit"
-    )
+    base = Path(getattr(_settings, "base_dir", None) or Path.home() / ".hermit")
     return base / "webhooks.json"
 
 

@@ -231,6 +231,25 @@ def test_feishu_adapter_prefers_hermit_env_names(monkeypatch) -> None:
     assert adapter._app_secret == "preferred-app-secret"
 
 
+def test_feishu_adapter_reads_credentials_from_settings(monkeypatch) -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+
+    monkeypatch.delenv("HERMIT_FEISHU_APP_ID", raising=False)
+    monkeypatch.delenv("HERMIT_FEISHU_APP_SECRET", raising=False)
+    monkeypatch.delenv("FEISHU_APP_ID", raising=False)
+    monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
+
+    settings = type(
+        "Settings",
+        (),
+        {"feishu_app_id": "settings-app-id", "feishu_app_secret": "settings-app-secret", "feishu_thread_progress": True},
+    )()
+    adapter = FeishuAdapter(settings=settings)
+
+    assert adapter._app_id == "settings-app-id"
+    assert adapter._app_secret == "settings-app-secret"
+
+
 def test_feishu_adapter_builds_prompt_from_images(tmp_path) -> None:
     from hermit.builtin.feishu.adapter import FeishuAdapter
 

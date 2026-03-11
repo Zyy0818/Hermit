@@ -1,134 +1,80 @@
-# Hermit 与 OpenClaw 的比较
+# Hermit 与 OpenClaw 的定位比较
 
-这份文档只做高层定位比较，不试图完整描述 OpenClaw 的全部实现细节。
+这份文档只做高层定位比较，不追求对 OpenClaw 做逐文件、逐版本的实现分析。
 
-Hermit 相关结论以当前仓库源码为准；OpenClaw 相关信息只引用其公开官方来源：
+约束：
 
-- [OpenClaw 官网](https://openclaw.ai/)
-- [OpenClaw FAQ](https://docs.openclaw.ai/help/faq)
-- [OpenClaw GitHub 仓库](https://github.com/openclaw/openclaw)
+- Hermit 侧结论以当前仓库源码为准
+- OpenClaw 侧只保留稳定的公开定位比较，不把易变的外部实现细节写死
 
-## 一段话总结
+## 一句话结论
 
-两者都属于本地优先 agent 系统，但关注点不同：
+两者都属于本地优先 agent 系统，但设计重心不同：
 
-- Hermit 偏向小而清晰的个人 runtime
-- OpenClaw 偏向更完整的平台与多通道产品面
+- Hermit 偏 runtime-first、个人工作流、可读源码
+- OpenClaw 更偏 platform-first、通道面更宽、运维面更重
 
-## Hermit 的现实定位
+## Hermit 的当前现实定位
 
-从当前源码看，Hermit 的中心是：
+从仓库源码看，Hermit 的中心是：
 
 - `AgentRunner`
-- `ClaudeAgent`
+- `AgentRuntime`
 - `PluginManager`
-- `~/.hermit` 状态目录
+- `~/.hermit` 文件状态目录
 
-它把大量能力放在 builtin plugin，而不是堆进 core。
-
-当前仓库里真实存在的 surface 主要是：
+当前已落地的表面主要是：
 
 - CLI
-- Feishu
+- Feishu adapter
 - scheduler
 - webhook
 - MCP
+- macOS companion
 
-## OpenClaw 的公开定位
+## Hermit 的优势
 
-基于 OpenClaw 官方 FAQ 和 GitHub 仓库，可以确认它公开强调的能力面明显更宽，例如：
+如果你更看重下面这些点，Hermit 更匹配：
 
-- Gateway / dashboard 一类控制面
-- 更多消息通道与 channel 文档
-- 本地模型与 OpenAI-compatible provider 支持
+- 可以在较短时间内读透 runtime
+- 想把状态保留在本机文件系统
+- 想通过插件继续长出私有能力
+- 更偏个人工作流，而不是完整平台
 
-我这里的判断来自官方公开资料，而不是对其内部实现做推断。
+## Hermit 的代价
 
-## 架构中心差异
+这类设计也有明确代价：
 
-### Hermit
+- 控制面较轻
+- 默认通道较少
+- 产品化封装程度不如更重的平台
+- 某些能力需要自己动手扩展插件
 
-Hermit 是 runtime-first：
+## 与更重平台的差异
 
-```text
-AgentRunner -> ClaudeAgent -> ToolRegistry -> 本地工具 / 插件工具 / MCP
-```
+平台型系统通常会强调：
 
-它的优势是：
+- 更多 channel
+- 更完整控制台
+- 更重的网关与运维面
+- 更标准化的多租户或团队能力
 
-- 代码路径短
-- 源码容易读透
-- 状态目录简单
-- 插件装配关系清楚
+Hermit 目前并不试图在这些维度上与之正面竞争。
 
-### OpenClaw
+## 什么时候选 Hermit
 
-OpenClaw 从公开资料看更接近 platform-first：
+更适合选择 Hermit 的情况：
 
-- 有 gateway 运维面
-- 有更多 channels
-- 有更广的 provider / surface 范围
+- 你要的是一个个人 agent runtime，而不是产品平台
+- 你希望自己能改 provider、插件和状态模型
+- 你更在意“本机可检查、可恢复、可审计”
+- 你愿意接受更少的默认通道与更轻的控制面
 
-这类设计通常带来更大的能力面，也带来更高的理解和部署复杂度。
+## 这轮文档更新的原则
 
-## 状态模型差异
+旧版本包含一些更容易随外部产品变化而失真的描述。
 
-### Hermit
+这次更新后，这份文档只保留：
 
-Hermit 的长期状态主要放在 `~/.hermit`，并与当前 workspace 分离。
-
-### OpenClaw
-
-OpenClaw FAQ 明确提到默认状态目录是 `~/.openclaw`，日志与服务状态也围绕该目录和 gateway 服务展开。
-
-## 扩展模型差异
-
-### Hermit
-
-Hermit 的扩展核心是 `plugin.toml`，当前已用入口维度是：
-
-- `tools`
-- `hooks`
-- `commands`
-- `subagents`
-- `adapter`
-- `mcp`
-
-### OpenClaw
-
-OpenClaw 的公开资料展示了更大的平台生态与更多运行面，但它的整体结构也因此更重。
-
-## 通道与模型策略
-
-### Hermit
-
-当前源码里实际落地的通道和外部入口比较克制：
-
-- CLI
-- Feishu
-- webhook
-- scheduler
-
-模型层当前围绕 Anthropic Messages API 实现，没有通用 provider abstraction。
-
-### OpenClaw
-
-OpenClaw FAQ 中能明确看到 Telegram、WhatsApp、Slack、Discord、iMessage 等 channel 文档和运维说明，也公开支持本地模型与 OpenAI-compatible provider。
-
-## 结论
-
-如果你的目标是：
-
-- 自己能快速读懂并改造 runtime
-- 保持单机和个人工作流优先
-- 依赖清晰的文件化状态
-
-Hermit 更合适。
-
-如果你的目标是：
-
-- 更完整的平台能力
-- 更宽的通道覆盖
-- 更大的运维与控制面
-
-OpenClaw 的公开能力面明显更大。
+- 对 Hermit 当前代码库稳定成立的结论
+- 对“轻 runtime vs 重平台”这一层面的定位比较

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from hermit.plugin.base import HookEvent, PluginContext
@@ -16,8 +15,7 @@ _hooks_ref: Any = None
 def _on_serve_start(*, settings: Any, runner: Any = None, **kw: Any) -> None:
     global _server
 
-    enabled = os.environ.get("HERMIT_WEBHOOK_ENABLED", "true").lower()
-    if enabled not in ("true", "1", "yes"):
+    if not bool(getattr(settings, "webhook_enabled", True)):
         _log.info("webhook_disabled")
         return
 
