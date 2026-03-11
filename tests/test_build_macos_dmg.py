@@ -46,7 +46,7 @@ def test_build_dmg_creates_stage_bundle_and_applications_link(
             "hdiutil",
             "create",
             "-volname",
-            "Hermit Menu Dev 0.2.0",
+            f"Hermit Menu Dev {build_macos_dmg.__version__}",
             "-srcfolder",
             str(installed_targets[0].parent),
         ]
@@ -63,7 +63,7 @@ def test_build_dmg_creates_stage_bundle_and_applications_link(
         out_dir=tmp_path / "dist",
     )
 
-    assert dmg_path == tmp_path / "dist" / "Hermit-Menu-Dev-0.2.0.dmg"
+    assert dmg_path == tmp_path / "dist" / f"Hermit-Menu-Dev-{build_macos_dmg.__version__}.dmg"
     assert dmg_path.read_text(encoding="utf-8") == "fake dmg"
     assert len(installed_targets) == 1
     assert len(hdiutil_calls) == 1
