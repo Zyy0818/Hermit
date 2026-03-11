@@ -35,6 +35,30 @@ def engine(tmp_settings: Any, hooks: HooksEngine) -> SchedulerEngine:
 
 
 class TestSchedulerFiresDispatchResult:
+    def test_execute_wraps_prompt_before_running_agent(
+        self, engine: SchedulerEngine
+    ) -> None:
+        job = ScheduledJob.create(
+            name="drink-water", prompt="提醒我喝水",
+            schedule_type="once", once_at=time.time() - 1,
+        )
+
+        captured_prompt: dict[str, str] = {}
+
+        def fake_run(prompt: str) -> Any:
+            captured_prompt["value"] = prompt
+            mock_result = MagicMock()
+            mock_result.text = "done"
+            return mock_result
+
+        with patch.object(engine, "_run_agent_via_runner", side_effect=fake_run):
+            engine._runner = MagicMock()
+            engine._execute(job)
+
+        assert "已经创建好的定时任务" in captured_prompt["value"]
+        assert "不要索要 chat_id、open_id" in captured_prompt["value"]
+        assert "提醒我喝水" in captured_prompt["value"]
+
     def test_fires_dispatch_result_not_schedule_result(
         self, engine: SchedulerEngine, hooks: HooksEngine
     ) -> None:

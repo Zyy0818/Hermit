@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermit.builtin.scheduler.models import JobExecutionRecord, ScheduledJob
-from hermit.builtin.scheduler.engine import SchedulerEngine
+from hermit.builtin.scheduler.engine import SchedulerEngine, _build_execution_prompt
 from hermit.plugin.base import HookEvent
 from hermit.plugin.hooks import HooksEngine
 from hermit.storage import JsonStore
@@ -159,6 +159,17 @@ class TestEngineNextRun:
         )
         job.enabled = False
         assert engine._compute_next_run(job) is None
+
+
+class TestExecutionPrompt:
+    def test_wraps_prompt_as_final_deliverable(self) -> None:
+        wrapped = _build_execution_prompt("请用中文提醒用户现在是11:30，该喝水了。保持简短友好。")
+
+        assert "已经创建好的定时任务" in wrapped
+        assert "不要询问澄清问题" in wrapped
+        assert "不要索要 chat_id、open_id" in wrapped
+        assert "直接写出要发送给用户的提醒内容" in wrapped
+        assert "请用中文提醒用户现在是11:30，该喝水了。保持简短友好。" in wrapped
 
 
 # ---------------------------------------------------------------------------
