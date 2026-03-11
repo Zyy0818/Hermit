@@ -229,6 +229,69 @@ def test_agent_handles_tool_exception_gracefully() -> None:
     assert "kaboom" in follow_up["content"]
 
 
+def test_agent_stringifies_structured_tool_result_objects() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="structured",
+            description="Return structured data.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=lambda _: {"items": [{"foo": "bar"}], "ok": True},
+        )
+    )
+    client = FakeClient(
+        [
+            FakeResponse(
+                content=[{"type": "tool_use", "id": "t3", "name": "structured", "input": {}}],
+                stop_reason="tool_use",
+            ),
+            FakeResponse(
+                content=[{"type": "text", "text": "done"}],
+                stop_reason="end_turn",
+            ),
+        ]
+    )
+
+    ClaudeAgent(client=client, registry=registry, model="fake").run("test")
+
+    follow_up = client.messages.calls[1]["messages"][-1]["content"][0]
+    assert isinstance(follow_up["content"], str)
+    assert '"foo": "bar"' in follow_up["content"]
+
+
+def test_agent_preserves_image_tool_result_blocks() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="image_tool",
+            description="Return an image block.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=lambda _: {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+            },
+        )
+    )
+    client = FakeClient(
+        [
+            FakeResponse(
+                content=[{"type": "tool_use", "id": "t4", "name": "image_tool", "input": {}}],
+                stop_reason="tool_use",
+            ),
+            FakeResponse(
+                content=[{"type": "text", "text": "done"}],
+                stop_reason="end_turn",
+            ),
+        ]
+    )
+
+    ClaudeAgent(client=client, registry=registry, model="fake").run("test")
+
+    follow_up = client.messages.calls[1]["messages"][-1]["content"][0]
+    assert isinstance(follow_up["content"], list)
+    assert follow_up["content"][0]["type"] == "image"
+
+
 def test_normalize_block_converts_sdk_objects_to_dict() -> None:
     class FakeTextBlock:
         def model_dump(self):

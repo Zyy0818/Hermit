@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
@@ -24,6 +25,7 @@ _ALLOWED_BLOCK_KEYS = {
     "thinking": {"type", "thinking", "signature"},
 }
 _FALLBACK_KEYS = {"type", "text", "id", "name", "input", "thinking", "signature", "tool_use_id", "content"}
+_TOOL_RESULT_BLOCK_TYPES = {"text", "image"}
 
 
 def _normalize_block(block: Any) -> Dict[str, Any]:
@@ -168,12 +170,27 @@ def truncate_middle_text(text: str, limit: int) -> str:
     return f"{text[:head]}\n...\n{text[-tail:]}"
 
 
+def _tool_result_json_text(value: Any, limit: int) -> str:
+    text = json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True)
+    return truncate_middle_text(text, limit)
+
+
+def _is_tool_result_block(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("type") in _TOOL_RESULT_BLOCK_TYPES
+
+
 def _format_tool_result_content(value: Any, limit: int) -> Any:
     serialized = serialize_tool_result(value)
     if isinstance(serialized, str):
         return truncate_middle_text(serialized, limit)
-    if isinstance(serialized, dict):
+    if _is_tool_result_block(serialized):
         return [serialized]
+    if isinstance(serialized, dict):
+        return _tool_result_json_text(serialized, limit)
+    if isinstance(serialized, list):
+        if all(_is_tool_result_block(item) for item in serialized):
+            return serialized
+        return _tool_result_json_text(serialized, limit)
     return serialized
 
 
