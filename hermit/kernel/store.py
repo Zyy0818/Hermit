@@ -14,6 +14,7 @@ from hermit.kernel.models import (
     ArtifactRecord,
     ConversationRecord,
     DecisionRecord,
+    PathGrantRecord,
     ExecutionPermitRecord,
     ReceiptRecord,
     StepAttemptRecord,
@@ -34,6 +35,7 @@ _KNOWN_KERNEL_TABLES = {
     "receipts",
     "decisions",
     "execution_permits",
+    "path_grants",
     "schedule_specs",
     "schedule_history",
 }
@@ -254,10 +256,27 @@ class KernelStore:
                     result_code TEXT NOT NULL,
                     decision_ref TEXT,
                     permit_ref TEXT,
+                    grant_ref TEXT,
                     policy_ref TEXT,
                     witness_ref TEXT,
                     idempotency_key TEXT,
                     created_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS path_grants (
+                    grant_id TEXT PRIMARY KEY,
+                    subject_kind TEXT NOT NULL,
+                    subject_ref TEXT NOT NULL,
+                    action_class TEXT NOT NULL,
+                    path_prefix TEXT NOT NULL,
+                    path_display TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    approval_ref TEXT,
+                    decision_ref TEXT,
+                    policy_ref TEXT,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL,
+                    last_used_at REAL
                 );
                 CREATE TABLE IF NOT EXISTS schedule_specs (
                     id TEXT PRIMARY KEY,
@@ -290,8 +309,11 @@ class KernelStore:
                 CREATE INDEX IF NOT EXISTS idx_receipts_task ON receipts(task_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_decisions_task ON decisions(task_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_permits_task ON execution_permits(task_id, issued_at);
+                CREATE INDEX IF NOT EXISTS idx_path_grants_subject ON path_grants(subject_kind, subject_ref, status, action_class);
+                CREATE INDEX IF NOT EXISTS idx_path_grants_prefix ON path_grants(path_prefix);
                 """
             )
+            self._ensure_column("receipts", "grant_ref", "TEXT")
             self._conn.execute(
                 """
                 INSERT INTO kernel_meta(key, value) VALUES ('schema_version', ?)
@@ -299,6 +321,15 @@ class KernelStore:
                 """,
                 (_SCHEMA_VERSION,),
             )
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        existing = {
+            str(row["name"])
+            for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column in existing:
+            return
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _id(self, prefix: str) -> str:
         return f"{prefix}_{uuid.uuid4().hex[:12]}"
@@ -1016,6 +1047,149 @@ class KernelStore:
             rows = self._rows(query, params)
         return [self._execution_permit_from_row(row) for row in rows]
 
+    def create_path_grant(
+        self,
+        *,
+        subject_kind: str,
+        subject_ref: str,
+        action_class: str,
+        path_prefix: str,
+        path_display: str,
+        created_by: str,
+        approval_ref: str | None,
+        decision_ref: str | None,
+        policy_ref: str | None,
+        status: str = "active",
+        expires_at: float | None = None,
+    ) -> PathGrantRecord:
+        grant_id = self._id("grant")
+        created_at = time.time()
+        payload = {
+            "subject_kind": subject_kind,
+            "subject_ref": subject_ref,
+            "action_class": action_class,
+            "path_prefix": path_prefix,
+            "path_display": path_display,
+            "created_by": created_by,
+            "approval_ref": approval_ref,
+            "decision_ref": decision_ref,
+            "policy_ref": policy_ref,
+            "status": status,
+            "expires_at": expires_at,
+        }
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO path_grants (
+                    grant_id, subject_kind, subject_ref, action_class, path_prefix, path_display,
+                    created_by, approval_ref, decision_ref, policy_ref, status, created_at, expires_at, last_used_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    grant_id,
+                    subject_kind,
+                    subject_ref,
+                    action_class,
+                    path_prefix,
+                    path_display,
+                    created_by,
+                    approval_ref,
+                    decision_ref,
+                    policy_ref,
+                    status,
+                    created_at,
+                    expires_at,
+                ),
+            )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="grant.created",
+                entity_type="path_grant",
+                entity_id=grant_id,
+                task_id=None,
+                step_id=None,
+                actor=created_by,
+                payload=payload,
+            )
+        grant = self.get_path_grant(grant_id)
+        assert grant is not None
+        return grant
+
+    def get_path_grant(self, grant_id: str) -> PathGrantRecord | None:
+        with self._lock:
+            row = self._row("SELECT * FROM path_grants WHERE grant_id = ?", (grant_id,))
+        return self._path_grant_from_row(row) if row is not None else None
+
+    def list_path_grants(
+        self,
+        *,
+        subject_kind: str | None = None,
+        subject_ref: str | None = None,
+        status: str | None = None,
+        action_class: str | None = None,
+        limit: int = 50,
+    ) -> list[PathGrantRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if subject_kind:
+            clauses.append("subject_kind = ?")
+            params.append(subject_kind)
+        if subject_ref:
+            clauses.append("subject_ref = ?")
+            params.append(subject_ref)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if action_class:
+            clauses.append("action_class = ?")
+            params.append(action_class)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._lock:
+            rows = self._rows(
+                f"SELECT * FROM path_grants {where} ORDER BY created_at DESC LIMIT ?",
+                tuple(params),
+            )
+        return [self._path_grant_from_row(row) for row in rows]
+
+    def update_path_grant(
+        self,
+        grant_id: str,
+        *,
+        status: str | object = _UNSET,
+        expires_at: float | None | object = _UNSET,
+        last_used_at: float | None | object = _UNSET,
+        actor: str = "kernel",
+        event_type: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        grant = self.get_path_grant(grant_id)
+        if grant is None:
+            return
+        updated_status = grant.status if status is _UNSET else str(status)
+        updated_expires_at = grant.expires_at if expires_at is _UNSET else expires_at
+        updated_last_used_at = grant.last_used_at if last_used_at is _UNSET else last_used_at
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE path_grants
+                SET status = ?, expires_at = ?, last_used_at = ?
+                WHERE grant_id = ?
+                """,
+                (updated_status, updated_expires_at, updated_last_used_at, grant_id),
+            )
+            if event_type:
+                self._append_event_tx(
+                    event_id=self._id("event"),
+                    event_type=event_type,
+                    entity_type="path_grant",
+                    entity_id=grant_id,
+                    task_id=None,
+                    step_id=None,
+                    actor=actor,
+                    payload=payload or {},
+                )
+
     def create_approval(
         self,
         *,
@@ -1136,6 +1310,42 @@ class KernelStore:
                 payload=resolution,
             )
 
+    def update_approval_resolution(self, approval_id: str, resolution: dict[str, Any]) -> None:
+        approval = self.get_approval(approval_id)
+        if approval is None:
+            return
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE approvals SET resolution_json = ? WHERE approval_id = ?",
+                (json.dumps(resolution, ensure_ascii=False), approval_id),
+            )
+
+    def consume_approval(self, approval_id: str, *, actor: str = "kernel") -> None:
+        approval = self.get_approval(approval_id)
+        if approval is None:
+            return
+        resolution = dict(approval.resolution or {})
+        resolution["status"] = "consumed"
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE approvals
+                SET status = ?, resolution_json = ?
+                WHERE approval_id = ?
+                """,
+                ("consumed", json.dumps(resolution, ensure_ascii=False), approval_id),
+            )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="approval.consumed",
+                entity_type="approval",
+                entity_id=approval_id,
+                task_id=approval.task_id,
+                step_id=approval.step_id,
+                actor=actor,
+                payload=resolution,
+            )
+
     def create_receipt(
         self,
         *,
@@ -1152,6 +1362,7 @@ class KernelStore:
         result_code: str = "succeeded",
         decision_ref: str | None = None,
         permit_ref: str | None = None,
+        grant_ref: str | None = None,
         policy_ref: str | None = None,
         witness_ref: str | None = None,
         idempotency_key: str | None = None,
@@ -1165,8 +1376,8 @@ class KernelStore:
                     receipt_id, task_id, step_id, step_attempt_id, action_type,
                     input_refs_json, environment_ref, policy_result_json,
                     approval_ref, output_refs_json, result_summary, result_code,
-                    decision_ref, permit_ref, policy_ref, witness_ref, idempotency_key, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    decision_ref, permit_ref, grant_ref, policy_ref, witness_ref, idempotency_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     receipt_id,
@@ -1183,6 +1394,7 @@ class KernelStore:
                     result_code,
                     decision_ref,
                     permit_ref,
+                    grant_ref,
                     policy_ref,
                     witness_ref,
                     idempotency_key,
@@ -1203,6 +1415,7 @@ class KernelStore:
                     "result_code": result_code,
                     "decision_ref": decision_ref,
                     "permit_ref": permit_ref,
+                    "grant_ref": grant_ref,
                     "policy_ref": policy_ref,
                     "witness_ref": witness_ref,
                     "idempotency_key": idempotency_key,
@@ -1223,6 +1436,7 @@ class KernelStore:
             result_code=result_code,
             decision_ref=decision_ref,
             permit_ref=permit_ref,
+            grant_ref=grant_ref,
             policy_ref=policy_ref,
             witness_ref=witness_ref,
             idempotency_key=idempotency_key,
@@ -1484,10 +1698,29 @@ class KernelStore:
             result_code=str(row["result_code"]),
             decision_ref=row["decision_ref"],
             permit_ref=row["permit_ref"],
+            grant_ref=row["grant_ref"],
             policy_ref=row["policy_ref"],
             witness_ref=row["witness_ref"],
             idempotency_key=row["idempotency_key"],
             created_at=float(row["created_at"]),
+        )
+
+    def _path_grant_from_row(self, row: sqlite3.Row) -> PathGrantRecord:
+        return PathGrantRecord(
+            grant_id=str(row["grant_id"]),
+            subject_kind=str(row["subject_kind"]),
+            subject_ref=str(row["subject_ref"]),
+            action_class=str(row["action_class"]),
+            path_prefix=str(row["path_prefix"]),
+            path_display=str(row["path_display"]),
+            created_by=str(row["created_by"]),
+            approval_ref=row["approval_ref"],
+            decision_ref=row["decision_ref"],
+            policy_ref=row["policy_ref"],
+            status=str(row["status"]),
+            created_at=float(row["created_at"]),
+            expires_at=row["expires_at"],
+            last_used_at=row["last_used_at"],
         )
 
     def _schedule_from_row(self, row: sqlite3.Row) -> ScheduledJob:

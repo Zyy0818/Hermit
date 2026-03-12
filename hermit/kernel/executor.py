@@ -15,6 +15,7 @@ from hermit.kernel.approvals import ApprovalService
 from hermit.kernel.artifacts import ArtifactStore
 from hermit.kernel.context import TaskExecutionContext, capture_execution_environment
 from hermit.kernel.decisions import DecisionService
+from hermit.kernel.path_grants import PathGrantService
 from hermit.kernel.permits import ExecutionPermitService
 from hermit.kernel.policy import (
     POLICY_RULES_VERSION,
@@ -120,6 +121,7 @@ class ToolExecutionResult:
     receipt_id: str | None = None
     decision_id: str | None = None
     permit_id: str | None = None
+    grant_ref: str | None = None
     policy_ref: str | None = None
     witness_ref: str | None = None
     result_code: str = "succeeded"
@@ -139,6 +141,7 @@ class ToolExecutor:
         approval_copy_service: ApprovalCopyService | None = None,
         receipt_service: ReceiptService,
         decision_service: DecisionService | None = None,
+        path_grant_service: PathGrantService | None = None,
         permit_service: ExecutionPermitService | None = None,
         reconcile_service: ReconcileService | None = None,
         tool_output_limit: int = 4000,
@@ -151,6 +154,7 @@ class ToolExecutor:
         self.approval_copy = approval_copy_service or ApprovalCopyService()
         self.receipt_service = receipt_service
         self.decision_service = decision_service or DecisionService(store)
+        self.path_grant_service = path_grant_service or PathGrantService(store)
         self.permit_service = permit_service or ExecutionPermitService(store)
         self.reconcile_service = reconcile_service or ReconcileService()
         self.tool_output_limit = tool_output_limit
@@ -167,6 +171,10 @@ class ToolExecutor:
         action_request = self.policy_engine.build_action_request(tool, tool_input, attempt_ctx=attempt_ctx)
         if request_overrides:
             action_request = self._apply_request_overrides(action_request, request_overrides)
+        matched_grant = self._matching_path_grant(action_request)
+        if matched_grant is not None:
+            action_request.context["path_grant_ref"] = matched_grant.grant_id
+            action_request.context["path_grant_prefix"] = matched_grant.path_prefix
         action_ref = self._record_action_request(action_request, attempt_ctx)
         policy = self.policy_engine.evaluate(action_request)
         policy_ref = self._record_policy_evaluation(action_request, policy, attempt_ctx)
@@ -307,6 +315,28 @@ class ToolExecutor:
 
         decision_id = None
         permit_id = None
+        grant_id = matched_grant.grant_id if matched_grant is not None else None
+        approval_mode = ""
+        if matched_approval is not None:
+            approval_mode = str((matched_approval.resolution or {}).get("mode", "once") or "once")
+            self.decision_service.record(
+                task_id=attempt_ctx.task_id,
+                step_id=attempt_ctx.step_id,
+                step_attempt_id=attempt_ctx.step_attempt_id,
+                decision_type="approval_resolution",
+                verdict=approval_mode,
+                reason="User approval was applied before execution.",
+                policy_ref=policy_ref,
+                approval_ref=matched_approval.approval_id,
+                action_type=action_type,
+                decided_by=str(matched_approval.resolved_by or "user"),
+            )
+            if approval_mode == "always_directory" and grant_id is None:
+                grant_id = self._ensure_directory_grant(
+                    approval_record=matched_approval,
+                    action_request=action_request,
+                    policy_ref=policy_ref,
+                )
         if governed:
             decision_id = self.decision_service.record(
                 task_id=attempt_ctx.task_id,
@@ -314,7 +344,7 @@ class ToolExecutor:
                 step_attempt_id=attempt_ctx.step_attempt_id,
                 decision_type="execution_authorization",
                 verdict="allow",
-                reason=policy.reason or "Policy allowed execution.",
+                reason=self._authorization_reason(policy=policy, approval_mode=approval_mode, grant_id=grant_id),
                 evidence_refs=[ref for ref in [action_ref, policy_ref, preview_artifact, witness_ref] if ref],
                 policy_ref=policy_ref,
                 approval_ref=matched_approval.approval_id if matched_approval is not None else None,
@@ -340,6 +370,10 @@ class ToolExecutor:
                 state_witness_ref=witness_ref,
             )
             self.store.update_step(attempt_ctx.step_id, status="dispatching")
+            if grant_id is not None:
+                self.path_grant_service.mark_used(grant_id)
+            if matched_approval is not None:
+                self.store.consume_approval(matched_approval.approval_id)
 
         try:
             raw_result = tool.handler(tool_input)
@@ -355,6 +389,7 @@ class ToolExecutor:
                     policy_ref=policy_ref,
                     decision_id=decision_id,
                     permit_id=permit_id,
+                    grant_ref=grant_id,
                     approval_ref=matched_approval.approval_id if matched_approval is not None else None,
                     witness_ref=witness_ref,
                     exc=exc,
@@ -387,9 +422,15 @@ class ToolExecutor:
                 policy_ref=policy_ref,
                 decision_ref=decision_id,
                 permit_ref=permit_id,
+                grant_ref=grant_id,
                 witness_ref=witness_ref,
                 result_code="succeeded",
                 idempotency_key=action_request.idempotency_key,
+                result_summary=self._successful_result_summary(
+                    tool_name=tool_name,
+                    approval_mode=approval_mode,
+                    grant_id=grant_id,
+                ),
             )
         return ToolExecutionResult(
             model_content=model_content,
@@ -400,6 +441,7 @@ class ToolExecutor:
             receipt_id=receipt_id,
             decision_id=decision_id,
             permit_id=permit_id,
+            grant_ref=grant_id,
             policy_ref=policy_ref,
             witness_ref=witness_ref,
             result_code="succeeded",
@@ -826,6 +868,9 @@ class ToolExecutor:
             "target_paths": list(action_request.derived.get("target_paths", [])),
             "network_hosts": list(action_request.derived.get("network_hosts", [])),
             "command_preview": action_request.derived.get("command_preview"),
+            "workspace_root": action_request.context.get("workspace_root", ""),
+            "outside_workspace": bool(action_request.derived.get("outside_workspace")),
+            "grant_scope_dir": action_request.derived.get("grant_candidate_prefix"),
             "approval_packet": packet,
             "decision_ref": decision_ref,
             "policy_ref": policy_ref,
@@ -879,6 +924,85 @@ class ToolExecutor:
                 return None, witness_ref, True
         return approval_record, witness_ref, False
 
+    def _matching_path_grant(self, action_request: ActionRequest) -> Any:
+        if action_request.action_class != "write_local":
+            return None
+        if not action_request.conversation_id:
+            return None
+        if not action_request.derived.get("outside_workspace"):
+            return None
+        target_paths = list(action_request.derived.get("target_paths", []))
+        if not target_paths:
+            return None
+        return self.path_grant_service.match(
+            conversation_id=str(action_request.conversation_id),
+            action_class=action_request.action_class,
+            target_path=str(target_paths[0]),
+        )
+
+    def _ensure_directory_grant(
+        self,
+        *,
+        approval_record: Any,
+        action_request: ActionRequest,
+        policy_ref: str | None,
+    ) -> str | None:
+        if action_request.action_class != "write_local" or not action_request.conversation_id:
+            return None
+        if not action_request.derived.get("outside_workspace"):
+            return None
+        path_prefix = str(
+            approval_record.requested_action.get("grant_scope_dir")
+            or action_request.derived.get("grant_candidate_prefix")
+            or ""
+        ).strip()
+        if not path_prefix:
+            return None
+        grant_id = self.path_grant_service.create(
+            conversation_id=str(action_request.conversation_id),
+            action_class=action_request.action_class,
+            path_prefix=path_prefix,
+            path_display=path_prefix,
+            created_by=str(approval_record.resolved_by or "user"),
+            approval_ref=approval_record.approval_id,
+            decision_ref=approval_record.decision_ref,
+            policy_ref=policy_ref,
+        )
+        resolution = dict(approval_record.resolution or {})
+        resolution["grant_ref"] = grant_id
+        self.store.update_approval_resolution(approval_record.approval_id, resolution)
+        return grant_id
+
+    def _authorization_reason(
+        self,
+        *,
+        policy: PolicyDecision,
+        approval_mode: str,
+        grant_id: str | None,
+    ) -> str:
+        if grant_id and approval_mode == "always_directory":
+            return "User approved the write and allowlisted this directory for the current conversation."
+        if grant_id:
+            return "An existing directory grant allows this write for the current conversation."
+        if approval_mode == "once":
+            return "User approved this write for one execution."
+        return policy.reason or "Policy allowed execution."
+
+    def _successful_result_summary(
+        self,
+        *,
+        tool_name: str,
+        approval_mode: str,
+        grant_id: str | None,
+    ) -> str:
+        if grant_id and approval_mode == "always_directory":
+            return f"{tool_name} executed successfully after approving and allowlisting this directory."
+        if grant_id:
+            return f"{tool_name} executed successfully via an existing directory grant."
+        if approval_mode == "once":
+            return f"{tool_name} executed successfully after one-time approval."
+        return f"{tool_name} executed successfully"
+
     def _supersede_attempt_for_witness_drift(
         self,
         *,
@@ -918,6 +1042,7 @@ class ToolExecutor:
         policy_ref: str | None,
         decision_id: str | None,
         permit_id: str,
+        grant_ref: str | None,
         approval_ref: str | None,
         witness_ref: str | None,
         exc: Exception,
@@ -970,6 +1095,7 @@ class ToolExecutor:
             policy_ref=policy_ref,
             decision_ref=decision_id,
             permit_ref=permit_id,
+            grant_ref=grant_ref,
             witness_ref=witness_ref,
             result_code=result_code,
             idempotency_key=idempotency_key,
@@ -984,6 +1110,7 @@ class ToolExecutor:
             receipt_id=receipt_id,
             decision_id=decision_id,
             permit_id=permit_id,
+            grant_ref=grant_ref,
             policy_ref=policy_ref,
             witness_ref=witness_ref,
             result_code=result_code,
@@ -1004,6 +1131,7 @@ class ToolExecutor:
         policy_ref: str | None,
         decision_ref: str | None,
         permit_ref: str | None,
+        grant_ref: str | None,
         witness_ref: str | None,
         result_code: str,
         idempotency_key: str | None,
@@ -1062,6 +1190,7 @@ class ToolExecutor:
             result_code=result_code,
             decision_ref=decision_ref,
             permit_ref=permit_ref,
+            grant_ref=grant_ref,
             policy_ref=policy_ref,
             witness_ref=witness_ref,
             idempotency_key=idempotency_key,

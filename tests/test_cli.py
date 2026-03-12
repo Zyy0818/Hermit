@@ -427,10 +427,10 @@ def test_task_approve_and_deny_commands_delegate_to_runner(tmp_path, monkeypatch
 
     assert approve_result.exit_code == 0
     assert deny_result.exit_code == 0
-    assert approve_result.output.strip() == f"approve:{approval.approval_id}"
+    assert approve_result.output.strip() == f"approve_once:{approval.approval_id}"
     assert deny_result.output.strip() == f"deny:{approval.approval_id}"
     assert calls == [
-        ("cli-approval", "approve", approval.approval_id, ""),
+        ("cli-approval", "approve_once", approval.approval_id, ""),
         ("cli-approval", "deny", approval.approval_id, "hold"),
     ]
 
@@ -474,6 +474,38 @@ def test_task_show_displays_approval_canonical_summary(monkeypatch, tmp_path) ->
     assert result.exit_code == 0
     assert approval.approval_id in result.output
     assert "准备修改 1 个文件" in result.output
+
+
+def test_task_grant_subcommands_list_and_revoke(monkeypatch, tmp_path) -> None:
+    from hermit.config import get_settings
+    from hermit.kernel.store import KernelStore
+
+    base_dir = tmp_path / ".hermit"
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    get_settings.cache_clear()
+
+    store = KernelStore(base_dir / "kernel" / "state.db")
+    grant = store.create_path_grant(
+        subject_kind="conversation",
+        subject_ref="cli-grants",
+        action_class="write_local",
+        path_prefix=str((tmp_path / "Desktop").resolve()),
+        path_display=str((tmp_path / "Desktop").resolve()),
+        created_by="user",
+        approval_ref="approval_1",
+        decision_ref="decision_1",
+        policy_ref="policy_1",
+    )
+
+    runner = CliRunner()
+    list_result = runner.invoke(app, ["task", "grant", "list", "--conversation-id", "cli-grants"])
+    revoke_result = runner.invoke(app, ["task", "grant", "revoke", grant.grant_id])
+
+    assert list_result.exit_code == 0
+    assert grant.grant_id in list_result.output
+    assert revoke_result.exit_code == 0
+    assert f"Revoked grant '{grant.grant_id}'." in revoke_result.output
+    assert store.get_path_grant(grant.grant_id).status == "revoked"
 
 
 def test_notify_reload_uses_settings_scheduler_chat_id(monkeypatch, tmp_path) -> None:

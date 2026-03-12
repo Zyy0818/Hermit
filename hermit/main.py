@@ -70,6 +70,7 @@ config_app = typer.Typer(help=tr("cli.config.help", locale=CLI_LOCALE))
 profiles_app = typer.Typer(help=tr("cli.profiles.help", locale=CLI_LOCALE))
 auth_app = typer.Typer(help=tr("cli.auth.help", locale=CLI_LOCALE))
 task_app = typer.Typer(help="Task kernel inspection and approval commands.")
+task_grant_app = typer.Typer(help="Path grant inspection and revocation commands.")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(autostart_app, name="autostart")
 app.add_typer(schedule_app, name="schedule")
@@ -77,6 +78,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(profiles_app, name="profiles")
 app.add_typer(auth_app, name="auth")
 app.add_typer(task_app, name="task")
+task_app.add_typer(task_grant_app, name="grant")
 
 DIM = "\033[2m"
 CYAN = "\033[36m"
@@ -1251,6 +1253,17 @@ def task_show(task_id: str = typer.Argument(..., help="Task ID.")) -> None:
             typer.echo(f"  [{permit.permit_id}] {permit.status} {permit.action_class}")
             typer.echo(f"    decision_ref={permit.decision_ref}")
 
+    if task is not None:
+        grants = store.list_path_grants(
+            subject_kind="conversation",
+            subject_ref=task.conversation_id,
+            limit=20,
+        )
+        if grants:
+            typer.echo("\nRecent path grants:")
+            for grant in grants:
+                typer.echo(f"  [{grant.grant_id}] {grant.status} {grant.path_display}")
+
 
 @task_app.command("events")
 def task_events(task_id: str = typer.Argument(..., help="Task ID."), limit: int = 100) -> None:
@@ -1296,8 +1309,14 @@ def _task_resolution(action: str, approval_id: str, reason: str = "") -> None:
 
 @task_app.command("approve")
 def task_approve(approval_id: str = typer.Argument(..., help="Approval ID.")) -> None:
-    """Approve and resume a blocked task."""
-    _task_resolution("approve", approval_id)
+    """Approve once and resume a blocked task."""
+    _task_resolution("approve_once", approval_id)
+
+
+@task_app.command("approve-always-directory")
+def task_approve_always_directory(approval_id: str = typer.Argument(..., help="Approval ID.")) -> None:
+    """Approve and always allow this directory for the current conversation."""
+    _task_resolution("approve_always_directory", approval_id)
 
 
 @task_app.command("deny")
@@ -1312,7 +1331,56 @@ def task_deny(
 @task_app.command("resume")
 def task_resume(approval_id: str = typer.Argument(..., help="Approval ID to resume.")) -> None:
     """Resume a blocked task by approving its latest pending approval."""
-    _task_resolution("approve", approval_id)
+    _task_resolution("approve_once", approval_id)
+
+
+def _task_grant_list(
+    conversation_id: Optional[str] = typer.Option(None, help="Optional conversation ID filter."),
+    limit: int = typer.Option(50, help="Maximum number of grants to show."),
+) -> None:
+    """Show active and recent path grants."""
+    store = _get_kernel_store()
+    payload = [
+        grant.__dict__
+        for grant in store.list_path_grants(
+            subject_kind="conversation" if conversation_id else None,
+            subject_ref=conversation_id,
+            limit=limit,
+        )
+    ]
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _task_grant_revoke(grant_id: str = typer.Argument(..., help="Grant ID.")) -> None:
+    """Revoke a path grant."""
+    store = _get_kernel_store()
+    grant = store.get_path_grant(grant_id)
+    if grant is None:
+        typer.echo(f"Grant not found: {grant_id}")
+        raise typer.Exit(1)
+    store.update_path_grant(
+        grant_id,
+        status="revoked",
+        actor="user",
+        event_type="grant.revoked",
+        payload={"status": "revoked"},
+    )
+    typer.echo(f"Revoked grant '{grant_id}'.")
+
+
+@task_grant_app.command("list")
+def task_grant_list(
+    conversation_id: Optional[str] = typer.Option(None, help="Optional conversation ID filter."),
+    limit: int = typer.Option(50, help="Maximum number of grants to show."),
+) -> None:
+    """Show active and recent path grants."""
+    _task_grant_list(conversation_id=conversation_id, limit=limit)
+
+
+@task_grant_app.command("revoke")
+def task_grant_revoke(grant_id: str = typer.Argument(..., help="Grant ID.")) -> None:
+    """Revoke a path grant."""
+    _task_grant_revoke(grant_id)
 
 
 # --------------- Plugin sub-commands ---------------

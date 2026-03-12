@@ -38,7 +38,23 @@ class ApprovalService:
             approval_id,
             status="granted",
             resolved_by=resolved_by,
-            resolution={"status": "granted"},
+            resolution={"status": "granted", "mode": "once"},
+        )
+
+    def approve_once(self, approval_id: str, *, resolved_by: str = "user") -> None:
+        self.store.resolve_approval(
+            approval_id,
+            status="granted",
+            resolved_by=resolved_by,
+            resolution={"status": "granted", "mode": "once"},
+        )
+
+    def approve_always_directory(self, approval_id: str, *, resolved_by: str = "user") -> None:
+        self.store.resolve_approval(
+            approval_id,
+            status="granted",
+            resolved_by=resolved_by,
+            resolution={"status": "granted", "mode": "always_directory"},
         )
 
     def deny(self, approval_id: str, *, resolved_by: str = "user", reason: str = "") -> None:
@@ -46,5 +62,5 @@ class ApprovalService:
             approval_id,
             status="denied",
             resolved_by=resolved_by,
-            resolution={"status": "denied", "reason": reason},
+            resolution={"status": "denied", "mode": "denied", "reason": reason},
         )

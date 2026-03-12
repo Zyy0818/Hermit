@@ -43,7 +43,16 @@ _SWEEP_INTERVAL_SECONDS = 300  # 5 minutes
 # Minimum seconds between consecutive PATCH calls on the progress card.
 _PATCH_MIN_INTERVAL = 1.0
 _RAW_CONTROL_TEXT = {"开始执行", "执行吧", "确认执行", "继续执行", "approve", "deny", "通过", "批准", "同意"}
-_RAW_CONTROL_PREFIXES = ("批准 ", "拒绝 ", "approve ", "deny ")
+_RAW_CONTROL_PREFIXES = (
+    "批准 ",
+    "批准一次 ",
+    "始终允许此目录 ",
+    "拒绝 ",
+    "approve ",
+    "approve_once ",
+    "approve_always_directory ",
+    "deny ",
+)
 
 
 
@@ -304,7 +313,7 @@ class FeishuAdapter:
         approval_id = str(value.get("approval_id", "")).strip()
         message_id = str(getattr(context, "open_message_id", "") or "")
 
-        if value.get("kind") != "approval" or action_type not in {"approve", "deny"} or not approval_id:
+        if value.get("kind") != "approval" or action_type not in {"approve_once", "approve_always_directory", "deny"} or not approval_id:
             return self._card_action_response(
                 "暂不支持这个按钮操作。",
                 level="info",
@@ -344,11 +353,14 @@ class FeishuAdapter:
                 level="error",
             )
 
-        if action_type == "approve":
+        if action_type in {"approve_once", "approve_always_directory"}:
+            action_text = "已通过，正在继续执行。"
+            if action_type == "approve_always_directory":
+                action_text = "已通过，并记住此目录授权，正在继续执行。"
             return self._card_action_response(
-                "已通过，正在继续执行。",
+                action_text,
                 level="success",
-                card=build_thinking_card("已通过，正在继续执行..."),
+                card=build_thinking_card(action_text),
             )
         return self._card_action_response(
             "已拒绝，本次操作不会继续执行。",
@@ -390,6 +402,22 @@ class FeishuAdapter:
             return conversation_id.split(":", 1)[0]
         return conversation_id
 
+    @staticmethod
+    def _approval_card_kwargs(approval: Any | None) -> dict[str, str | None]:
+        if approval is None:
+            return {
+                "target_path": None,
+                "workspace_root": None,
+                "grant_scope_dir": None,
+            }
+        requested_action = dict(getattr(approval, "requested_action", {}) or {})
+        target_paths = requested_action.get("target_paths") or []
+        return {
+            "target_path": str(target_paths[0]) if target_paths else None,
+            "workspace_root": str(requested_action.get("workspace_root", "") or "") or None,
+            "grant_scope_dir": str(requested_action.get("grant_scope_dir", "") or "") or None,
+        }
+
     def _reissue_pending_approval_cards(self) -> None:
         if self._runner is None or self._client is None:
             return
@@ -419,6 +447,7 @@ class FeishuAdapter:
                 title=approval_copy.title,
                 detail=detail,
                 command_preview=command_preview,
+                **self._approval_card_kwargs(approval),
             )
             message_id = send_card(self._client, chat_id, card)
             if message_id:
@@ -579,6 +608,7 @@ class FeishuAdapter:
                     title=approval_title,
                     detail=approval_detail,
                     command_preview=command_preview,
+                    **self._approval_card_kwargs(approval),
                 )
                 if card_msg_id[0]:
                     patch_card(self._client, card_msg_id[0], approval_card)
@@ -676,7 +706,7 @@ class FeishuAdapter:
 
             result = self._runner._resolve_approval(
                 task.conversation_id,
-                action="approve",
+                action=action,
                 approval_id=approval_id,
                 on_tool_call=on_tool_call,
                 on_tool_start=on_tool_start,
@@ -685,10 +715,16 @@ class FeishuAdapter:
             next_approval_id = str(getattr(result.agent_result, "approval_id", "") or "")
             if message_id:
                 if blocked and next_approval_id:
+                    next_approval = store.get_approval(next_approval_id)
                     patch_card(
                         self._client,
                         message_id,
-                        build_approval_card(result.text, next_approval_id, steps),
+                        build_approval_card(
+                            result.text,
+                            next_approval_id,
+                            steps,
+                            **self._approval_card_kwargs(next_approval),
+                        ),
                     )
                 elif result.text:
                     patch_card(

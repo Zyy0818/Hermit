@@ -56,6 +56,13 @@ def _safe_path(root_dir: Path, relative_path: str) -> Path:
     return path
 
 
+def _write_path(root_dir: Path, raw_path: str) -> Path:
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root_dir / candidate
+    return candidate.resolve()
+
+
 def create_builtin_tool_registry(
     root_dir: Path,
     sandbox: CommandSandbox,
@@ -69,7 +76,7 @@ def create_builtin_tool_registry(
         return path.read_text(encoding="utf-8")
 
     def write_file(payload: dict[str, Any]) -> str:
-        path = _safe_path(root_dir, str(payload["path"]))
+        path = _write_path(root_dir, str(payload["path"]))
         atomic_write(path, str(payload["content"]))
         return "ok"
 

@@ -29,7 +29,11 @@ def derive_request(request: ActionRequest) -> ActionRequest:
             target_path = _resolve_target(target, workspace_root)
             derived["target_paths"] = [target_path]
             derived["sensitive_paths"] = [target_path] if _is_sensitive_path(target_path, workspace_root) else []
-            derived["outside_workspace"] = bool(workspace_root and not _inside_workspace(target_path, workspace_root))
+            outside_workspace = bool(workspace_root and not _inside_workspace(target_path, workspace_root))
+            derived["outside_workspace"] = outside_workspace
+            if outside_workspace:
+                derived["outside_workspace_roots"] = [_outside_workspace_root(target_path)]
+                derived["grant_candidate_prefix"] = _grant_candidate_prefix(target_path)
     if request.tool_name == "bash" or request.action_class == "execute_command":
         command = str(tool_input.get("command", "")).strip()
         if command:
@@ -74,6 +78,31 @@ def _is_sensitive_path(path: str, workspace_root: str) -> bool:
         rel = normalized[len(workspace_root.replace("\\", "/")) :].lstrip("/")
         return any(rel == prefix or rel.startswith(prefix) for prefix in _SENSITIVE_PREFIXES)
     return any(part in normalized for part in ("/.ssh/", "/.gnupg/", "/.aws/"))
+
+
+def _outside_workspace_root(path: str) -> str:
+    candidate = Path(path).expanduser()
+    home = Path.home().resolve()
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return str(candidate)
+    if resolved == home or home in resolved.parents:
+        parts = resolved.parts
+        home_parts = home.parts
+        if len(parts) > len(home_parts):
+            return str(Path(*parts[: len(home_parts) + 1]))
+        return str(home)
+    return resolved.anchor or str(resolved)
+
+
+def _grant_candidate_prefix(path: str) -> str:
+    candidate = Path(path).expanduser()
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        resolved = candidate
+    return str(resolved.parent)
 
 
 def _extract_hosts(command: str) -> list[str]:

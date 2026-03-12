@@ -58,7 +58,8 @@ class ApprovalCopyService:
         copy = self.describe(requested_action, approval_id=approval_id)
         return (
             f"{copy.summary}（审批编号：{approval_id}）。"
-            f"请使用 `/task approve {approval_id}`，或直接回复“批准 {approval_id}”继续执行。"
+            f"请使用 `/task approve {approval_id}`、`/task approve-always-directory {approval_id}`，"
+            f"或直接回复“批准一次 {approval_id}”/“始终允许此目录 {approval_id}”。"
         )
 
     def _format_with_optional_formatter(self, facts: dict[str, Any]) -> ApprovalCopy | None:
@@ -105,6 +106,7 @@ class ApprovalCopyService:
             "network_hosts": network_hosts,
             "command_preview": command_preview,
             "resource_scopes": [str(scope) for scope in requested_action.get("resource_scopes", [])],
+            "outside_workspace": bool(requested_action.get("outside_workspace")),
         }
 
     def _template_copy(self, facts: dict[str, Any]) -> ApprovalCopy:
@@ -134,6 +136,10 @@ class ApprovalCopyService:
                     summary = f"准备修改敏感文件：`{path}`。"
                     detail = "这可能影响本地配置、凭据或系统行为，需要你确认。"
                     return ApprovalCopy(title="确认修改敏感文件", summary=summary, detail=detail)
+                if facts.get("outside_workspace"):
+                    summary = f"准备写入 workspace 外文件：`{path}`。"
+                    detail = "你可以仅批准这一次，或始终允许此目录在当前会话中写入。"
+                    return ApprovalCopy(title="确认写入 workspace 外目录", summary=summary, detail=detail)
                 summary = f"准备修改 1 个文件：`{path}`。"
                 detail = "变更预览已生成；确认后将继续执行。"
                 return ApprovalCopy(title="确认文件修改", summary=summary, detail=detail)

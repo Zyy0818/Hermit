@@ -105,6 +105,24 @@ class ExecutionPermitRecord:
 
 
 @dataclass
+class PathGrantRecord:
+    grant_id: str
+    subject_kind: str
+    subject_ref: str
+    action_class: str
+    path_prefix: str
+    path_display: str
+    created_by: str
+    approval_ref: str | None = None
+    decision_ref: str | None = None
+    policy_ref: str | None = None
+    status: str = "active"
+    created_at: float | None = None
+    expires_at: float | None = None
+    last_used_at: float | None = None
+
+
+@dataclass
 class ArtifactRecord:
     artifact_id: str
     task_id: str | None
@@ -135,6 +153,7 @@ class ReceiptRecord:
     result_code: str = "succeeded"
     decision_ref: str | None = None
     permit_ref: str | None = None
+    grant_ref: str | None = None
     policy_ref: str | None = None
     witness_ref: str | None = None
     idempotency_key: str | None = None

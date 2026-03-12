@@ -79,6 +79,20 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
 
     target_paths = list(request.derived.get("target_paths", []))
     sensitive_paths = list(request.derived.get("sensitive_paths", []))
+    outside_workspace = bool(request.derived.get("outside_workspace"))
+    grant_ref = str(request.context.get("path_grant_ref", "") or "").strip()
+    if request.action_class in {"write_local", "patch_file"} and sensitive_paths and outside_workspace:
+        outcomes.append(
+            RuleOutcome(
+                verdict="deny",
+                reasons=[PolicyReason("protected_path", "Protected system or credential paths cannot be allowlisted.", "error")],
+                obligations=PolicyObligations(require_receipt=False),
+                normalized_constraints={"denied_paths": sensitive_paths},
+                risk_level="critical",
+            )
+        )
+        return outcomes
+
     if request.action_class in {"write_local", "patch_file"} and sensitive_paths:
         outcomes.append(
             RuleOutcome(
@@ -99,6 +113,46 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
                 risk_level="critical",
             )
         )
+
+    if request.action_class in {"write_local", "patch_file"} and outside_workspace and grant_ref:
+        outcomes.append(
+            RuleOutcome(
+                verdict="allow_with_receipt",
+                reasons=[PolicyReason("path_grant", "Existing path grant allows this out-of-workspace write.")],
+                obligations=PolicyObligations(
+                    require_receipt=True,
+                    require_preview=request.supports_preview,
+                ),
+                normalized_constraints={
+                    "allowed_paths": target_paths,
+                    "grant_ref": grant_ref,
+                },
+                risk_level=request.risk_hint or "high",
+            )
+        )
+        return outcomes
+
+    if request.action_class in {"write_local", "patch_file"} and outside_workspace:
+        outcomes.append(
+            RuleOutcome(
+                verdict="approval_required",
+                reasons=[PolicyReason("outside_workspace_write", "Writing outside the task workspace requires explicit approval.", "warning")],
+                obligations=PolicyObligations(
+                    require_receipt=True,
+                    require_preview=request.supports_preview,
+                    require_approval=True,
+                    approval_risk_level=request.risk_hint or "high",
+                ),
+                normalized_constraints={"allowed_paths": target_paths},
+                approval_packet={
+                    "title": f"Approve out-of-workspace write via {request.tool_name}",
+                    "summary": "The requested file change targets a directory outside the current workspace.",
+                    "risk_level": request.risk_hint or "high",
+                },
+                risk_level=request.risk_hint or "high",
+            )
+        )
+        return outcomes
 
     if request.action_class in {"write_local", "patch_file"} and not sensitive_paths:
         verdict = "preview_required" if request.supports_preview else "approval_required"

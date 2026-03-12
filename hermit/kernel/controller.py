@@ -7,6 +7,8 @@ from hermit.kernel.context import TaskExecutionContext
 from hermit.kernel.store import KernelStore
 
 _APPROVE_RE = re.compile(r"^(?:/task\s+approve|批准|approve)\s+([a-z0-9_]+)$", re.IGNORECASE)
+_APPROVE_ONCE_RE = re.compile(r"^(?:批准一次|approve_once)\s+([a-z0-9_]+)$", re.IGNORECASE)
+_APPROVE_ALWAYS_DIR_RE = re.compile(r"^(?:始终允许此目录|approve_always_directory)\s+([a-z0-9_]+)$", re.IGNORECASE)
 _DENY_RE = re.compile(r"^(?:/task\s+deny|拒绝|deny)\s+([a-z0-9_]+)(?:\s+(.+))?$", re.IGNORECASE)
 _PENDING_APPROVE_TEXT = {"开始执行", "执行吧", "确认执行", "继续执行", "approve", "通过", "批准", "同意"}
 _AUTO_PARENT = object()
@@ -115,11 +117,17 @@ class TaskController:
         stripped = text.strip()
         match = _APPROVE_RE.match(stripped)
         if match:
-            return ("approve", match.group(1), "")
+            return ("approve_once", match.group(1), "")
+        match = _APPROVE_ONCE_RE.match(stripped)
+        if match:
+            return ("approve_once", match.group(1), "")
+        match = _APPROVE_ALWAYS_DIR_RE.match(stripped)
+        if match:
+            return ("approve_always_directory", match.group(1), "")
         match = _DENY_RE.match(stripped)
         if match:
             return ("deny", match.group(1), match.group(2) or "")
         pending = self.store.get_latest_pending_approval(conversation_id)
         if pending and stripped in _PENDING_APPROVE_TEXT:
-            return ("approve", pending.approval_id, "")
+            return ("approve_once", pending.approval_id, "")
         return None

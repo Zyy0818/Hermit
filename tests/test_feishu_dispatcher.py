@@ -462,7 +462,7 @@ def test_feishu_adapter_card_action_submits_approval_job(monkeypatch) -> None:
 
     event = SimpleNamespace(
         event=SimpleNamespace(
-            action=SimpleNamespace(value={"kind": "approval", "action": "approve", "approval_id": "approval_123"}),
+            action=SimpleNamespace(value={"kind": "approval", "action": "approve_once", "approval_id": "approval_123"}),
             context=SimpleNamespace(open_message_id="om_card_1"),
         )
     )
@@ -470,7 +470,7 @@ def test_feishu_adapter_card_action_submits_approval_job(monkeypatch) -> None:
 
     assert len(submitted) == 1
     assert submitted[0][0] == adapter._handle_approval_action
-    assert submitted[0][1] == ("approval_123", "approve", "om_card_1")
+    assert submitted[0][1] == ("approval_123", "approve_once", "om_card_1")
     assert response.toast is not None
     assert response.toast.content == "已通过，正在继续执行。"
 

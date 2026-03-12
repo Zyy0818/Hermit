@@ -211,9 +211,11 @@ def test_task_controller_prefers_latest_pending_approval_for_natural_language(tm
     )
 
     assert store.get_task(second.task_id).parent_task_id == first.task_id
-    assert controller.resolve_text_command("chat-approval", "开始执行") == ("approve", approval.approval_id, "")
-    assert controller.resolve_text_command("chat-approval", "通过") == ("approve", approval.approval_id, "")
-    assert controller.resolve_text_command("chat-approval", "批准") == ("approve", approval.approval_id, "")
+    assert controller.resolve_text_command("chat-approval", "开始执行") == ("approve_once", approval.approval_id, "")
+    assert controller.resolve_text_command("chat-approval", "通过") == ("approve_once", approval.approval_id, "")
+    assert controller.resolve_text_command("chat-approval", "批准") == ("approve_once", approval.approval_id, "")
+    assert controller.resolve_text_command("chat-approval", f"批准一次 {approval.approval_id}") == ("approve_once", approval.approval_id, "")
+    assert controller.resolve_text_command("chat-approval", f"始终允许此目录 {approval.approval_id}") == ("approve_always_directory", approval.approval_id, "")
 
 
 def test_tool_executor_blocks_sensitive_mutation_and_creates_preview_artifact(tmp_path: Path) -> None:
@@ -457,6 +459,132 @@ def test_policy_engine_classifies_write_as_preview_with_approval(tmp_path: Path)
     assert decision.obligations.require_preview is True
     assert decision.obligations.require_approval is False
     assert decision.approval_packet is None
+
+
+def test_policy_engine_requires_approval_for_workspace_external_write(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    outside_dir = tmp_path / "Desktop"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    registry = _write_registry(workspace)
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    ctx = TaskController(store).start_task(
+        conversation_id="chat-write-external",
+        goal="update file",
+        source_channel="chat",
+        kind="respond",
+        workspace_root=str(workspace),
+    )
+
+    decision = PolicyEngine().evaluate(
+        registry.get("write_file"),
+        {"path": str(outside_dir / "weather.md"), "content": "hello\n"},
+        attempt_ctx=ctx,
+    )
+
+    assert decision.decision == "approval_required"
+    assert decision.obligations.require_preview is True
+    assert decision.obligations.require_approval is True
+    assert decision.approval_packet is not None
+
+
+def test_tool_executor_workspace_external_write_approve_once_requires_reapproval(tmp_path: Path) -> None:
+    store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
+    outside_dir = tmp_path / "Desktop"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    target = outside_dir / "weather.md"
+
+    blocked = executor.execute(
+        ctx,
+        "write_file",
+        {"path": str(target), "content": "one\n"},
+    )
+
+    assert blocked.blocked is True
+    assert blocked.approval_id is not None
+
+    ApprovalService(store).approve_once(blocked.approval_id)
+    approved = executor.execute(
+        ctx,
+        "write_file",
+        {"path": str(target), "content": "one\n"},
+    )
+
+    assert approved.blocked is False
+    assert approved.grant_ref is None
+    assert target.read_text(encoding="utf-8") == "one\n"
+
+    receipt = store.list_receipts(task_id=ctx.task_id, limit=10)[0]
+    assert receipt.approval_ref == blocked.approval_id
+    assert receipt.grant_ref is None
+    assert "one-time approval" in receipt.result_summary
+
+    blocked_again = executor.execute(
+        ctx,
+        "write_file",
+        {"path": str(target), "content": "two\n"},
+    )
+
+    assert blocked_again.blocked is True
+    assert blocked_again.approval_id is not None
+    assert blocked_again.approval_id != blocked.approval_id
+
+
+def test_tool_executor_workspace_external_write_always_directory_creates_grant(tmp_path: Path) -> None:
+    store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
+    outside_dir = tmp_path / "Desktop"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    first_target = outside_dir / "weather.md"
+    second_target = outside_dir / "notes.md"
+
+    blocked = executor.execute(
+        ctx,
+        "write_file",
+        {"path": str(first_target), "content": "sunny\n"},
+    )
+
+    assert blocked.blocked is True
+    assert blocked.approval_id is not None
+
+    ApprovalService(store).approve_always_directory(blocked.approval_id)
+    approved = executor.execute(
+        ctx,
+        "write_file",
+        {"path": str(first_target), "content": "sunny\n"},
+    )
+
+    assert approved.blocked is False
+    assert approved.grant_ref is not None
+    assert first_target.read_text(encoding="utf-8") == "sunny\n"
+
+    grants = store.list_path_grants(
+        subject_kind="conversation",
+        subject_ref=ctx.conversation_id,
+        status="active",
+        action_class="write_local",
+        limit=10,
+    )
+    assert len(grants) == 1
+    assert grants[0].grant_id == approved.grant_ref
+    assert grants[0].path_prefix == str(outside_dir.resolve())
+
+    auto_allowed = executor.execute(
+        ctx,
+        "write_file",
+        {"path": str(second_target), "content": "memo\n"},
+    )
+
+    assert auto_allowed.blocked is False
+    assert auto_allowed.approval_id is None
+    assert auto_allowed.grant_ref == approved.grant_ref
+    assert second_target.read_text(encoding="utf-8") == "memo\n"
+
+    receipts = store.list_receipts(task_id=ctx.task_id, limit=10)
+    assert receipts[0].grant_ref == approved.grant_ref
+    assert "existing directory grant" in receipts[0].result_summary
+    events = store.list_events(limit=100)
+    assert any(event["event_type"] == "grant.created" for event in events)
+    assert any(event["event_type"] == "grant.used" for event in events)
 
 
 def test_policy_engine_denies_dangerous_shell_and_approves_git_push(tmp_path: Path) -> None:

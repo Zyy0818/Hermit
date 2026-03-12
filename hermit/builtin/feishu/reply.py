@@ -854,8 +854,11 @@ def build_approval_card(
     title: str | None = None,
     detail: str | None = None,
     command_preview: str | None = None,
+    target_path: str | None = None,
+    workspace_root: str | None = None,
+    grant_scope_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Build a dedicated approval card with approve/deny buttons."""
+    """Build a dedicated approval card with deny/approve-once/approve-always buttons."""
     button_row = {
         "tag": "column_set",
         "horizontal_spacing": "8px",
@@ -867,7 +870,7 @@ def build_approval_card(
                 "elements": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "不通过"},
+                        "text": {"tag": "plain_text", "content": "拒绝"},
                         "type": "default",
                         "width": "fill",
                         "behaviors": [
@@ -890,7 +893,7 @@ def build_approval_card(
                 "elements": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "通过"},
+                        "text": {"tag": "plain_text", "content": "仅一次"},
                         "type": "primary_filled",
                         "width": "fill",
                         "behaviors": [
@@ -898,7 +901,30 @@ def build_approval_card(
                                 "type": "callback",
                                 "value": {
                                     "kind": "approval",
-                                    "action": "approve",
+                                    "action": "approve_once",
+                                    "approval_id": approval_id,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "始终允许此目录"},
+                        "type": "primary",
+                        "width": "fill",
+                        "behaviors": [
+                            {
+                                "type": "callback",
+                                "value": {
+                                    "kind": "approval",
+                                    "action": "approve_always_directory",
                                     "approval_id": approval_id,
                                 },
                             }
@@ -914,6 +940,18 @@ def build_approval_card(
     body_elements: list[dict[str, Any]] = [_markdown_element(clean_text, margin="0 0 8px 0")]
     if clean_detail and clean_detail != clean_text:
         body_elements.append(_markdown_element(clean_detail, text_size="small", margin="0 0 8px 0"))
+    if target_path:
+        body_elements.append(_markdown_element(f"目标路径：`{sanitize_for_feishu(target_path)}`", text_size="small", margin="0 0 6px 0"))
+    if workspace_root:
+        body_elements.append(_markdown_element(f"当前 workspace：`{sanitize_for_feishu(workspace_root)}`", text_size="small", margin="0 0 6px 0"))
+    if grant_scope_dir:
+        body_elements.append(
+            _markdown_element(
+                f"授权范围目录：`{sanitize_for_feishu(grant_scope_dir)}`\n\n*“始终允许此目录”只对当前会话生效。*",
+                text_size="small",
+                margin="0 0 8px 0",
+            )
+        )
     if command:
         body_elements.append(
             {

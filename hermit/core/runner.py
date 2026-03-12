@@ -239,7 +239,7 @@ class AgentRunner:
                 approval_id,
                 status="denied",
                 resolved_by="user",
-                resolution={"reason": reason},
+                resolution={"status": "denied", "mode": "denied", "reason": reason},
             )
             text = (
                 "本次审批已拒绝，当前操作不会继续。"
@@ -251,12 +251,20 @@ class AgentRunner:
             self.session_manager.save(session)
             return DispatchResult(text=text, is_command=True)
 
-        self.task_controller.store.resolve_approval(
-            approval_id,
-            status="granted",
-            resolved_by="user",
-            resolution={"status": "granted"},
-        )
+        if action == "approve_always_directory":
+            self.task_controller.store.resolve_approval(
+                approval_id,
+                status="granted",
+                resolved_by="user",
+                resolution={"status": "granted", "mode": "always_directory"},
+            )
+        else:
+            self.task_controller.store.resolve_approval(
+                approval_id,
+                status="granted",
+                resolved_by="user",
+                resolution={"status": "granted", "mode": "once"},
+            )
         task_ctx = self.task_controller.context_for_attempt(approval.step_attempt_id)
         result = self.agent.resume(
             step_attempt_id=approval.step_attempt_id,
