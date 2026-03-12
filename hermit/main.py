@@ -10,8 +10,10 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+import traceback
 
 import typer
 
@@ -145,7 +147,11 @@ def _build_anthropic_client_kwargs(settings: Settings) -> dict:
 def _auth_status_summary(settings: Settings) -> dict[str, str | bool | None]:
     if settings.provider == "claude":
         if settings.claude_api_key:
-            return {"provider": "claude", "ok": True, "source": "HERMIT_CLAUDE_API_KEY / ANTHROPIC_API_KEY"}
+            return {
+                "provider": "claude",
+                "ok": True,
+                "source": "HERMIT_CLAUDE_API_KEY / ANTHROPIC_API_KEY",
+            }
         if settings.claude_auth_token:
             return {
                 "provider": "claude",
@@ -156,12 +162,25 @@ def _auth_status_summary(settings: Settings) -> dict[str, str | bool | None]:
         return {"provider": "claude", "ok": False, "source": None}
     if settings.provider == "codex":
         if settings.openai_api_key:
-            return {"provider": "codex", "ok": True, "source": "HERMIT_OPENAI_API_KEY / OPENAI_API_KEY"}
+            return {
+                "provider": "codex",
+                "ok": True,
+                "source": "HERMIT_OPENAI_API_KEY / OPENAI_API_KEY",
+            }
         if settings.resolved_openai_api_key:
             return {"provider": "codex", "ok": True, "source": "~/.codex/auth.json api_key"}
-        return {"provider": "codex", "ok": False, "source": None, "auth_mode": settings.codex_auth_mode}
+        return {
+            "provider": "codex",
+            "ok": False,
+            "source": None,
+            "auth_mode": settings.codex_auth_mode,
+        }
     if settings.provider == "codex-oauth":
-        ok = bool(settings.codex_auth_file_exists and settings.codex_access_token and settings.codex_refresh_token)
+        ok = bool(
+            settings.codex_auth_file_exists
+            and settings.codex_access_token
+            and settings.codex_refresh_token
+        )
         return {
             "provider": "codex-oauth",
             "ok": ok,
@@ -225,6 +244,7 @@ def _ensure_workspace(settings: Settings) -> None:
     ensure_default_context_file(settings.context_file)
     if not settings.memory_file.exists():
         from hermit.builtin.memory.engine import MemoryEngine
+
         MemoryEngine(settings.memory_file).save({})
 
 
@@ -270,9 +290,7 @@ def _require_auth(settings: Settings) -> None:
             raise typer.BadParameter(
                 "Codex OAuth provider requires a local Codex login with ~/.codex/auth.json."
             )
-        raise typer.BadParameter(
-            "Missing authentication for the selected provider."
-        )
+        raise typer.BadParameter("Missing authentication for the selected provider.")
 
 
 @dataclass(frozen=True)
@@ -316,7 +334,9 @@ def _format_preflight_item(item: _PreflightItem) -> str:
     return f"  {prefix} {item.label}: {item.detail}"
 
 
-def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_PreflightItem], list[str]]:
+def _build_serve_preflight(
+    adapter: str, settings: Settings
+) -> tuple[list[_PreflightItem], list[str]]:
     env_path = settings.base_dir / ".env"
     env_file_keys = _read_env_file_keys()
     items: list[_PreflightItem] = [
@@ -427,9 +447,15 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
             errors.append(
                 "缺少 Codex/OpenAI 鉴权。请设置 `HERMIT_OPENAI_API_KEY` 或 `OPENAI_API_KEY`。"
             )
-            items.append(_PreflightItem(label="Codex 鉴权", ok=False, detail="未找到 OpenAI API Key"))
+            items.append(
+                _PreflightItem(label="Codex 鉴权", ok=False, detail="未找到 OpenAI API Key")
+            )
     elif settings.provider == "codex-oauth":
-        if settings.codex_auth_file_exists and settings.codex_access_token and settings.codex_refresh_token:
+        if (
+            settings.codex_auth_file_exists
+            and settings.codex_access_token
+            and settings.codex_refresh_token
+        ):
             auth_mode = settings.codex_auth_mode or "unknown"
             items.append(
                 _PreflightItem(
@@ -452,7 +478,11 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
             )
         else:
             errors.append("缺少 Codex OAuth 鉴权。请先在本机完成 Codex 登录。")
-            items.append(_PreflightItem(label="Codex OAuth 鉴权", ok=False, detail="未找到 ~/.codex/auth.json"))
+            items.append(
+                _PreflightItem(
+                    label="Codex OAuth 鉴权", ok=False, detail="未找到 ~/.codex/auth.json"
+                )
+            )
 
     model_key = _resolve_env_key("HERMIT_MODEL")
     items.append(
@@ -484,8 +514,7 @@ def _build_serve_preflight(adapter: str, settings: Settings) -> tuple[list[_Pref
             )
         else:
             errors.append(
-                "缺少飞书 App ID。请设置 `HERMIT_FEISHU_APP_ID` "
-                "（兼容旧变量名 `FEISHU_APP_ID`）。"
+                "缺少飞书 App ID。请设置 `HERMIT_FEISHU_APP_ID` （兼容旧变量名 `FEISHU_APP_ID`）。"
             )
             items.append(
                 _PreflightItem(
@@ -568,9 +597,7 @@ def setup() -> None:
     settings = get_settings()
     env_path = settings.base_dir / ".env"
     if env_path.exists():
-        overwrite = typer.confirm(
-            f"Config already exists at {env_path}. Overwrite?", default=False
-        )
+        overwrite = typer.confirm(f"Config already exists at {env_path}. Overwrite?", default=False)
         if not overwrite:
             typer.echo("Setup cancelled.")
             raise typer.Exit()
@@ -796,6 +823,14 @@ def chat(session_id: str = "cli", debug: bool = False) -> None:
 _serve_log = logging.getLogger("hermit.serve")
 
 
+@dataclass(frozen=True)
+class _ServeRunResult:
+    reload_requested: bool
+    reason: str
+    detail: str
+    signal_name: str | None = None
+
+
 def _pid_path(settings: Any, adapter: str) -> Path:
     return settings.base_dir / f"serve-{adapter}.pid"
 
@@ -819,44 +854,145 @@ def _read_pid(path: Path) -> Optional[int]:
         return None
 
 
-async def _serve_with_reload(
+def _serve_log_dir(settings: Any) -> Path:
+    path = settings.base_dir / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _serve_status_path(settings: Any, adapter: str) -> Path:
+    return _serve_log_dir(settings) / f"serve-{adapter}-status.json"
+
+
+def _serve_exit_history_path(settings: Any, adapter: str) -> Path:
+    return _serve_log_dir(settings) / f"serve-{adapter}-exit-history.jsonl"
+
+
+def _iso_now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _configure_unbuffered_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(line_buffering=True, write_through=True)
+            except TypeError:
+                reconfigure(line_buffering=True)
+
+
+def _write_serve_status(
+    settings: Any,
+    adapter: str,
+    *,
+    phase: str,
+    reason: str,
+    detail: str,
+    signal_name: str | None = None,
+    run_started_at: str | None = None,
+    exc: BaseException | None = None,
+    append_history: bool = False,
+) -> None:
+    payload: dict[str, Any] = {
+        "adapter": adapter,
+        "pid": os.getpid(),
+        "phase": phase,
+        "reason": reason,
+        "detail": detail,
+        "signal": signal_name,
+        "run_started_at": run_started_at,
+        "updated_at": _iso_now(),
+    }
+    if exc is not None:
+        payload["exception_type"] = type(exc).__name__
+        payload["exception_message"] = str(exc)
+        payload["traceback"] = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )
+
+    _serve_status_path(settings, adapter).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if append_history:
+        with _serve_exit_history_path(settings, adapter).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+async def _serve_with_signals(
     adapter_instance: Any,
     runner: Any,
-) -> bool:
-    """Run the adapter until it exits or SIGHUP is received.
+) -> _ServeRunResult:
+    """Run the adapter until it exits or a lifecycle signal is received.
 
-    Returns True if a reload was requested (SIGHUP), False otherwise.
+    Returns a structured result describing why the adapter stopped.
     """
     loop = asyncio.get_running_loop()
     reload_event = asyncio.Event()
+    terminate_event = asyncio.Event()
 
     if sys.platform != "win32":
         loop.add_signal_handler(signal.SIGHUP, reload_event.set)
+        loop.add_signal_handler(signal.SIGTERM, terminate_event.set)
 
     start_task = asyncio.ensure_future(adapter_instance.start(runner))
     reload_task = asyncio.ensure_future(reload_event.wait())
+    terminate_task = asyncio.ensure_future(terminate_event.wait())
 
-    done, pending = await asyncio.wait(
-        {start_task, reload_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    try:
+        done, pending = await asyncio.wait(
+            {start_task, reload_task, terminate_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
 
-    for task in pending:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for task in pending:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
-    if reload_event.is_set():
-        _serve_log.info("SIGHUP received — stopping adapter for reload...")
-        await adapter_instance.stop()
-        return True
+        if reload_event.is_set():
+            _serve_log.info("SIGHUP received — stopping adapter for reload...")
+            await adapter_instance.stop()
+            return _ServeRunResult(
+                reload_requested=True,
+                reason="signal",
+                detail="SIGHUP received — stopping adapter for reload.",
+                signal_name="SIGHUP",
+            )
 
-    if start_task in done:
-        exc = start_task.exception()
-        if exc is not None:
-            raise exc
+        if terminate_event.is_set():
+            _serve_log.warning("SIGTERM received — stopping adapter for shutdown...")
+            await adapter_instance.stop()
+            return _ServeRunResult(
+                reload_requested=False,
+                reason="signal",
+                detail="SIGTERM received — stopping adapter for shutdown.",
+                signal_name="SIGTERM",
+            )
 
-    return False
+        if start_task in done:
+            exc = start_task.exception()
+            if exc is not None:
+                raise exc
+            return _ServeRunResult(
+                reload_requested=False,
+                reason="adapter_stopped",
+                detail="Adapter returned control without an explicit reload request.",
+            )
+
+        return _ServeRunResult(
+            reload_requested=False,
+            reason="unknown",
+            detail="Serve loop exited without a recognized stop condition.",
+        )
+    finally:
+        if sys.platform != "win32":
+            with contextlib.suppress(NotImplementedError):
+                loop.remove_signal_handler(signal.SIGHUP)
+            with contextlib.suppress(NotImplementedError):
+                loop.remove_signal_handler(signal.SIGTERM)
 
 
 def _notify_reload(settings: Any, adapter: str) -> None:
@@ -876,10 +1012,7 @@ def _notify_reload(settings: Any, adapter: str) -> None:
             HookEvent.DISPATCH_RESULT,
             source="system",
             title="Hermit Reloaded",
-            result_text=(
-                f"Hermit (`{adapter}`) 已成功重新加载。\n\n"
-                "配置、插件、工具已全部重建。"
-            ),
+            result_text=(f"Hermit (`{adapter}`) 已成功重新加载。\n\n配置、插件、工具已全部重建。"),
             success=True,
             notify={"feishu_chat_id": chat_id},
         )
@@ -896,6 +1029,7 @@ def serve(adapter: str = "feishu") -> None:
     restarts.  Use ``hermit reload`` to send SIGHUP conveniently.
     """
 
+    _configure_unbuffered_stdio()
     settings = get_settings()
     _ensure_workspace(settings)
     configure_logging(settings.log_level)
@@ -903,9 +1037,28 @@ def serve(adapter: str = "feishu") -> None:
 
     pid_file = _pid_path(settings, adapter)
     _write_pid(pid_file)
+    _write_serve_status(
+        settings,
+        adapter,
+        phase="starting",
+        reason="startup",
+        detail=f"Serve command is starting for adapter '{adapter}'.",
+    )
 
     try:
         _serve_loop(adapter, pid_file)
+    except BaseException as exc:
+        refreshed_settings = get_settings()
+        _write_serve_status(
+            refreshed_settings,
+            adapter,
+            phase="crashed",
+            reason="exception",
+            detail=f"Serve process exited because of an unhandled {type(exc).__name__}.",
+            exc=exc,
+            append_history=True,
+        )
+        raise
     finally:
         _remove_pid(pid_file)
 
@@ -918,6 +1071,7 @@ def _serve_loop(adapter: str, pid_file: Path) -> None:
         get_settings.cache_clear()
         settings = get_settings()
         configure_logging(settings.log_level)
+        cycle_started_at = _iso_now()
 
         pm = PluginManager(settings=settings)
         builtin_dir = Path(__file__).parent / "builtin"
@@ -932,29 +1086,64 @@ def _serve_loop(adapter: str, pid_file: Path) -> None:
         preloaded = getattr(adapter_instance, "required_skills", [])
         runner, _ = _build_runner(settings, preloaded_skills=preloaded, pm=pm, serve_mode=True)
         pm.hooks.fire(HookEvent.SERVE_START, runner=runner, settings=settings)
+        _write_serve_status(
+            settings,
+            adapter,
+            phase="running",
+            reason="startup",
+            detail=f"Adapter '{adapter}' is running and waiting for events.",
+            run_started_at=cycle_started_at,
+        )
 
         typer.echo(f"Starting Hermit with '{adapter}' adapter...")
 
-        reload_requested = False
+        run_result = _ServeRunResult(
+            reload_requested=False,
+            reason="unknown",
+            detail="Serve loop exited without updating the run result.",
+        )
         with _caffeinate(settings):
             try:
-                reload_requested = asyncio.run(
-                    _serve_with_reload(adapter_instance, runner)
-                )
+                run_result = asyncio.run(_serve_with_signals(adapter_instance, runner))
             except KeyboardInterrupt:
                 typer.echo("\nShutting down...")
                 asyncio.run(adapter_instance.stop())
+                run_result = _ServeRunResult(
+                    reload_requested=False,
+                    reason="signal",
+                    detail="SIGINT received — stopping adapter for shutdown.",
+                    signal_name="SIGINT",
+                )
             finally:
                 pm.hooks.fire(HookEvent.SERVE_STOP)
                 pm.stop_mcp_servers()
 
-        if reload_requested:
+        if run_result.reload_requested:
             _serve_log.info("Reloading Hermit...")
             typer.echo("Reloading Hermit — rebuilding config, plugins, tools...")
+            _write_serve_status(
+                settings,
+                adapter,
+                phase="reloading",
+                reason=run_result.reason,
+                detail=run_result.detail,
+                signal_name=run_result.signal_name,
+                run_started_at=cycle_started_at,
+            )
             _write_pid(pid_file)
             _notify_reload(settings, adapter)
             continue
 
+        _write_serve_status(
+            settings,
+            adapter,
+            phase="stopped",
+            reason=run_result.reason,
+            detail=run_result.detail,
+            signal_name=run_result.signal_name,
+            run_started_at=cycle_started_at,
+            append_history=True,
+        )
         break
 
 
@@ -976,8 +1165,7 @@ def reload(adapter: str = "feishu") -> None:
 
     if pid is None:
         typer.echo(
-            f"No running serve process found for adapter '{adapter}'.\n"
-            f"  PID file: {pid_file}"
+            f"No running serve process found for adapter '{adapter}'.\n  PID file: {pid_file}"
         )
         raise typer.Exit(1)
 
@@ -1038,7 +1226,9 @@ def task_show(task_id: str = typer.Argument(..., help="Task ID.")) -> None:
         copy_service = ApprovalCopyService()
         for approval in approvals:
             typer.echo(f"  [{approval.approval_id}] {approval.status} {approval.approval_type}")
-            summary = copy_service.resolve_copy(approval.requested_action, approval.approval_id).summary
+            summary = copy_service.resolve_copy(
+                approval.requested_action, approval.approval_id
+            ).summary
             typer.echo(f"    {summary}")
 
 
@@ -1046,11 +1236,15 @@ def task_show(task_id: str = typer.Argument(..., help="Task ID.")) -> None:
 def task_events(task_id: str = typer.Argument(..., help="Task ID."), limit: int = 100) -> None:
     """Show task events."""
     store = _get_kernel_store()
-    typer.echo(json.dumps(store.list_events(task_id=task_id, limit=limit), ensure_ascii=False, indent=2))
+    typer.echo(
+        json.dumps(store.list_events(task_id=task_id, limit=limit), ensure_ascii=False, indent=2)
+    )
 
 
 @task_app.command("receipts")
-def task_receipts(task_id: Optional[str] = typer.Option(None, help="Optional task ID filter."), limit: int = 50) -> None:
+def task_receipts(
+    task_id: Optional[str] = typer.Option(None, help="Optional task ID filter."), limit: int = 50
+) -> None:
     """Show receipts."""
     store = _get_kernel_store()
     payload = [receipt.__dict__ for receipt in store.list_receipts(task_id=task_id, limit=limit)]
@@ -1103,6 +1297,7 @@ def task_resume(approval_id: str = typer.Argument(..., help="Approval ID to resu
 
 # --------------- Plugin sub-commands ---------------
 
+
 @plugin_app.command("list")
 def plugin_list() -> None:
     """List discovered plugins (builtin + installed)."""
@@ -1137,7 +1332,8 @@ def plugin_install(url: str) -> None:
     typer.echo(f"Cloning {url} → {target}")
     result = subprocess.run(
         ["git", "clone", "--depth", "1", url, str(target)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         typer.echo(f"git clone failed:\n{result.stderr}")
@@ -1196,6 +1392,7 @@ def plugin_info(name: str) -> None:
 
 # --------------- Autostart sub-commands ---------------
 
+
 @autostart_app.command("enable")
 def autostart_enable(
     adapter: str = typer.Option("feishu", help="Adapter to run (e.g. feishu)."),
@@ -1205,6 +1402,7 @@ def autostart_enable(
     Multiple adapters each get their own LaunchAgent and do not conflict.
     """
     from hermit import autostart as _autostart
+
     typer.echo(_autostart.enable(adapter=adapter))
 
 
@@ -1214,6 +1412,7 @@ def autostart_disable(
 ) -> None:
     """Remove the launchd LaunchAgent for a specific adapter."""
     from hermit import autostart as _autostart
+
     typer.echo(_autostart.disable(adapter=adapter))
 
 
@@ -1223,10 +1422,12 @@ def autostart_status(
 ) -> None:
     """Show auto-start state for one adapter or all configured agents."""
     from hermit import autostart as _autostart
+
     typer.echo(_autostart.status(adapter=adapter))
 
 
 # --------------- Schedule sub-commands ---------------
+
 
 def _get_schedule_store() -> KernelStore:
     return _get_kernel_store()
@@ -1253,8 +1454,10 @@ def schedule_list() -> None:
     for j in jobs:
         status = "enabled" if j.enabled else "disabled"
         schedule_info = j.cron_expr or (
-            f"once at {fmt(j.once_at)}" if j.once_at
-            else f"every {j.interval_seconds}s" if j.interval_seconds
+            f"once at {fmt(j.once_at)}"
+            if j.once_at
+            else f"every {j.interval_seconds}s"
+            if j.interval_seconds
             else "unknown"
         )
         typer.echo(
@@ -1270,7 +1473,9 @@ def schedule_add(
     name: str = typer.Option(..., help="Task name."),
     prompt: str = typer.Option(..., help="Agent prompt to execute."),
     cron: Optional[str] = typer.Option(None, help="Cron expression (e.g. '0 9 * * 1-5')."),
-    once: Optional[str] = typer.Option(None, help="One-time datetime (ISO format, e.g. '2026-03-15T14:00')."),
+    once: Optional[str] = typer.Option(
+        None, help="One-time datetime (ISO format, e.g. '2026-03-15T14:00')."
+    ),
     interval: Optional[int] = typer.Option(None, help="Interval in seconds (minimum 60)."),
 ) -> None:
     """Add a new scheduled task."""
@@ -1288,6 +1493,7 @@ def schedule_add(
     if cron:
         try:
             from croniter import croniter
+
             croniter(cron)
         except (ValueError, KeyError) as exc:
             typer.echo(f"Error: invalid cron expression: {exc}")
@@ -1356,8 +1562,11 @@ def schedule_history(
 ) -> None:
     """Show execution history for scheduled tasks."""
     import datetime
+
     store = _get_schedule_store()
-    records = [record.to_dict() for record in store.list_schedule_history(job_id=job_id, limit=limit)]
+    records = [
+        record.to_dict() for record in store.list_schedule_history(job_id=job_id, limit=limit)
+    ]
 
     if not records:
         typer.echo("No execution history.")
@@ -1365,7 +1574,9 @@ def schedule_history(
 
     for r in records:
         status = "OK" if r.get("success") else "FAIL"
-        started = datetime.datetime.fromtimestamp(r.get("started_at", 0)).strftime("%Y-%m-%d %H:%M:%S")
+        started = datetime.datetime.fromtimestamp(r.get("started_at", 0)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         duration = r.get("finished_at", 0) - r.get("started_at", 0)
         preview = (r.get("result_text", "") or "")[:100].replace("\n", " ")
         typer.echo(f"  [{status}] {r.get('job_name', '?')} @ {started} ({duration:.1f}s)")

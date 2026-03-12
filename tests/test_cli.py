@@ -38,7 +38,9 @@ def test_setup_writes_env_file(tmp_path, monkeypatch) -> None:
     result = runner.invoke(app, ["setup"])
 
     assert result.exit_code == 0
-    assert (tmp_path / ".hermit" / ".env").read_text(encoding="utf-8") == "ANTHROPIC_API_KEY=sk-ant-test\n"
+    assert (tmp_path / ".hermit" / ".env").read_text(
+        encoding="utf-8"
+    ) == "ANTHROPIC_API_KEY=sk-ant-test\n"
 
 
 def test_setup_shows_adapter_flag_in_next_steps(tmp_path, monkeypatch) -> None:
@@ -108,6 +110,71 @@ def test_serve_preflight_shows_resolved_env_sources(tmp_path, monkeypatch) -> No
     assert "[OK] 飞书 App ID: HERMIT_FEISHU_APP_ID (shell env)" in result.output
     assert "[OK] 飞书 App Secret: HERMIT_FEISHU_APP_SECRET (shell env)" in result.output
     assert serve_calls and serve_calls[0][0] == "feishu"
+
+
+def test_write_serve_status_persists_latest_status_and_history(tmp_path, monkeypatch) -> None:
+    import hermit.main as main_mod
+    from hermit.config import get_settings
+
+    base_dir = tmp_path / ".hermit"
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    get_settings.cache_clear()
+
+    settings = get_settings()
+    main_mod._write_serve_status(
+        settings,
+        "feishu",
+        phase="stopped",
+        reason="signal",
+        detail="SIGTERM received — stopping adapter for shutdown.",
+        signal_name="SIGTERM",
+        run_started_at="2026-03-12T14:03:09+08:00",
+        append_history=True,
+    )
+
+    status_path = base_dir / "logs" / "serve-feishu-status.json"
+    history_path = base_dir / "logs" / "serve-feishu-exit-history.jsonl"
+
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["phase"] == "stopped"
+    assert status["reason"] == "signal"
+    assert status["signal"] == "SIGTERM"
+    assert status["run_started_at"] == "2026-03-12T14:03:09+08:00"
+
+    history_lines = history_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(history_lines) == 1
+    assert json.loads(history_lines[0])["detail"].startswith("SIGTERM received")
+
+
+def test_serve_records_crash_status_when_serve_loop_raises(tmp_path, monkeypatch) -> None:
+    import hermit.main as main_mod
+    from hermit.config import get_settings
+
+    base_dir = tmp_path / ".hermit"
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("HERMIT_FEISHU_APP_ID", "cli_xxx")
+    monkeypatch.setenv("HERMIT_FEISHU_APP_SECRET", "secret")
+    get_settings.cache_clear()
+
+    def fake_serve_loop(adapter: str, pid_file) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main_mod, "_serve_loop", fake_serve_loop)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["serve"])
+
+    status_path = base_dir / "logs" / "serve-feishu-status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RuntimeError)
+    assert not (base_dir / "serve-feishu.pid").exists()
+    assert status["phase"] == "crashed"
+    assert status["reason"] == "exception"
+    assert status["exception_type"] == "RuntimeError"
+    assert "boom" in status["exception_message"]
 
 
 def test_profiles_list_reads_config_toml(tmp_path, monkeypatch) -> None:
@@ -342,7 +409,9 @@ def test_task_approve_and_deny_commands_delegate_to_runner(tmp_path, monkeypatch
     calls: list[tuple[str, str, str, str]] = []
 
     class FakeRunner:
-        def _resolve_approval(self, conversation_id: str, *, action: str, approval_id: str, reason: str = ""):
+        def _resolve_approval(
+            self, conversation_id: str, *, action: str, approval_id: str, reason: str = ""
+        ):
             calls.append((conversation_id, action, approval_id, reason))
             return SimpleNamespace(text=f"{action}:{approval_id}")
 
@@ -444,7 +513,9 @@ def test_reload_removes_stale_pid_file(tmp_path, monkeypatch) -> None:
     pid_path = base_dir / "serve-feishu.pid"
     pid_path.parent.mkdir(parents=True)
     pid_path.write_text("12345", encoding="utf-8")
-    monkeypatch.setattr(main_mod.os, "kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
+    monkeypatch.setattr(
+        main_mod.os, "kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError())
+    )
 
     runner = CliRunner()
     result = runner.invoke(app, ["reload"])

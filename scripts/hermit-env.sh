@@ -54,4 +54,6 @@ case "${ENV_NAME}" in
     ;;
 esac
 
+export PYTHONUNBUFFERED=1
+
 exec /opt/homebrew/bin/uv run --project "${ROOT_DIR}" --python 3.11 python -m hermit.main "$@"

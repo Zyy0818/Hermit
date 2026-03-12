@@ -46,6 +46,7 @@ Hermit 的取舍很明确：
 - [`docs/configuration.md`](docs/configuration.md)
 - [`docs/providers-and-profiles.md`](docs/providers-and-profiles.md)
 - [`docs/cli-and-operations.md`](docs/cli-and-operations.md)
+- [`docs/serve-troubleshooting.md`](docs/serve-troubleshooting.md)
 - [`docs/desktop-companion.md`](docs/desktop-companion.md)
 - [`docs/repository-layout.md`](docs/repository-layout.md)
 - [`docs/i18n.md`](docs/i18n.md)

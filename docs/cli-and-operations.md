@@ -271,6 +271,16 @@ uv run hermit schedule add --help
 uv run hermit serve --help
 ```
 
+长期运行问题排查：
+
+- [`docs/serve-troubleshooting.md`](./serve-troubleshooting.md)
+
+如果 `serve` 看起来“回复完最后一条消息就挂了”，优先检查：
+
+1. `make env-status ENV=dev`
+2. `~/.hermit-dev/logs/serve-feishu-status.json`
+3. `~/.hermit-dev/kernel/state.db` 里的 `events / receipts / artifacts`
+
 ## 这轮更新里修正的运维文档问题
 
 - `serve` 的正确调用方式是 `--adapter feishu`
