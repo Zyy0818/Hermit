@@ -1,4 +1,5 @@
 from __future__ import annotations
+import httpx
 
 import sys
 from types import SimpleNamespace
@@ -212,5 +213,5 @@ def test_build_claude_provider_passes_expected_kwargs(monkeypatch: pytest.Monkey
         "auth_token": "auth-token",
         "base_url": "https://proxy.example.com",
         "default_headers": {"X-Test": "1"},
-        "timeout": 30,
+        "timeout": httpx.Timeout(600.0, connect=30),
     }

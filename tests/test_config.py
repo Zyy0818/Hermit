@@ -1,4 +1,5 @@
 from __future__ import annotations
+import httpx
 
 from hermit.config import Settings
 from hermit.main import _build_anthropic_client_kwargs
@@ -45,7 +46,7 @@ def test_build_anthropic_client_kwargs_supports_auth_token_and_headers(monkeypat
         "auth_token": "token-123",
         "base_url": "https://example.internal/claude",
         "default_headers": {"X-Biz-Id": "claude-code"},
-        "timeout": 30,
+        "timeout": httpx.Timeout(600.0, connect=30),
     }
 
 
@@ -67,7 +68,7 @@ def test_build_anthropic_client_kwargs_keeps_api_key_when_present(monkeypatch) -
 
     assert kwargs["api_key"] == "api-key"
     assert kwargs["auth_token"] == "token-123"
-    assert kwargs["timeout"] == 30
+    assert kwargs["timeout"] == httpx.Timeout(600.0, connect=30)
 
 
 def test_custom_headers_requires_colon_separator(monkeypatch) -> None:

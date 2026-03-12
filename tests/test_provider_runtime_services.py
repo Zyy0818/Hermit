@@ -1,4 +1,5 @@
 from __future__ import annotations
+import httpx
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -461,7 +462,7 @@ def test_build_provider_client_kwargs_cover_supported_providers() -> None:
         "auth_token": "auth-token",
         "base_url": "https://claude.example.com",
         "default_headers": {"X-Claude": "1"},
-        "timeout": 30,
+        "timeout": httpx.Timeout(600.0, connect=30),
     }
     assert build_provider_client_kwargs(codex_settings) == {
         "api_key": "openai-key",

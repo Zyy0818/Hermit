@@ -99,8 +99,12 @@ def build_provider_client_kwargs(settings: Any, provider: Optional[str] = None) 
             kwargs["base_url"] = settings.claude_base_url
         if settings.parsed_claude_headers:
             kwargs["default_headers"] = settings.parsed_claude_headers
-        if getattr(settings, "command_timeout_seconds", 0):
-            kwargs["timeout"] = settings.command_timeout_seconds
+        # Use command_timeout_seconds only as the connect timeout.
+        # Read/write timeouts are left at the Anthropic SDK default (600s)
+        # to avoid spurious timeouts on long LLM responses.
+        connect_timeout = getattr(settings, "command_timeout_seconds", 5) or 5
+        import httpx
+        kwargs["timeout"] = httpx.Timeout(600.0, connect=connect_timeout)
         return kwargs
     if selected == "codex":
         kwargs = {}
