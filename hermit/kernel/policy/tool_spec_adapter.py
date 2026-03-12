@@ -70,6 +70,7 @@ def build_action_request(
     request_id = f"req_{uuid.uuid4().hex[:12]}"
     return ActionRequest(
         request_id=request_id,
+        idempotency_key=request_id,
         task_id=attempt_ctx.task_id if attempt_ctx else "",
         step_id=attempt_ctx.step_id if attempt_ctx else "",
         step_attempt_id=attempt_ctx.step_attempt_id if attempt_ctx else "",

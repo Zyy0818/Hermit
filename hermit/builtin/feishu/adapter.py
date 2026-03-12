@@ -729,31 +729,111 @@ class FeishuAdapter:
         if self._runner is None:
             return "用户发送了图片。"
 
-        records = []
-        for image_key in msg.image_keys:
-            try:
-                record = self._runner.agent.registry.call(
-                    "image_store_from_feishu",
-                    {
-                        "session_id": session_id,
-                        "message_id": msg.message_id,
-                        "image_key": image_key,
-                    },
-                )
-                records.append(record)
-            except KeyError:
-                records.append({"image_id": "", "summary": "", "tags": [], "analysis_status": "tool_missing"})
-            except Exception as exc:
-                log.warning("image_store_from_feishu_failed", image_key=image_key, error=str(exc))
-                records.append({"image_id": "", "summary": "", "tags": [], "analysis_status": str(exc)})
+        records = self._ingest_image_records(session_id, msg)
 
         lines = [f"用户发送了 {len(msg.image_keys)} 张图片。"]
+        if not records:
+            return "\n".join(lines)
         for index, record in enumerate(records, start=1):
             summary = str(record.get("summary", "")).strip() or "暂无摘要"
             image_id = str(record.get("image_id", "")).strip() or "unknown"
             tags = ", ".join(record.get("tags", [])[:5]) or "无标签"
             lines.append(f"图片{index}（image_id={image_id}）：{summary}；标签：{tags}")
         return "\n".join(lines)
+
+    def _ingest_image_records(self, session_id: str, msg: FeishuMessage) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for image_key in msg.image_keys:
+            record = self._ingest_image_record(session_id=session_id, message_id=msg.message_id, image_key=image_key)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def _ingest_image_record(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        image_key: str,
+    ) -> dict[str, Any] | None:
+        runner = self._runner
+        if runner is None:
+            return None
+
+        task_controller = getattr(runner, "task_controller", None)
+        tool_executor = getattr(getattr(runner, "agent", None), "tool_executor", None)
+        if task_controller is None or tool_executor is None:
+            log.warning("image_store_from_feishu_unavailable", image_key=image_key, reason="missing_task_kernel")
+            return None
+
+        workspace_root = str(getattr(getattr(runner, "agent", None), "workspace_root", "") or "")
+        ctx = task_controller.start_task(
+            conversation_id=session_id,
+            goal=f"Ingest Feishu image {image_key}",
+            source_channel="feishu",
+            kind="attachment_ingest",
+            workspace_root=workspace_root,
+            parent_task_id=None,
+            requested_by="feishu_adapter",
+        )
+
+        try:
+            result = tool_executor.execute(
+                ctx,
+                "image_store_from_feishu",
+                {
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "image_key": image_key,
+                },
+                request_overrides={
+                    "actor": {"kind": "adapter", "agent_id": "feishu_adapter"},
+                    "context": {
+                        "source_ingress": "feishu_adapter",
+                        "feishu_message_id": message_id,
+                    },
+                    "idempotency_key": f"feishu-image:{message_id}:{image_key}",
+                },
+            )
+        except KeyError:
+            log.warning("image_store_from_feishu_unavailable", image_key=image_key, reason="tool_missing")
+            task_controller.finalize_result(ctx, status="failed")
+            return None
+        except Exception as exc:
+            log.warning("image_store_from_feishu_failed", image_key=image_key, error=str(exc))
+            task_controller.finalize_result(ctx, status="failed")
+            return None
+
+        if result.blocked:
+            log.warning("image_store_from_feishu_blocked", image_key=image_key, approval_id=result.approval_id)
+            if result.approval_id:
+                task_controller.store.resolve_approval(
+                    result.approval_id,
+                    status="denied",
+                    resolved_by="feishu_adapter",
+                    resolution={"reason": "adapter ingress does not support interactive approval"},
+                )
+            task_controller.finalize_result(ctx, status="failed")
+            return None
+
+        if result.execution_status == "succeeded":
+            if isinstance(result.raw_result, dict):
+                task_controller.finalize_result(ctx, status="succeeded")
+                return result.raw_result
+            log.warning("image_store_from_feishu_invalid_result", image_key=image_key, result_type=type(result.raw_result).__name__)
+            task_controller.finalize_result(ctx, status="failed")
+            return None
+
+        if result.execution_status == "failed":
+            task_controller.finalize_result(ctx, status="failed")
+
+        log.warning(
+            "image_store_from_feishu_degraded",
+            image_key=image_key,
+            execution_status=result.execution_status,
+            result_code=result.result_code,
+        )
+        return None
 
 
 def register(ctx: Any) -> None:

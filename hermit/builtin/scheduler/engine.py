@@ -263,13 +263,25 @@ class SchedulerEngine:
         return result.agent_result
 
     def _run_agent_standalone(self, prompt: str) -> Any:
-        """Fallback: build a fresh agent when running outside serve context (e.g. CLI)."""
+        """Fallback: build a task-aware runner when running outside serve context."""
         from hermit.config import get_settings
+        from hermit.core.runner import AgentRunner
+        from hermit.core.session import SessionManager
         from hermit.provider.services import build_background_runtime
 
         settings = get_settings()
         agent, pm = build_background_runtime(settings, cwd=Path.home())
-        return agent.run(prompt)
+        runner = AgentRunner(
+            agent,
+            SessionManager(settings.sessions_dir),
+            pm,
+            task_controller=getattr(agent, "task_controller", None),
+        )
+        session_id = f"schedule-{uuid.uuid4().hex[:8]}"
+        result = runner.dispatch(session_id, prompt)
+        if result.agent_result is None:
+            raise RuntimeError(result.text)
+        return result.agent_result
 
     # ------------------------------------------------------------------
     # Catch-up: execute missed jobs on startup

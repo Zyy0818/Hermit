@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/hermit-common.sh"
+UV_BIN="$(resolve_uv_bin)"
 
-exec /opt/homebrew/bin/uv run --project "${ROOT_DIR}" --extra dev --python 3.11 \
+exec "${UV_BIN}" run --project "${ROOT_DIR}" --extra dev --python 3.11 \
   python "${ROOT_DIR}/scripts/hermit-watch.py" "$@"

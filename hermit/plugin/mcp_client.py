@@ -1,7 +1,7 @@
 """MCP Client Manager — connects to MCP servers, discovers tools, routes calls.
 
 Uses a dedicated background event loop so that async MCP operations can be
-called from the synchronous ClaudeAgent tool loop without conflicts.
+called from the synchronous runtime tool loop without conflicts.
 
 Key design: all context-manager enter/exit operations happen inside a single
 long-lived ``lifecycle()`` coroutine (Task A).  anyio's CancelScope requires

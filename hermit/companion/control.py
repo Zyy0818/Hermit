@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
+from hermit.executables import resolve_uv_bin
 from hermit.provider.profiles import load_profile_catalog
 
 
@@ -277,7 +278,7 @@ def command_prefix() -> list[str]:
     project_root = _project_root()
     if project_root is not None:
         return [
-            "/opt/homebrew/bin/uv",
+            resolve_uv_bin(),
             "run",
             "--project",
             str(project_root),

@@ -39,6 +39,7 @@ class PolicyObligations:
 @dataclass
 class ActionRequest:
     request_id: str
+    idempotency_key: str = ""
     task_id: str = ""
     step_id: str = ""
     step_attempt_id: str = ""
@@ -58,6 +59,7 @@ class ActionRequest:
     def to_dict(self) -> dict[str, Any]:
         return {
             "request_id": self.request_id,
+            "idempotency_key": self.idempotency_key,
             "task_id": self.task_id,
             "step_id": self.step_id,
             "step_attempt_id": self.step_attempt_id,

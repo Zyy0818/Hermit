@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/hermit-common.sh"
+UV_BIN="$(resolve_uv_bin)"
 ENV_NAME="${1:-}"
 ACTION="${2:-status}"
 ADAPTER="${HERMIT_ADAPTER:-feishu}"
@@ -58,7 +60,7 @@ kill_pids() {
 }
 
 ensure_macos_deps() {
-  /opt/homebrew/bin/uv sync --extra dev --extra macos >/dev/null
+  "${UV_BIN}" sync --extra dev --extra macos >/dev/null
 }
 
 ensure_menu_app() {

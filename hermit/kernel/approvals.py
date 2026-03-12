@@ -18,6 +18,8 @@ class ApprovalService:
         approval_type: str,
         requested_action: dict[str, Any],
         request_packet_ref: str | None,
+        decision_ref: str | None = None,
+        state_witness_ref: str | None = None,
     ) -> str:
         approval = self.store.create_approval(
             task_id=task_id,
@@ -26,6 +28,8 @@ class ApprovalService:
             approval_type=approval_type,
             requested_action=requested_action,
             request_packet_ref=request_packet_ref,
+            decision_ref=decision_ref,
+            state_witness_ref=state_witness_ref,
         )
         return approval.approval_id
 

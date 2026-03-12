@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,7 +16,7 @@ from hermit.kernel.controller import TaskController
 from hermit.kernel.executor import ToolExecutor
 from hermit.kernel.policy import PolicyEngine
 from hermit.kernel.receipts import ReceiptService
-from hermit.kernel.store import KernelStore
+from hermit.kernel.store import KernelSchemaError, KernelStore
 from hermit.plugin.base import PluginContext
 from hermit.plugin.hooks import HooksEngine
 from hermit.plugin.manager import PluginManager
@@ -134,6 +135,22 @@ def _bash_registry(root: Path) -> ToolRegistry:
     return registry
 
 
+def _attachment_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="image_store_from_feishu",
+            description="Store an incoming Feishu image.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=lambda payload: {"ok": True, "payload": payload},
+            action_class="attachment_ingest",
+            risk_hint="high",
+            requires_receipt=True,
+        )
+    )
+    return registry
+
+
 def _kernel_runtime(tmp_path: Path) -> tuple[KernelStore, ArtifactStore, TaskController, ToolExecutor, TaskExecutionContext]:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -145,8 +162,8 @@ def _kernel_runtime(tmp_path: Path) -> tuple[KernelStore, ArtifactStore, TaskCon
         goal="Update a file",
         source_channel="chat",
         kind="respond",
+        workspace_root=str(workspace),
     )
-    ctx.workspace_root = str(workspace)
     executor = ToolExecutor(
         registry=_write_registry(workspace),
         store=store,
@@ -251,9 +268,17 @@ def test_tool_executor_executes_previewed_workspace_write_without_approval_and_i
     assert receipt.receipt_id == executed.receipt_id
     assert receipt.approval_ref is None
     assert receipt.action_type == "write_local"
+    assert receipt.decision_ref == executed.decision_id
+    assert receipt.permit_ref == executed.permit_id
+    assert receipt.policy_ref == executed.policy_ref
+    assert receipt.result_code == "succeeded"
     assert len(receipt.input_refs) == 1
     assert len(receipt.output_refs) == 1
     assert receipt.environment_ref is not None
+    decision = store.get_decision(executed.decision_id or "")
+    permit = store.get_execution_permit(executed.permit_id or "")
+    assert decision is not None and decision.verdict == "allow"
+    assert permit is not None and permit.status == "consumed"
     assert any(event["event_type"] == "receipt.issued" for event in store.list_events(task_id=ctx.task_id))
 
 
@@ -318,6 +343,24 @@ def test_policy_engine_allows_network_read_without_approval() -> None:
     assert decision.decision == "allow"
     assert decision.action_class == "network_read"
     assert decision.requires_receipt is False
+
+
+def test_policy_engine_allows_adapter_owned_attachment_ingest_and_denies_agent_calls() -> None:
+    policy = PolicyEngine()
+    request = policy.build_action_request(
+        _attachment_registry().get("image_store_from_feishu"),
+        {"session_id": "oc_1", "message_id": "om_1", "image_key": "img_1"},
+    )
+
+    request.actor = {"kind": "adapter", "agent_id": "feishu_adapter"}
+    allow = policy.evaluate(request)
+
+    request.actor = {"kind": "agent", "agent_id": "hermit"}
+    deny = policy.evaluate(request)
+
+    assert allow.decision == "allow_with_receipt"
+    assert allow.requires_receipt is True
+    assert deny.decision == "deny"
 
 
 def test_read_skill_tool_is_registered_as_readonly(tmp_path: Path) -> None:
@@ -487,6 +530,7 @@ def test_builtin_tool_metadata_audit_marks_reads_and_writes_explicitly(tmp_path:
     assert image_tools["image_search"].readonly is True
     assert image_tools["image_get"].readonly is True
     assert image_tools["image_store_from_path"].action_class == "write_local"
+    assert image_tools["image_store_from_feishu"].action_class == "attachment_ingest"
     assert image_tools["image_attach_to_feishu"].action_class == "credentialed_api_call"
 
     ctx_webhook = PluginContext(hooks, settings=None)
@@ -546,7 +590,14 @@ def test_agent_runtime_blocks_then_resumes_same_step_attempt(tmp_path: Path) -> 
     attempt = store.get_step_attempt(ctx.step_attempt_id)
     assert attempt is not None
     assert "runtime_snapshot" in attempt.context
-    assert attempt.context["runtime_snapshot"]["pending_tool_blocks"][0]["name"] == "write_file"
+    snapshot = attempt.context["runtime_snapshot"]
+    assert snapshot["schema_version"] == 2
+    assert snapshot["kind"] == "runtime_snapshot"
+    assert "messages" not in snapshot["payload"]
+    resume_messages_ref = snapshot["payload"]["resume_messages_ref"]
+    resume_messages = store.get_artifact(resume_messages_ref)
+    assert resume_messages is not None
+    assert snapshot["payload"]["pending_tool_blocks"][0]["name"] == "write_file"
 
     ApprovalService(store).approve(blocked.approval_id)
     resumed = runtime.resume(step_attempt_id=ctx.step_attempt_id, task_context=ctx)
@@ -559,6 +610,77 @@ def test_agent_runtime_blocks_then_resumes_same_step_attempt(tmp_path: Path) -> 
     assert attempt is not None
     assert "runtime_snapshot" not in attempt.context
     assert store.list_receipts(task_id=ctx.task_id, limit=10)[0].action_type == "write_local"
+
+
+def test_agent_runtime_resume_supports_legacy_v1_runtime_snapshot(tmp_path: Path) -> None:
+    store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
+    runtime = AgentRuntime(
+        provider=FakeProvider(
+            responses=[
+                ProviderResponse(
+                    content=[
+                        {
+                            "type": "tool_use",
+                            "id": "call_1",
+                            "name": "write_file",
+                            "input": {"path": ".env", "content": "legacy\n"},
+                        }
+                    ],
+                    stop_reason="tool_use",
+                    usage=UsageMetrics(input_tokens=2, output_tokens=1),
+                ),
+                ProviderResponse(
+                    content=[{"type": "text", "text": "done"}],
+                    stop_reason="end_turn",
+                    usage=UsageMetrics(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ),
+        registry=_write_registry(Path(ctx.workspace_root)),
+        model="fake",
+        tool_executor=executor,
+    )
+
+    blocked = runtime.run("update draft", task_context=ctx)
+    assert blocked.approval_id is not None
+    attempt = store.get_step_attempt(ctx.step_attempt_id)
+    assert attempt is not None
+    snapshot = dict(attempt.context["runtime_snapshot"])
+    v2_payload = dict(snapshot["payload"])
+    attempt.context["runtime_snapshot"] = {
+        "schema_version": 1,
+        "kind": "runtime_snapshot",
+        "expires_at": snapshot["expires_at"],
+        "payload": {
+            "messages": [
+                {"role": "user", "content": "update draft"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call_1",
+                            "name": "write_file",
+                            "input": {"path": ".env", "content": "legacy\n"},
+                        }
+                    ],
+                },
+            ],
+            "pending_tool_blocks": v2_payload["pending_tool_blocks"],
+            "tool_result_blocks": v2_payload["tool_result_blocks"],
+            "next_turn": v2_payload["next_turn"],
+            "disable_tools": v2_payload["disable_tools"],
+            "readonly_only": v2_payload["readonly_only"],
+        },
+    }
+    store.update_step_attempt(ctx.step_attempt_id, context=attempt.context)
+
+    ApprovalService(store).approve(blocked.approval_id)
+    resumed = runtime.resume(step_attempt_id=ctx.step_attempt_id, task_context=ctx)
+
+    assert resumed.blocked is False
+    assert resumed.text == "done"
+    assert (Path(ctx.workspace_root) / ".env").read_text(encoding="utf-8") == "legacy\n"
 
 
 def test_tool_executor_denied_action_records_failure_without_approval(tmp_path: Path) -> None:
@@ -607,6 +729,284 @@ def test_executor_requires_new_approval_when_fingerprint_changes(tmp_path: Path)
     assert second.approval_id is not None
     assert second.approval_id != first.approval_id
     assert any(event["event_type"] == "approval.mismatch" for event in store.list_events(task_id=ctx.task_id))
+
+
+def test_executor_creates_successor_attempt_when_witness_drifts(tmp_path: Path) -> None:
+    store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
+    target = Path(ctx.workspace_root) / ".env"
+    target.write_text("before\n", encoding="utf-8")
+
+    first = executor.execute(ctx, "write_file", {"path": ".env", "content": "after\n"})
+    assert first.approval_id is not None
+    approval = store.get_approval(first.approval_id)
+    assert approval is not None
+    assert approval.state_witness_ref is not None
+
+    ApprovalService(store).approve(first.approval_id)
+    target.write_text("changed-by-someone-else\n", encoding="utf-8")
+
+    second = executor.execute(ctx, "write_file", {"path": ".env", "content": "after\n"})
+
+    assert second.blocked is True
+    assert second.approval_id is not None
+    assert second.approval_id != first.approval_id
+    original_attempt = store.get_step_attempt(ctx.step_attempt_id)
+    assert original_attempt is not None and original_attempt.status == "superseded"
+    successor_approval = store.get_approval(second.approval_id)
+    assert successor_approval is not None
+    successor = store.get_step_attempt(successor_approval.step_attempt_id)
+    assert successor is not None
+    assert successor.step_attempt_id != ctx.step_attempt_id
+    assert successor.status == "awaiting_approval"
+    assert any(event["event_type"] == "witness.failed" for event in store.list_events(task_id=ctx.task_id))
+
+
+def test_executor_marks_unknown_outcome_and_reconciles_local_write(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    artifacts = ArtifactStore(tmp_path / "kernel" / "artifacts")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="chat-uncertain",
+        goal="write maybe",
+        source_channel="chat",
+        kind="respond",
+        workspace_root=str(workspace),
+    )
+
+    def flaky_write(payload: dict[str, Any]) -> str:
+        path = workspace / str(payload["path"])
+        path.write_text(str(payload["content"]), encoding="utf-8")
+        raise RuntimeError("post-write crash")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="write_file",
+            description="Write a UTF-8 text file inside the workspace.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=flaky_write,
+            action_class="write_local",
+            resource_scope_hint=str(workspace),
+            risk_hint="high",
+            requires_receipt=True,
+            supports_preview=True,
+        )
+    )
+    executor = ToolExecutor(
+        registry=registry,
+        store=store,
+        artifact_store=artifacts,
+        policy_engine=PolicyEngine(),
+        approval_service=ApprovalService(store),
+        receipt_service=ReceiptService(store),
+        tool_output_limit=2000,
+    )
+
+    result = executor.execute(ctx, "write_file", {"path": "maybe.txt", "content": "hello\n"})
+
+    assert result.receipt_id is not None
+    assert result.result_code == "reconciled_applied"
+    assert result.execution_status == "reconciling"
+    assert "[Execution Requires Attention]" in str(result.model_content)
+    assert (workspace / "maybe.txt").read_text(encoding="utf-8") == "hello\n"
+    attempt = store.get_step_attempt(ctx.step_attempt_id)
+    permit = store.get_execution_permit(result.permit_id or "")
+    receipt = store.list_receipts(task_id=ctx.task_id, limit=1)[0]
+    assert attempt is not None and attempt.status == "reconciling"
+    assert store.get_task(ctx.task_id).status == "reconciling"
+    assert permit is not None and permit.status == "uncertain"
+    assert receipt.result_code == "reconciled_applied"
+    assert receipt.permit_ref == result.permit_id
+    assert any(event["event_type"] == "outcome.uncertain" for event in store.list_events(task_id=ctx.task_id))
+
+
+def test_runner_preserves_reconciling_status_for_reconciled_tool_outcomes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    artifacts = ArtifactStore(tmp_path / "kernel" / "artifacts")
+
+    def flaky_write(payload: dict[str, Any]) -> str:
+        path = workspace / str(payload["path"])
+        path.write_text(str(payload["content"]), encoding="utf-8")
+        raise RuntimeError("post-write crash")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="write_file",
+            description="Write a UTF-8 text file inside the workspace.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=flaky_write,
+            action_class="write_local",
+            resource_scope_hint=str(workspace),
+            risk_hint="high",
+            requires_receipt=True,
+            supports_preview=True,
+        )
+    )
+    runtime = AgentRuntime(
+        provider=FakeProvider(
+            responses=[
+                ProviderResponse(
+                    content=[
+                        {
+                            "type": "tool_use",
+                            "id": "call_1",
+                            "name": "write_file",
+                            "input": {"path": "runner.txt", "content": "hello\n"},
+                        }
+                    ],
+                    stop_reason="tool_use",
+                    usage=UsageMetrics(input_tokens=2, output_tokens=1),
+                )
+            ]
+        ),
+        registry=registry,
+        model="fake",
+        tool_executor=ToolExecutor(
+            registry=registry,
+            store=store,
+            artifact_store=artifacts,
+            policy_engine=PolicyEngine(),
+            approval_service=ApprovalService(store),
+            receipt_service=ReceiptService(store),
+            tool_output_limit=2000,
+        ),
+    )
+    runtime.workspace_root = str(workspace)  # type: ignore[attr-defined]
+    runner = AgentRunner(
+        runtime,
+        SessionManager(tmp_path / "sessions", store=store),
+        PluginManager(),
+        task_controller=TaskController(store),
+    )
+
+    result = runner.handle("chat-runner-reconcile", "write it")
+
+    task = store.get_last_task_for_conversation("chat-runner-reconcile")
+    assert task is not None
+    attempt_id = next(
+        event["entity_id"]
+        for event in store.list_events(task_id=task.task_id, limit=50)
+        if event["event_type"] == "step_attempt.started"
+    )
+    attempt = store.get_step_attempt(attempt_id)
+    assert result.execution_status == "reconciling"
+    assert attempt is not None and attempt.status == "reconciling"
+    assert store.get_task(task.task_id).status == "reconciling"
+
+
+def test_runner_marks_unknown_outcome_as_needs_attention(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    artifacts = ArtifactStore(tmp_path / "kernel" / "artifacts")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="bash",
+            description="Run shell command.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=lambda _payload: (_ for _ in ()).throw(RuntimeError("shell crash")),
+            action_class="execute_command",
+            resource_scope_hint=str(workspace),
+            risk_hint="critical",
+            requires_receipt=True,
+            supports_preview=True,
+        )
+    )
+    runtime = AgentRuntime(
+        provider=FakeProvider(
+            responses=[
+                ProviderResponse(
+                    content=[
+                        {
+                            "type": "tool_use",
+                            "id": "call_1",
+                            "name": "bash",
+                            "input": {"command": "git status"},
+                        }
+                    ],
+                    stop_reason="tool_use",
+                    usage=UsageMetrics(input_tokens=2, output_tokens=1),
+                )
+            ]
+        ),
+        registry=registry,
+        model="fake",
+        tool_executor=ToolExecutor(
+            registry=registry,
+            store=store,
+            artifact_store=artifacts,
+            policy_engine=PolicyEngine(),
+            approval_service=ApprovalService(store),
+            receipt_service=ReceiptService(store),
+            tool_output_limit=2000,
+        ),
+    )
+    runtime.workspace_root = str(workspace)  # type: ignore[attr-defined]
+    runner = AgentRunner(
+        runtime,
+        SessionManager(tmp_path / "sessions", store=store),
+        PluginManager(),
+        task_controller=TaskController(store),
+    )
+
+    result = runner.handle("chat-runner-unknown", "check git")
+
+    task = store.get_last_task_for_conversation("chat-runner-unknown")
+    assert task is not None
+    attempt_id = next(
+        event["entity_id"]
+        for event in store.list_events(task_id=task.task_id, limit=50)
+        if event["event_type"] == "step_attempt.started"
+    )
+    attempt = store.get_step_attempt(attempt_id)
+    assert result.execution_status == "needs_attention"
+    assert attempt is not None and attempt.status == "reconciling"
+    assert store.get_task(task.task_id).status == "needs_attention"
+
+
+def test_kernel_store_rejects_pre_v3_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "kernel" / "state.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+
+    try:
+        KernelStore(db_path)
+    except KernelSchemaError as exc:
+        assert "unsupported pre-v3 schema" in str(exc)
+    else:
+        raise AssertionError("KernelStore should reject old schemas")
+
+
+def test_event_log_uses_monotonic_event_seq(tmp_path: Path) -> None:
+    store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
+    executor.execute(ctx, "write_file", {"path": "receipt.txt", "content": "hello\n"})
+
+    events = store.list_events(task_id=ctx.task_id, limit=50)
+    event_seq = [int(event["event_seq"]) for event in events]
+
+    assert event_seq == sorted(event_seq)
+    assert len(set(event_seq)) == len(event_seq)
+
+
+def test_production_code_avoids_direct_registry_calls() -> None:
+    hermit_root = Path(__file__).resolve().parents[1] / "hermit"
+    offenders = [
+        str(path.relative_to(hermit_root.parent))
+        for path in hermit_root.rglob("*.py")
+        if "registry.call(" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
 
 
 def test_runner_deny_approval_persists_denial_message_in_session(tmp_path: Path) -> None:

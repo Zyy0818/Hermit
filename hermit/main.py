@@ -1230,6 +1230,26 @@ def task_show(task_id: str = typer.Argument(..., help="Task ID.")) -> None:
                 approval.requested_action, approval.approval_id
             ).summary
             typer.echo(f"    {summary}")
+            if approval.decision_ref:
+                typer.echo(f"    decision_ref={approval.decision_ref}")
+            if approval.state_witness_ref:
+                typer.echo(f"    witness_ref={approval.state_witness_ref}")
+
+    decisions = store.list_decisions(task_id=task_id, limit=20)
+    if decisions:
+        typer.echo("\nRecent decisions:")
+        for decision in decisions:
+            typer.echo(
+                f"  [{decision.decision_id}] {decision.verdict} {decision.decision_type} action={decision.action_type}"
+            )
+            typer.echo(f"    {decision.reason}")
+
+    permits = store.list_execution_permits(task_id=task_id, limit=20)
+    if permits:
+        typer.echo("\nRecent execution permits:")
+        for permit in permits:
+            typer.echo(f"  [{permit.permit_id}] {permit.status} {permit.action_class}")
+            typer.echo(f"    decision_ref={permit.decision_ref}")
 
 
 @task_app.command("events")

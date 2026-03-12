@@ -5,6 +5,8 @@ from typing import Any
 
 from hermit.kernel.policy.models import ActionRequest, PolicyObligations, PolicyReason
 
+POLICY_RULES_VERSION = "strict-task-first-v2"
+
 
 @dataclass
 class RuleOutcome:
@@ -50,6 +52,29 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
                 risk_level=request.risk_hint or "low",
             )
         )
+        return outcomes
+
+    if request.action_class == "attachment_ingest":
+        actor_kind = str(request.actor.get("kind", "") or "")
+        actor_id = str(request.actor.get("agent_id", "") or "")
+        if actor_kind == "adapter" and actor_id == "feishu_adapter":
+            outcomes.append(
+                RuleOutcome(
+                    verdict="allow_with_receipt",
+                    reasons=[PolicyReason("attachment_ingest_adapter", "Adapter-owned attachment ingestion is allowed with receipt.")],
+                    obligations=PolicyObligations(require_receipt=True),
+                    risk_level=request.risk_hint or "medium",
+                )
+            )
+        else:
+            outcomes.append(
+                RuleOutcome(
+                    verdict="deny",
+                    reasons=[PolicyReason("attachment_ingest_denied", "Attachment ingestion is reserved for adapter-owned ingress.", "error")],
+                    obligations=PolicyObligations(require_receipt=False),
+                    risk_level=request.risk_hint or "high",
+                )
+            )
         return outcomes
 
     target_paths = list(request.derived.get("target_paths", []))
@@ -192,6 +217,19 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         )
 
     if request.action_class in {"memory_write"}:
+        if request.actor.get("kind") == "kernel" and request.context.get("evidence_refs"):
+            outcomes.append(
+                RuleOutcome(
+                    verdict="allow_with_receipt",
+                    reasons=[PolicyReason("memory_write_evidence_bound", "Evidence-bound kernel memory write allowed with receipt.")],
+                    obligations=PolicyObligations(
+                        require_receipt=True,
+                        require_evidence=True,
+                    ),
+                    risk_level=request.risk_hint or "medium",
+                )
+            )
+            return outcomes
         outcomes.append(
             RuleOutcome(
                 verdict="approval_required",

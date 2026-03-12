@@ -9,11 +9,19 @@ from types import SimpleNamespace
 from typing import Any, Dict, List
 
 from hermit.builtin.feishu.normalize import FeishuMessage, normalize_event
-from hermit.core.agent import ClaudeAgent
 from hermit.core.runner import AgentRunner
 from hermit.core.session import SessionManager
-from hermit.core.tools import ToolRegistry
+from hermit.core.tools import ToolRegistry, ToolSpec
+from hermit.kernel.approvals import ApprovalService
+from hermit.kernel.artifacts import ArtifactStore
+from hermit.kernel.controller import TaskController
+from hermit.kernel.executor import ToolExecutor
+from hermit.kernel.policy import PolicyEngine
+from hermit.kernel.receipts import ReceiptService
+from hermit.kernel.store import KernelStore
 from hermit.plugin.manager import PluginManager
+from hermit.provider.providers.claude import ClaudeProvider
+from hermit.provider.runtime import AgentRuntime
 
 
 @dataclass
@@ -143,10 +151,15 @@ def test_normalize_event_collects_nested_image_key_for_post() -> None:
 
 def _make_runner(tmp_path, answer: str = "reply") -> tuple[AgentRunner, FakeClient]:
     client = FakeClient(answer=answer)
-    agent = ClaudeAgent(client=client, registry=ToolRegistry(), model="fake")
-    manager = SessionManager(tmp_path / "sessions")
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    agent = AgentRuntime(
+        provider=ClaudeProvider(client, model="fake"),
+        registry=ToolRegistry(),
+        model="fake",
+    )
+    manager = SessionManager(tmp_path / "sessions", store=store)
     pm = PluginManager()
-    runner = AgentRunner(agent, manager, pm)
+    runner = AgentRunner(agent, manager, pm, task_controller=TaskController(store))
     return runner, client
 
 
@@ -255,18 +268,14 @@ def test_feishu_adapter_builds_prompt_from_images(tmp_path) -> None:
     from hermit.builtin.feishu.adapter import FeishuAdapter
 
     adapter = FeishuAdapter()
-    runner, _ = _make_runner(tmp_path, answer="ok")
-
-    def image_store(_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-        assert payload["image_key"] == "img_v2_123"
-        return {
+    adapter._runner = SimpleNamespace()
+    adapter._ingest_image_records = lambda _session_id, _msg: [  # type: ignore[method-assign]
+        {
             "image_id": "abc123",
             "summary": "一张包含流程图的截图",
             "tags": ["流程图", "产品"],
         }
-
-    runner.agent.registry.call = image_store  # type: ignore[method-assign]
-    adapter._runner = runner
+    ]
 
     prompt = adapter._build_image_prompt(
         "chat-1",
@@ -284,6 +293,70 @@ def test_feishu_adapter_builds_prompt_from_images(tmp_path) -> None:
     assert "用户发送了 1 张图片" in prompt
     assert "image_id=abc123" in prompt
     assert "流程图" in prompt
+
+
+def test_feishu_adapter_ingests_images_via_kernel_executor(tmp_path) -> None:
+    from hermit.builtin.feishu.adapter import FeishuAdapter
+
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    artifacts = ArtifactStore(tmp_path / "kernel" / "artifacts")
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="image_store_from_feishu",
+            description="Store incoming Feishu image.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=lambda payload: {
+                "image_id": "img_ingested",
+                "summary": f"stored:{payload['image_key']}",
+                "tags": ["截图", "流程图"],
+            },
+            action_class="attachment_ingest",
+            risk_hint="high",
+            requires_receipt=True,
+        )
+    )
+    runtime = AgentRuntime(
+        provider=ClaudeProvider(FakeClient(), model="fake"),
+        registry=registry,
+        model="fake",
+        tool_executor=ToolExecutor(
+            registry=registry,
+            store=store,
+            artifact_store=artifacts,
+            policy_engine=PolicyEngine(),
+            approval_service=ApprovalService(store),
+            receipt_service=ReceiptService(store),
+            tool_output_limit=2000,
+        ),
+    )
+    runtime.workspace_root = str(tmp_path)  # type: ignore[attr-defined]
+    runtime.registry.call = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("registry.call should not be used"))  # type: ignore[method-assign]
+    runner = AgentRunner(
+        runtime,
+        SessionManager(tmp_path / "sessions", store=store),
+        PluginManager(),
+        task_controller=TaskController(store),
+    )
+
+    adapter = FeishuAdapter()
+    adapter._runner = runner
+
+    record = adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_v2_123")
+
+    task = store.get_last_task_for_conversation("oc_1")
+    assert record == {
+        "image_id": "img_ingested",
+        "summary": "stored:img_v2_123",
+        "tags": ["截图", "流程图"],
+    }
+    assert task is not None
+    assert task.parent_task_id is None
+    assert task.requested_by == "feishu_adapter"
+    assert task.status == "completed"
+    receipt = store.list_receipts(task_id=task.task_id, limit=1)[0]
+    assert receipt.action_type == "attachment_ingest"
+    assert receipt.result_code == "succeeded"
 
 
 def test_feishu_adapter_replies_with_approval_card_for_blocked_result(monkeypatch) -> None:

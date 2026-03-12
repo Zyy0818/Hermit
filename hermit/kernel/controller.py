@@ -9,6 +9,7 @@ from hermit.kernel.store import KernelStore
 _APPROVE_RE = re.compile(r"^(?:/task\s+approve|批准|approve)\s+([a-z0-9_]+)$", re.IGNORECASE)
 _DENY_RE = re.compile(r"^(?:/task\s+deny|拒绝|deny)\s+([a-z0-9_]+)(?:\s+(.+))?$", re.IGNORECASE)
 _PENDING_APPROVE_TEXT = {"开始执行", "执行吧", "确认执行", "继续执行", "approve", "通过", "批准", "同意"}
+_AUTO_PARENT = object()
 
 
 class TaskController:
@@ -40,25 +41,40 @@ class TaskController:
         source_channel: str,
         kind: str,
         policy_profile: str = "default",
+        workspace_root: str = "",
+        parent_task_id: str | None | object = _AUTO_PARENT,
+        requested_by: str | None = None,
     ) -> TaskExecutionContext:
         self.ensure_conversation(conversation_id, source_channel=source_channel)
         parent = self.store.get_last_task_for_conversation(conversation_id)
+        if parent_task_id is _AUTO_PARENT:
+            resolved_parent = parent.task_id if parent else None
+        else:
+            resolved_parent = parent_task_id
         task = self.store.create_task(
             conversation_id=conversation_id,
             title=(goal.strip() or "Hermit task")[:120],
             goal=goal,
             source_channel=source_channel,
-            parent_task_id=parent.task_id if parent else None,
+            parent_task_id=resolved_parent,
             policy_profile=policy_profile,
+            requested_by=requested_by,
         )
         step = self.store.create_step(task_id=task.task_id, kind=kind, status="running")
-        attempt = self.store.create_step_attempt(task_id=task.task_id, step_id=step.step_id, status="running")
+        attempt_context = {"workspace_root": workspace_root} if workspace_root else {}
+        attempt = self.store.create_step_attempt(
+            task_id=task.task_id,
+            step_id=step.step_id,
+            status="running",
+            context=attempt_context,
+        )
         return TaskExecutionContext(
             conversation_id=conversation_id,
             task_id=task.task_id,
             step_id=step.step_id,
             step_attempt_id=attempt.step_attempt_id,
             source_channel=source_channel,
+            workspace_root=workspace_root,
         )
 
     def context_for_attempt(self, step_attempt_id: str) -> TaskExecutionContext:
@@ -75,6 +91,7 @@ class TaskController:
             step_attempt_id=step_attempt_id,
             source_channel=task.source_channel,
             policy_profile=task.policy_profile,
+            workspace_root=str(attempt.context.get("workspace_root", "") or ""),
         )
 
     def finalize_result(

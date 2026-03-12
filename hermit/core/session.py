@@ -160,7 +160,7 @@ class Session:
 
 
 class SessionManager:
-    """Manages per-chat sessions backed by the kernel conversation projection."""
+    """Manages live per-chat sessions; conversation records remain UX metadata only."""
 
     def __init__(
         self,
@@ -214,7 +214,6 @@ class SessionManager:
     def _persist(self, session: Session) -> None:
         session.messages = sanitize_session_messages(normalize_messages(session.messages))
         self._store.ensure_conversation(session.session_id, source_channel="chat")
-        self._store.replace_messages(session.session_id, session.messages)
         self._store.update_conversation_usage(
             session.session_id,
             input_tokens=session.total_input_tokens,
@@ -230,7 +229,7 @@ class SessionManager:
             return None
         return Session(
             session_id=session_id,
-            messages=sanitize_session_messages(normalize_messages(self._store.load_messages(session_id))),
+            messages=[],
             created_at=conversation.created_at,
             last_active_at=conversation.updated_at,
             total_input_tokens=conversation.total_input_tokens,
@@ -241,7 +240,6 @@ class SessionManager:
 
     def _finalize(self, session: Session) -> None:
         self._active.pop(session.session_id, None)
-        self._store.clear_messages(session.session_id)
 
     def _session_path(self, session_id: str) -> Path:
         safe_name = session_id.replace("/", "_").replace("..", "_")

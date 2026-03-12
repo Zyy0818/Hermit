@@ -44,6 +44,9 @@ class StepAttemptRecord:
     context: dict[str, Any] = field(default_factory=dict)
     waiting_reason: str | None = None
     approval_id: str | None = None
+    decision_id: str | None = None
+    permit_id: str | None = None
+    state_witness_ref: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
 
@@ -58,10 +61,47 @@ class ApprovalRecord:
     approval_type: str
     requested_action: dict[str, Any]
     request_packet_ref: str | None = None
+    decision_ref: str | None = None
+    state_witness_ref: str | None = None
     requested_at: float | None = None
     resolved_at: float | None = None
     resolved_by: str | None = None
     resolution: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DecisionRecord:
+    decision_id: str
+    task_id: str
+    step_id: str
+    step_attempt_id: str
+    decision_type: str
+    verdict: str
+    reason: str
+    evidence_refs: list[str] = field(default_factory=list)
+    policy_ref: str | None = None
+    approval_ref: str | None = None
+    action_type: str | None = None
+    decided_by: str = "kernel"
+    created_at: float | None = None
+
+
+@dataclass
+class ExecutionPermitRecord:
+    permit_id: str
+    task_id: str
+    step_id: str
+    step_attempt_id: str
+    decision_ref: str
+    approval_ref: str | None
+    policy_ref: str | None
+    action_class: str
+    resource_scope: list[str] = field(default_factory=list)
+    idempotency_key: str | None = None
+    status: str = "issued"
+    issued_at: float | None = None
+    expires_at: float | None = None
+    consumed_at: float | None = None
 
 
 @dataclass
@@ -92,6 +132,12 @@ class ReceiptRecord:
     approval_ref: str | None
     output_refs: list[str]
     result_summary: str
+    result_code: str = "succeeded"
+    decision_ref: str | None = None
+    permit_ref: str | None = None
+    policy_ref: str | None = None
+    witness_ref: str | None = None
+    idempotency_key: str | None = None
     created_at: float | None = None
 
 

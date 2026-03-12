@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/hermit-common.sh"
+UV_BIN="$(resolve_uv_bin)"
 ENV_NAME="${1:-}"
 
 if [[ -z "${ENV_NAME}" ]]; then
@@ -56,4 +58,4 @@ esac
 
 export PYTHONUNBUFFERED=1
 
-exec /opt/homebrew/bin/uv run --project "${ROOT_DIR}" --python 3.11 python -m hermit.main "$@"
+exec "${UV_BIN}" run --project "${ROOT_DIR}" --python 3.11 python -m hermit.main "$@"

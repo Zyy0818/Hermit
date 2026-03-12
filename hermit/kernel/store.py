@@ -13,6 +13,8 @@ from hermit.kernel.models import (
     ApprovalRecord,
     ArtifactRecord,
     ConversationRecord,
+    DecisionRecord,
+    ExecutionPermitRecord,
     ReceiptRecord,
     StepAttemptRecord,
     StepRecord,
@@ -20,6 +22,21 @@ from hermit.kernel.models import (
 )
 
 _UNSET = object()
+_SCHEMA_VERSION = "3"
+_KNOWN_KERNEL_TABLES = {
+    "conversations",
+    "tasks",
+    "steps",
+    "step_attempts",
+    "events",
+    "artifacts",
+    "approvals",
+    "receipts",
+    "decisions",
+    "execution_permits",
+    "schedule_specs",
+    "schedule_history",
+}
 
 
 def _json_loads(raw: str | None) -> Any:
@@ -29,6 +46,10 @@ def _json_loads(raw: str | None) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError:
         return {}
+
+
+class KernelSchemaError(RuntimeError):
+    """Raised when an existing kernel database does not match the hard-cut schema."""
 
 
 class KernelStore:
@@ -41,16 +62,54 @@ class KernelStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA busy_timeout=5000")
+        self._validate_existing_schema()
         self._init_schema()
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
 
+    def schema_version(self) -> str:
+        with self._lock:
+            row = self._row("SELECT value FROM kernel_meta WHERE key = 'schema_version'")
+        return str(row["value"]) if row is not None else ""
+
+    def _existing_tables(self) -> set[str]:
+        cursor = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )
+        return {str(row[0]) for row in cursor.fetchall()}
+
+    def _validate_existing_schema(self) -> None:
+        tables = self._existing_tables()
+        if not tables:
+            return
+        if "kernel_meta" not in tables:
+            if tables & _KNOWN_KERNEL_TABLES:
+                raise KernelSchemaError(
+                    f"Existing kernel database at {self.db_path} uses an unsupported pre-v3 schema. "
+                    "This is a hard cut release: archive or delete kernel/state.db before restarting Hermit."
+                )
+            return
+        row = self._conn.execute(
+            "SELECT value FROM kernel_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        version = str(row[0]) if row is not None else ""
+        if version != _SCHEMA_VERSION:
+            raise KernelSchemaError(
+                f"Existing kernel database at {self.db_path} has schema_version={version or 'unknown'}, "
+                f"but Hermit requires schema_version={_SCHEMA_VERSION}. "
+                "Archive or delete kernel/state.db before restarting Hermit."
+            )
+
     def _init_schema(self) -> None:
         with self._lock, self._conn:
             self._conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS kernel_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS conversations (
                     conversation_id TEXT PRIMARY KEY,
                     source_channel TEXT NOT NULL,
@@ -64,14 +123,6 @@ class KernelStore:
                     total_cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS conversation_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content_json TEXT NOT NULL,
-                    task_id TEXT,
-                    created_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS tasks (
                     task_id TEXT PRIMARY KEY,
@@ -108,11 +159,15 @@ class KernelStore:
                     context_json TEXT NOT NULL,
                     waiting_reason TEXT,
                     approval_id TEXT,
+                    decision_id TEXT,
+                    permit_id TEXT,
+                    state_witness_ref TEXT,
                     started_at REAL,
                     finished_at REAL
                 );
                 CREATE TABLE IF NOT EXISTS events (
-                    event_id TEXT PRIMARY KEY,
+                    event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
                     task_id TEXT,
                     step_id TEXT,
                     entity_type TEXT NOT NULL,
@@ -137,6 +192,37 @@ class KernelStore:
                     metadata_json TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS decisions (
+                    decision_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    step_id TEXT NOT NULL,
+                    step_attempt_id TEXT NOT NULL,
+                    decision_type TEXT NOT NULL,
+                    verdict TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    evidence_refs_json TEXT NOT NULL,
+                    policy_ref TEXT,
+                    approval_ref TEXT,
+                    action_type TEXT,
+                    decided_by TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS execution_permits (
+                    permit_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    step_id TEXT NOT NULL,
+                    step_attempt_id TEXT NOT NULL,
+                    decision_ref TEXT NOT NULL,
+                    approval_ref TEXT,
+                    policy_ref TEXT,
+                    action_class TEXT NOT NULL,
+                    resource_scope_json TEXT NOT NULL,
+                    idempotency_key TEXT,
+                    status TEXT NOT NULL,
+                    issued_at REAL NOT NULL,
+                    expires_at REAL,
+                    consumed_at REAL
+                );
                 CREATE TABLE IF NOT EXISTS approvals (
                     approval_id TEXT PRIMARY KEY,
                     task_id TEXT NOT NULL,
@@ -146,6 +232,8 @@ class KernelStore:
                     approval_type TEXT NOT NULL,
                     requested_action_json TEXT NOT NULL,
                     request_packet_ref TEXT,
+                    decision_ref TEXT,
+                    state_witness_ref TEXT,
                     requested_at REAL NOT NULL,
                     resolved_at REAL,
                     resolved_by TEXT,
@@ -163,6 +251,12 @@ class KernelStore:
                     approval_ref TEXT,
                     output_refs_json TEXT NOT NULL,
                     result_summary TEXT NOT NULL,
+                    result_code TEXT NOT NULL,
+                    decision_ref TEXT,
+                    permit_ref TEXT,
+                    policy_ref TEXT,
+                    witness_ref TEXT,
+                    idempotency_key TEXT,
                     created_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS schedule_specs (
@@ -191,11 +285,19 @@ class KernelStore:
                     error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id, created_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, occurred_at);
+                CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, event_seq);
                 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at);
                 CREATE INDEX IF NOT EXISTS idx_receipts_task ON receipts(task_id, created_at);
-                CREATE INDEX IF NOT EXISTS idx_messages_conversation ON conversation_messages(conversation_id, id);
+                CREATE INDEX IF NOT EXISTS idx_decisions_task ON decisions(task_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_permits_task ON execution_permits(task_id, issued_at);
                 """
+            )
+            self._conn.execute(
+                """
+                INSERT INTO kernel_meta(key, value) VALUES ('schema_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (_SCHEMA_VERSION,),
             )
 
     def _id(self, prefix: str) -> str:
@@ -208,6 +310,43 @@ class KernelStore:
     def _rows(self, query: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
         cursor = self._conn.execute(query, tuple(params))
         return list(cursor.fetchall())
+
+    def _append_event_tx(
+        self,
+        *,
+        event_id: str,
+        event_type: str,
+        entity_type: str,
+        entity_id: str,
+        task_id: str | None,
+        step_id: str | None = None,
+        actor: str = "kernel",
+        payload: dict[str, Any] | None = None,
+        causation_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> str:
+        self._conn.execute(
+            """
+            INSERT INTO events (
+                event_id, task_id, step_id, entity_type, entity_id, event_type,
+                actor, payload_json, occurred_at, causation_id, correlation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                task_id,
+                step_id,
+                entity_type,
+                entity_id,
+                event_type,
+                actor,
+                json.dumps(payload or {}, ensure_ascii=False),
+                time.time(),
+                causation_id,
+                correlation_id,
+            ),
+        )
+        return event_id
 
     def ensure_conversation(
         self,
@@ -266,63 +405,6 @@ class KernelStore:
             self._conn.execute(
                 "UPDATE conversations SET metadata_json = ?, updated_at = ? WHERE conversation_id = ?",
                 (json.dumps(metadata, ensure_ascii=False), now, conversation_id),
-            )
-
-    def replace_messages(
-        self,
-        conversation_id: str,
-        messages: list[dict[str, Any]],
-        *,
-        task_id: str | None = None,
-    ) -> None:
-        now = time.time()
-        with self._lock, self._conn:
-            self._conn.execute(
-                "DELETE FROM conversation_messages WHERE conversation_id = ?",
-                (conversation_id,),
-            )
-            for message in messages:
-                self._conn.execute(
-                    """
-                    INSERT INTO conversation_messages (conversation_id, role, content_json, task_id, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        conversation_id,
-                        str(message.get("role", "assistant")),
-                        json.dumps(message.get("content"), ensure_ascii=False),
-                        task_id,
-                        now,
-                    ),
-                )
-            self._conn.execute(
-                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
-                (now, conversation_id),
-            )
-
-    def load_messages(self, conversation_id: str) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._rows(
-                """
-                SELECT role, content_json
-                FROM conversation_messages
-                WHERE conversation_id = ?
-                ORDER BY id ASC
-                """,
-                (conversation_id,),
-            )
-        return [{"role": str(row["role"]), "content": _json_loads(row["content_json"])} for row in rows]
-
-    def clear_messages(self, conversation_id: str) -> None:
-        now = time.time()
-        with self._lock, self._conn:
-            self._conn.execute(
-                "DELETE FROM conversation_messages WHERE conversation_id = ?",
-                (conversation_id,),
-            )
-            self._conn.execute(
-                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
-                (now, conversation_id),
             )
 
     def update_conversation_usage(
@@ -401,14 +483,15 @@ class KernelStore:
                 "UPDATE conversations SET last_task_id = ?, updated_at = ? WHERE conversation_id = ?",
                 (task_id, now, conversation_id),
             )
-        self.append_event(
-            event_type="task.created",
-            entity_type="task",
-            entity_id=task_id,
-            task_id=task_id,
-            actor=requested_by or owner,
-            payload={"conversation_id": conversation_id, "goal": goal, "source_channel": source_channel},
-        )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="task.created",
+                entity_type="task",
+                entity_id=task_id,
+                task_id=task_id,
+                actor=requested_by or owner,
+                payload={"conversation_id": conversation_id, "goal": goal, "source_channel": source_channel},
+            )
         task = self.get_task(task_id)
         assert task is not None
         return task
@@ -441,14 +524,15 @@ class KernelStore:
                 "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
                 (status, now, task_id),
             )
-        self.append_event(
-            event_type=f"task.{status}",
-            entity_type="task",
-            entity_id=task_id,
-            task_id=task_id,
-            actor="kernel",
-            payload={"status": status},
-        )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type=f"task.{status}",
+                entity_type="task",
+                entity_id=task_id,
+                task_id=task_id,
+                actor="kernel",
+                payload={"status": status},
+            )
 
     def get_last_task_for_conversation(self, conversation_id: str) -> TaskRecord | None:
         with self._lock:
@@ -469,15 +553,16 @@ class KernelStore:
                 """,
                 (step_id, task_id, kind, status, now),
             )
-        self.append_event(
-            event_type="step.started",
-            entity_type="step",
-            entity_id=step_id,
-            task_id=task_id,
-            step_id=step_id,
-            actor="kernel",
-            payload={"kind": kind, "status": status},
-        )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="step.started",
+                entity_type="step",
+                entity_id=step_id,
+                task_id=task_id,
+                step_id=step_id,
+                actor="kernel",
+                payload={"kind": kind, "status": status},
+            )
         step = self.get_step(step_id)
         assert step is not None
         return step
@@ -517,6 +602,16 @@ class KernelStore:
                 "UPDATE tasks SET updated_at = ? WHERE task_id = ?",
                 (now, step.task_id),
             )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="step.updated",
+                entity_type="step",
+                entity_id=step_id,
+                task_id=step.task_id,
+                step_id=step_id,
+                actor="kernel",
+                payload=values,
+            )
 
     def create_step_attempt(
         self,
@@ -546,6 +641,16 @@ class KernelStore:
                     now,
                 ),
             )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="step_attempt.started",
+                entity_type="step_attempt",
+                entity_id=step_attempt_id,
+                task_id=task_id,
+                step_id=step_id,
+                actor="kernel",
+                payload={"attempt": attempt, "status": status},
+            )
         return self.get_step_attempt(step_attempt_id)  # type: ignore[return-value]
 
     def get_step_attempt(self, step_attempt_id: str) -> StepAttemptRecord | None:
@@ -561,26 +666,51 @@ class KernelStore:
         context: dict[str, Any] | object = _UNSET,
         waiting_reason: str | None | object = _UNSET,
         approval_id: str | None | object = _UNSET,
+        decision_id: str | None | object = _UNSET,
+        permit_id: str | None | object = _UNSET,
+        state_witness_ref: str | None | object = _UNSET,
         finished_at: float | None | object = _UNSET,
     ) -> None:
         attempt = self.get_step_attempt(step_attempt_id)
         if attempt is None:
             return
+        payload = {
+            "status": status or attempt.status,
+            "waiting_reason": attempt.waiting_reason if waiting_reason is _UNSET else waiting_reason,
+            "approval_id": attempt.approval_id if approval_id is _UNSET else approval_id,
+            "decision_id": attempt.decision_id if decision_id is _UNSET else decision_id,
+            "permit_id": attempt.permit_id if permit_id is _UNSET else permit_id,
+            "state_witness_ref": attempt.state_witness_ref if state_witness_ref is _UNSET else state_witness_ref,
+            "finished_at": attempt.finished_at if finished_at is _UNSET else finished_at,
+        }
         with self._lock, self._conn:
             self._conn.execute(
                 """
                 UPDATE step_attempts
-                SET status = ?, context_json = ?, waiting_reason = ?, approval_id = ?, finished_at = ?
+                SET status = ?, context_json = ?, waiting_reason = ?, approval_id = ?, decision_id = ?, permit_id = ?, state_witness_ref = ?, finished_at = ?
                 WHERE step_attempt_id = ?
                 """,
                 (
-                    status or attempt.status,
+                    payload["status"],
                     json.dumps(attempt.context if context is _UNSET else context, ensure_ascii=False),
-                    attempt.waiting_reason if waiting_reason is _UNSET else waiting_reason,
-                    attempt.approval_id if approval_id is _UNSET else approval_id,
-                    attempt.finished_at if finished_at is _UNSET else finished_at,
+                    payload["waiting_reason"],
+                    payload["approval_id"],
+                    payload["decision_id"],
+                    payload["permit_id"],
+                    payload["state_witness_ref"],
+                    payload["finished_at"],
                     step_attempt_id,
                 ),
+            )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="step_attempt.updated",
+                entity_type="step_attempt",
+                entity_id=step_attempt_id,
+                task_id=attempt.task_id,
+                step_id=attempt.step_id,
+                actor="kernel",
+                payload=payload,
             )
 
     def append_event(
@@ -598,40 +728,32 @@ class KernelStore:
     ) -> str:
         event_id = self._id("event")
         with self._lock, self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO events (
-                    event_id, task_id, step_id, entity_type, entity_id, event_type,
-                    actor, payload_json, occurred_at, causation_id, correlation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_id,
-                    task_id,
-                    step_id,
-                    entity_type,
-                    entity_id,
-                    event_type,
-                    actor,
-                    json.dumps(payload or {}, ensure_ascii=False),
-                    time.time(),
-                    causation_id,
-                    correlation_id,
-                ),
+            self._append_event_tx(
+                event_id=event_id,
+                event_type=event_type,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                task_id=task_id,
+                step_id=step_id,
+                actor=actor,
+                payload=payload,
+                causation_id=causation_id,
+                correlation_id=correlation_id,
             )
         return event_id
 
     def list_events(self, *, task_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         if task_id:
-            query = "SELECT * FROM events WHERE task_id = ? ORDER BY occurred_at ASC LIMIT ?"
+            query = "SELECT * FROM events WHERE task_id = ? ORDER BY event_seq ASC LIMIT ?"
             params: tuple[Any, ...] = (task_id, limit)
         else:
-            query = "SELECT * FROM events ORDER BY occurred_at DESC LIMIT ?"
+            query = "SELECT * FROM events ORDER BY event_seq DESC LIMIT ?"
             params = (limit,)
         with self._lock:
             rows = self._rows(query, params)
         return [
             {
+                "event_seq": int(row["event_seq"]),
                 "event_id": str(row["event_id"]),
                 "task_id": row["task_id"],
                 "step_id": row["step_id"],
@@ -701,6 +823,199 @@ class KernelStore:
             row = self._row("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,))
         return self._artifact_from_row(row) if row is not None else None
 
+    def create_decision(
+        self,
+        *,
+        task_id: str,
+        step_id: str,
+        step_attempt_id: str,
+        decision_type: str,
+        verdict: str,
+        reason: str,
+        evidence_refs: list[str] | None = None,
+        policy_ref: str | None = None,
+        approval_ref: str | None = None,
+        action_type: str | None = None,
+        decided_by: str = "kernel",
+    ) -> DecisionRecord:
+        decision_id = self._id("decision")
+        created_at = time.time()
+        payload = {
+            "decision_type": decision_type,
+            "verdict": verdict,
+            "reason": reason,
+            "evidence_refs": list(evidence_refs or []),
+            "policy_ref": policy_ref,
+            "approval_ref": approval_ref,
+            "action_type": action_type,
+            "decided_by": decided_by,
+        }
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO decisions (
+                    decision_id, task_id, step_id, step_attempt_id, decision_type, verdict, reason,
+                    evidence_refs_json, policy_ref, approval_ref, action_type, decided_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_id,
+                    task_id,
+                    step_id,
+                    step_attempt_id,
+                    decision_type,
+                    verdict,
+                    reason,
+                    json.dumps(list(evidence_refs or []), ensure_ascii=False),
+                    policy_ref,
+                    approval_ref,
+                    action_type,
+                    decided_by,
+                    created_at,
+                ),
+            )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="decision.recorded",
+                entity_type="decision",
+                entity_id=decision_id,
+                task_id=task_id,
+                step_id=step_id,
+                actor=decided_by,
+                payload=payload,
+            )
+        decision = self.get_decision(decision_id)
+        assert decision is not None
+        return decision
+
+    def get_decision(self, decision_id: str) -> DecisionRecord | None:
+        with self._lock:
+            row = self._row("SELECT * FROM decisions WHERE decision_id = ?", (decision_id,))
+        return self._decision_from_row(row) if row is not None else None
+
+    def list_decisions(self, *, task_id: str | None = None, limit: int = 50) -> list[DecisionRecord]:
+        if task_id:
+            query = "SELECT * FROM decisions WHERE task_id = ? ORDER BY created_at DESC LIMIT ?"
+            params: tuple[Any, ...] = (task_id, limit)
+        else:
+            query = "SELECT * FROM decisions ORDER BY created_at DESC LIMIT ?"
+            params = (limit,)
+        with self._lock:
+            rows = self._rows(query, params)
+        return [self._decision_from_row(row) for row in rows]
+
+    def create_execution_permit(
+        self,
+        *,
+        task_id: str,
+        step_id: str,
+        step_attempt_id: str,
+        decision_ref: str,
+        approval_ref: str | None,
+        policy_ref: str | None,
+        action_class: str,
+        resource_scope: list[str],
+        idempotency_key: str | None,
+        expires_at: float | None,
+        status: str = "issued",
+    ) -> ExecutionPermitRecord:
+        permit_id = self._id("permit")
+        issued_at = time.time()
+        payload = {
+            "decision_ref": decision_ref,
+            "approval_ref": approval_ref,
+            "policy_ref": policy_ref,
+            "action_class": action_class,
+            "resource_scope": list(resource_scope),
+            "idempotency_key": idempotency_key,
+            "status": status,
+            "expires_at": expires_at,
+        }
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO execution_permits (
+                    permit_id, task_id, step_id, step_attempt_id, decision_ref, approval_ref, policy_ref,
+                    action_class, resource_scope_json, idempotency_key, status, issued_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    permit_id,
+                    task_id,
+                    step_id,
+                    step_attempt_id,
+                    decision_ref,
+                    approval_ref,
+                    policy_ref,
+                    action_class,
+                    json.dumps(list(resource_scope), ensure_ascii=False),
+                    idempotency_key,
+                    status,
+                    issued_at,
+                    expires_at,
+                ),
+            )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="permit.issued",
+                entity_type="execution_permit",
+                entity_id=permit_id,
+                task_id=task_id,
+                step_id=step_id,
+                actor="kernel",
+                payload=payload,
+            )
+        permit = self.get_execution_permit(permit_id)
+        assert permit is not None
+        return permit
+
+    def get_execution_permit(self, permit_id: str) -> ExecutionPermitRecord | None:
+        with self._lock:
+            row = self._row("SELECT * FROM execution_permits WHERE permit_id = ?", (permit_id,))
+        return self._execution_permit_from_row(row) if row is not None else None
+
+    def update_execution_permit(
+        self,
+        permit_id: str,
+        *,
+        status: str,
+        consumed_at: float | None | object = _UNSET,
+    ) -> None:
+        permit = self.get_execution_permit(permit_id)
+        if permit is None:
+            return
+        updated_consumed_at = permit.consumed_at if consumed_at is _UNSET else consumed_at
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE execution_permits
+                SET status = ?, consumed_at = ?
+                WHERE permit_id = ?
+                """,
+                (status, updated_consumed_at, permit_id),
+            )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type=f"permit.{status}",
+                entity_type="execution_permit",
+                entity_id=permit_id,
+                task_id=permit.task_id,
+                step_id=permit.step_id,
+                actor="kernel",
+                payload={"status": status, "consumed_at": updated_consumed_at},
+            )
+
+    def list_execution_permits(self, *, task_id: str | None = None, limit: int = 50) -> list[ExecutionPermitRecord]:
+        if task_id:
+            query = "SELECT * FROM execution_permits WHERE task_id = ? ORDER BY issued_at DESC LIMIT ?"
+            params: tuple[Any, ...] = (task_id, limit)
+        else:
+            query = "SELECT * FROM execution_permits ORDER BY issued_at DESC LIMIT ?"
+            params = (limit,)
+        with self._lock:
+            rows = self._rows(query, params)
+        return [self._execution_permit_from_row(row) for row in rows]
+
     def create_approval(
         self,
         *,
@@ -710,6 +1025,8 @@ class KernelStore:
         approval_type: str,
         requested_action: dict[str, Any],
         request_packet_ref: str | None,
+        decision_ref: str | None = None,
+        state_witness_ref: str | None = None,
     ) -> ApprovalRecord:
         approval_id = self._id("approval")
         requested_at = time.time()
@@ -718,9 +1035,9 @@ class KernelStore:
                 """
                 INSERT INTO approvals (
                     approval_id, task_id, step_id, step_attempt_id, status,
-                    approval_type, requested_action_json, request_packet_ref,
+                    approval_type, requested_action_json, request_packet_ref, decision_ref, state_witness_ref,
                     requested_at, resolution_json
-                ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, '{}')
+                ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, '{}')
                 """,
                 (
                     approval_id,
@@ -730,18 +1047,25 @@ class KernelStore:
                     approval_type,
                     json.dumps(requested_action, ensure_ascii=False),
                     request_packet_ref,
+                    decision_ref,
+                    state_witness_ref,
                     requested_at,
                 ),
             )
-        self.append_event(
-            event_type="approval.requested",
-            entity_type="approval",
-            entity_id=approval_id,
-            task_id=task_id,
-            step_id=step_id,
-            actor="kernel",
-            payload=requested_action,
-        )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="approval.requested",
+                entity_type="approval",
+                entity_id=approval_id,
+                task_id=task_id,
+                step_id=step_id,
+                actor="kernel",
+                payload={
+                    **requested_action,
+                    "decision_ref": decision_ref,
+                    "state_witness_ref": state_witness_ref,
+                },
+            )
         approval = self.get_approval(approval_id)
         assert approval is not None
         return approval
@@ -801,15 +1125,16 @@ class KernelStore:
                 """,
                 (status, now, resolved_by, json.dumps(resolution, ensure_ascii=False), approval_id),
             )
-        self.append_event(
-            event_type=f"approval.{status}",
-            entity_type="approval",
-            entity_id=approval_id,
-            task_id=approval.task_id,
-            step_id=approval.step_id,
-            actor=resolved_by,
-            payload=resolution,
-        )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type=f"approval.{status}",
+                entity_type="approval",
+                entity_id=approval_id,
+                task_id=approval.task_id,
+                step_id=approval.step_id,
+                actor=resolved_by,
+                payload=resolution,
+            )
 
     def create_receipt(
         self,
@@ -824,6 +1149,12 @@ class KernelStore:
         approval_ref: str | None,
         output_refs: list[str],
         result_summary: str,
+        result_code: str = "succeeded",
+        decision_ref: str | None = None,
+        permit_ref: str | None = None,
+        policy_ref: str | None = None,
+        witness_ref: str | None = None,
+        idempotency_key: str | None = None,
     ) -> ReceiptRecord:
         receipt_id = self._id("receipt")
         created_at = time.time()
@@ -833,8 +1164,9 @@ class KernelStore:
                 INSERT INTO receipts (
                     receipt_id, task_id, step_id, step_attempt_id, action_type,
                     input_refs_json, environment_ref, policy_result_json,
-                    approval_ref, output_refs_json, result_summary, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    approval_ref, output_refs_json, result_summary, result_code,
+                    decision_ref, permit_ref, policy_ref, witness_ref, idempotency_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     receipt_id,
@@ -848,18 +1180,34 @@ class KernelStore:
                     approval_ref,
                     json.dumps(output_refs, ensure_ascii=False),
                     result_summary,
+                    result_code,
+                    decision_ref,
+                    permit_ref,
+                    policy_ref,
+                    witness_ref,
+                    idempotency_key,
                     created_at,
                 ),
             )
-        self.append_event(
-            event_type="receipt.issued",
-            entity_type="receipt",
-            entity_id=receipt_id,
-            task_id=task_id,
-            step_id=step_id,
-            actor="kernel",
-            payload={"action_type": action_type, "result_summary": result_summary},
-        )
+            self._append_event_tx(
+                event_id=self._id("event"),
+                event_type="receipt.issued",
+                entity_type="receipt",
+                entity_id=receipt_id,
+                task_id=task_id,
+                step_id=step_id,
+                actor="kernel",
+                payload={
+                    "action_type": action_type,
+                    "result_summary": result_summary,
+                    "result_code": result_code,
+                    "decision_ref": decision_ref,
+                    "permit_ref": permit_ref,
+                    "policy_ref": policy_ref,
+                    "witness_ref": witness_ref,
+                    "idempotency_key": idempotency_key,
+                },
+            )
         return ReceiptRecord(
             receipt_id=receipt_id,
             task_id=task_id,
@@ -872,6 +1220,12 @@ class KernelStore:
             approval_ref=approval_ref,
             output_refs=output_refs,
             result_summary=result_summary,
+            result_code=result_code,
+            decision_ref=decision_ref,
+            permit_ref=permit_ref,
+            policy_ref=policy_ref,
+            witness_ref=witness_ref,
+            idempotency_key=idempotency_key,
             created_at=created_at,
         )
 
@@ -1039,6 +1393,9 @@ class KernelStore:
             context=_json_loads(row["context_json"]),
             waiting_reason=row["waiting_reason"],
             approval_id=row["approval_id"],
+            decision_id=row["decision_id"],
+            permit_id=row["permit_id"],
+            state_witness_ref=row["state_witness_ref"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
         )
@@ -1068,10 +1425,47 @@ class KernelStore:
             approval_type=str(row["approval_type"]),
             requested_action=_json_loads(row["requested_action_json"]),
             request_packet_ref=row["request_packet_ref"],
+            decision_ref=row["decision_ref"],
+            state_witness_ref=row["state_witness_ref"],
             requested_at=float(row["requested_at"]),
             resolved_at=row["resolved_at"],
             resolved_by=row["resolved_by"],
             resolution=_json_loads(row["resolution_json"]),
+        )
+
+    def _decision_from_row(self, row: sqlite3.Row) -> DecisionRecord:
+        return DecisionRecord(
+            decision_id=str(row["decision_id"]),
+            task_id=str(row["task_id"]),
+            step_id=str(row["step_id"]),
+            step_attempt_id=str(row["step_attempt_id"]),
+            decision_type=str(row["decision_type"]),
+            verdict=str(row["verdict"]),
+            reason=str(row["reason"]),
+            evidence_refs=list(_json_loads(row["evidence_refs_json"])),
+            policy_ref=row["policy_ref"],
+            approval_ref=row["approval_ref"],
+            action_type=row["action_type"],
+            decided_by=str(row["decided_by"]),
+            created_at=float(row["created_at"]),
+        )
+
+    def _execution_permit_from_row(self, row: sqlite3.Row) -> ExecutionPermitRecord:
+        return ExecutionPermitRecord(
+            permit_id=str(row["permit_id"]),
+            task_id=str(row["task_id"]),
+            step_id=str(row["step_id"]),
+            step_attempt_id=str(row["step_attempt_id"]),
+            decision_ref=str(row["decision_ref"]),
+            approval_ref=row["approval_ref"],
+            policy_ref=row["policy_ref"],
+            action_class=str(row["action_class"]),
+            resource_scope=list(_json_loads(row["resource_scope_json"])),
+            idempotency_key=row["idempotency_key"],
+            status=str(row["status"]),
+            issued_at=float(row["issued_at"]),
+            expires_at=row["expires_at"],
+            consumed_at=row["consumed_at"],
         )
 
     def _receipt_from_row(self, row: sqlite3.Row) -> ReceiptRecord:
@@ -1087,6 +1481,12 @@ class KernelStore:
             approval_ref=row["approval_ref"],
             output_refs=list(_json_loads(row["output_refs_json"])),
             result_summary=str(row["result_summary"]),
+            result_code=str(row["result_code"]),
+            decision_ref=row["decision_ref"],
+            permit_ref=row["permit_ref"],
+            policy_ref=row["policy_ref"],
+            witness_ref=row["witness_ref"],
+            idempotency_key=row["idempotency_key"],
             created_at=float(row["created_at"]),
         )
 

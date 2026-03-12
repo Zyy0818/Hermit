@@ -318,6 +318,12 @@ make env-up ENV=dev
 - webhook
 - `SERVE_START` / `SERVE_STOP` hooks
 
+启动脚本会优先使用 `PATH` 里的 `uv`，如果你的 `uv` 不在 `PATH`，也可以在命令前显式指定：
+
+```bash
+HERMIT_UV_BIN=/absolute/path/to/uv make env-up ENV=dev
+```
+
 如果你在改 Python 源码，优先开 watcher，而不是反复重装工具副本：
 
 ```bash

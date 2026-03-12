@@ -44,8 +44,7 @@ def test_session_manager_persists_and_reloads(tmp_path) -> None:
     manager2 = SessionManager(tmp_path / "sessions")
     reloaded = manager2.get_or_create("chat-b")
 
-    assert len(reloaded.messages) == 1
-    assert reloaded.messages[0]["content"] == "test message"
+    assert reloaded.messages == []
 
 
 def test_session_manager_expires_and_resets_projection(tmp_path) -> None:
@@ -59,8 +58,6 @@ def test_session_manager_expires_and_resets_projection(tmp_path) -> None:
     new_session = manager.get_or_create("chat-c")
 
     assert new_session.messages == []
-    store = KernelStore(tmp_path / "kernel" / "state.db")
-    assert store.load_messages("chat-c") == []
 
 
 def test_session_manager_close_clears_projection(tmp_path) -> None:
@@ -133,6 +130,6 @@ def test_session_manager_save_repairs_orphaned_tool_use(tmp_path) -> None:
 
     manager.save(session)
 
-    reloaded = manager.get_or_create("chat-repair")
+    reloaded = manager._active["chat-repair"]
     assert reloaded.messages[1]["role"] == "user"
     assert reloaded.messages[1]["content"][0]["tool_use_id"] == "call_1"

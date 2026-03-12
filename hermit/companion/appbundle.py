@@ -238,8 +238,11 @@ def install_app_bundle(
         bundled_python.unlink()
     project_root = _project_root()
     if project_root is not None:
+        helper_path = project_root / "scripts" / "hermit-common.sh"
         exec_line = (
-            f'exec /opt/homebrew/bin/uv run --project "{project_root}" --python 3.11 '
+            f'source "{helper_path}"\n'
+            'UV_BIN="$(resolve_uv_bin)"\n'
+            f'exec "${{UV_BIN}}" run --project "{project_root}" --python 3.11 '
             f'python -m hermit.companion.menubar --adapter "{adapter}"'
         )
     else:

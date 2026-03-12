@@ -5,6 +5,23 @@ from pathlib import Path
 from hermit.companion import control
 
 
+def test_command_prefix_uses_resolved_uv_bin_when_repo_available(monkeypatch) -> None:
+    monkeypatch.setattr(control, "_project_root", lambda: Path("/Users/beta/work/Hermit"))
+    monkeypatch.setattr(control, "resolve_uv_bin", lambda: "/Users/beta/.local/bin/uv")
+
+    assert control.command_prefix() == [
+        "/Users/beta/.local/bin/uv",
+        "run",
+        "--project",
+        "/Users/beta/work/Hermit",
+        "--python",
+        "3.11",
+        "python",
+        "-m",
+        "hermit.main",
+    ]
+
+
 def test_load_runtime_settings_ignores_profile_env_override(tmp_path: Path, monkeypatch) -> None:
     base_dir = tmp_path / ".hermit-dev"
     base_dir.mkdir()

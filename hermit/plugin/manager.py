@@ -297,7 +297,7 @@ class PluginManager:
         callback = self._on_tool_call or _sub_tool_call
 
         try:
-            result = sub_agent.run(task, on_tool_call=callback)
+            result = sub_agent.run(task, on_tool_call=callback, readonly_only=True)
             sys.stderr.write(
                 f"{MAGENTA}  └─{RESET} {GREEN}done{RESET} "
                 f"{DIM}({result.turns} turns, {result.tool_calls} tool calls){RESET}\n\n"

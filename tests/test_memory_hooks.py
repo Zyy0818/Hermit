@@ -8,19 +8,25 @@ from unittest.mock import MagicMock, patch
 from hermit.builtin.memory import hooks
 from hermit.builtin.memory.engine import MemoryEngine
 from hermit.builtin.memory.types import MemoryEntry
+from hermit.kernel.store import KernelStore
 from hermit.plugin.base import HookEvent, PluginContext
 from hermit.plugin.hooks import HooksEngine
 
 
-def _settings(tmp_path: Path, *, has_auth: bool = True) -> SimpleNamespace:
+def _settings(tmp_path: Path, *, has_auth: bool = True, include_kernel: bool = False) -> SimpleNamespace:
     memory_dir = tmp_path / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
-    return SimpleNamespace(
+    settings = SimpleNamespace(
         has_auth=has_auth,
         model="fake-model",
         memory_file=memory_dir / "memories.md",
         session_state_file=memory_dir / "session_state.json",
     )
+    if include_kernel:
+        kernel_dir = tmp_path / "kernel"
+        settings.kernel_db_path = kernel_dir / "state.db"
+        settings.kernel_artifacts_dir = kernel_dir / "artifacts"
+    return settings
 
 
 def test_register_adds_all_memory_hooks(tmp_path) -> None:
@@ -207,17 +213,44 @@ def test_checkpoint_memories_appends_and_marks_processed(tmp_path) -> None:
     ), patch.object(
         hooks, "_extract_memory_payload", return_value={"used_keywords": set(), "new_entries": new_entries}
     ), patch.object(
-        engine, "append_entries"
-    ) as append_mock, patch.object(
         hooks, "_mark_messages_processed"
     ) as mark_mock, patch.object(
         hooks.log, "info"
-    ) as log_mock:
+    ) as log_mock, patch.object(
+        engine, "append_entries"
+    ) as append_mock:
         hooks._checkpoint_memories(engine, settings, "s1", messages)
 
-    append_mock.assert_called_once_with(new_entries)
-    mark_mock.assert_called_once_with(settings.session_state_file, "s1", len(messages))
-    log_mock.assert_called_once()
+    append_mock.assert_not_called()
+    mark_mock.assert_not_called()
+    assert log_mock.call_count >= 1
+
+
+def test_checkpoint_memories_promotes_durable_memory_via_kernel(tmp_path) -> None:
+    settings = _settings(tmp_path, include_kernel=True)
+    engine = MemoryEngine(settings.memory_file)
+    messages = [{"role": "user", "content": "记住：默认工作目录固定到 /repo"}, {"role": "assistant", "content": "收到"}]
+    new_entries = [MemoryEntry(category="项目约定", content="默认工作目录固定到 /repo")]
+
+    with patch.object(hooks, "_pending_messages", return_value=(messages, 0)), patch.object(
+        hooks, "_should_checkpoint", return_value=(True, "explicit_memory_signal")
+    ), patch.object(
+        hooks, "_extract_memory_payload", return_value={"used_keywords": {"repo"}, "new_entries": new_entries}
+    ):
+        hooks._checkpoint_memories(engine, settings, "chat-memory", messages)
+
+    assert "默认工作目录固定到 /repo" in settings.memory_file.read_text(encoding="utf-8")
+    store = KernelStore(settings.kernel_db_path)
+    try:
+        task = store.get_last_task_for_conversation("chat-memory")
+        assert task is not None
+        assert "Promote durable memory" in task.title
+        receipt = store.list_receipts(task_id=task.task_id, limit=1)[0]
+        assert receipt.action_type == "memory_write"
+        assert receipt.decision_ref is not None
+        assert receipt.permit_ref is not None
+    finally:
+        store.close()
 
 
 def test_extract_and_save_returns_when_nothing_extracted(tmp_path) -> None:
@@ -242,20 +275,20 @@ def test_extract_and_save_records_session_when_payload_present(tmp_path) -> None
     after = {"项目约定": [MemoryEntry(category="项目约定", content="默认工作目录固定到 /repo")]}
     with patch.object(
         hooks, "_extract_memory_payload", return_value={"used_keywords": {"repo"}, "new_entries": entries}
-    ), patch.object(hooks, "_bump_session_index", return_value=7) as bump_mock, patch.object(
+    ), patch.object(
         engine, "record_session"
     ) as record_mock, patch.object(
         engine, "load", side_effect=[before, after]
     ), patch.object(
         hooks.log, "info"
-    ) as log_mock:
+    ) as log_mock, patch.object(
+        hooks, "_bump_session_index"
+    ) as bump_mock:
         hooks._extract_and_save(engine, settings, [{"role": "user", "content": "hello there this is long enough"}])
 
-    bump_mock.assert_called_once_with(settings.session_state_file)
-    record_mock.assert_called_once()
-    assert record_mock.call_args.kwargs["session_index"] == 7
-    assert record_mock.call_args.kwargs["merge_fn"] is hooks._consolidate_category_entries
-    assert log_mock.call_count >= 2
+    bump_mock.assert_not_called()
+    record_mock.assert_not_called()
+    assert log_mock.call_count >= 1
 
 
 def test_extract_memory_payload_returns_empty_for_short_transcript(tmp_path) -> None:

@@ -52,11 +52,13 @@ class AgentRunner:
         serve_mode: bool = False,
         task_controller: TaskController | None = None,
     ) -> None:
+        if task_controller is None:
+            raise ValueError("AgentRunner requires a TaskController; non-kernel runner mode has been removed.")
         self.agent = agent
         self.session_manager = session_manager
         self.pm = plugin_manager
         self.serve_mode = serve_mode
-        self.task_controller = task_controller or getattr(agent, "task_controller", None)
+        self.task_controller = task_controller
         self._session_started: set[str] = set()
         # Instance-level copy: core commands + plugin commands added later via add_command()
         self._commands: Dict[str, tuple[CommandHandler, str, bool]] = dict(self._core_commands)
@@ -158,6 +160,7 @@ class AgentRunner:
                 source_channel=source_channel,
                 kind=task_kind,
                 policy_profile="readonly" if run_opts.get("readonly_only", False) else "default",
+                workspace_root=str(getattr(self.agent, "workspace_root", "") or ""),
             )
 
         result = self.agent.run(
@@ -179,17 +182,25 @@ class AgentRunner:
         self.session_manager.save(session)
         if self.task_controller is not None and task_ctx is not None:
             if result.blocked:
+                if getattr(result, "status_managed_by_kernel", False):
+                    return result
                 self.task_controller.mark_blocked(task_ctx)
             else:
                 status = self._result_status(result)
-                self.task_controller.finalize_result(task_ctx, status=status)
+                if not getattr(result, "status_managed_by_kernel", False):
+                    self.task_controller.finalize_result(task_ctx, status=status)
         if not result.blocked:
             self.pm.on_post_run(result, session_id=session_id, session=session, runner=self)
         return result
 
     @staticmethod
     def _result_status(result: AgentResult) -> str:
+        explicit = str(getattr(result, "execution_status", "") or "").strip()
+        if explicit:
+            return explicit
         text = result.text or ""
+        if text.startswith("[Execution Requires Attention]"):
+            return "needs_attention"
         if text.startswith("[API Error]") or text.startswith("[Policy Denied]"):
             return "failed"
         return "succeeded"
@@ -218,8 +229,6 @@ class AgentRunner:
         on_tool_call: Optional[ToolCallback] = None,
         on_tool_start: Optional[ToolStartCallback] = None,
     ) -> DispatchResult:
-        if self.task_controller is None:
-            return DispatchResult("Task kernel is not configured.", is_command=True)
         approval = self.task_controller.store.get_approval(approval_id)
         if approval is None:
             return DispatchResult(f"未知 approval：{approval_id}", is_command=True)
@@ -262,10 +271,12 @@ class AgentRunner:
         session.messages = result.messages
         self.session_manager.save(session)
         if result.blocked:
-            self.task_controller.mark_blocked(task_ctx)
+            if not getattr(result, "status_managed_by_kernel", False):
+                self.task_controller.mark_blocked(task_ctx)
         else:
             status = self._result_status(result)
-            self.task_controller.finalize_result(task_ctx, status=status)
+            if not getattr(result, "status_managed_by_kernel", False):
+                self.task_controller.finalize_result(task_ctx, status=status)
             self.pm.on_post_run(result, session_id=session_id, session=session, runner=self)
         return DispatchResult(
             text=result.text or "",

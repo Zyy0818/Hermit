@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+from hermit.executables import resolve_uv_bin
 from watchfiles import Change, watch
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -125,7 +126,7 @@ def _run(cmd: list[str]) -> None:
 
 
 def _ensure_macos_deps() -> None:
-    _run(["/opt/homebrew/bin/uv", "sync", "--extra", "dev", "--extra", "macos"])
+    _run([resolve_uv_bin(), "sync", "--extra", "dev", "--extra", "macos"])
 
 
 def _ensure_menubar(env_name: str, adapter: str) -> None:

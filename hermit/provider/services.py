@@ -194,6 +194,7 @@ def build_runtime(
         system_prompt=system_prompt,
         tool_executor=tool_executor,
     )
+    runtime.workspace_root = str(workdir)  # type: ignore[attr-defined]
     runtime.kernel_store = kernel_store  # type: ignore[attr-defined]
     runtime.artifact_store = artifact_store  # type: ignore[attr-defined]
     runtime.task_controller = TaskController(kernel_store)  # type: ignore[attr-defined]

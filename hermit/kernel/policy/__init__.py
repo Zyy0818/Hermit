@@ -6,9 +6,11 @@ from hermit.kernel.policy.models import (
     PolicyObligations,
     PolicyReason,
 )
+from hermit.kernel.policy.rules import POLICY_RULES_VERSION
 
 __all__ = [
     "ActionRequest",
+    "POLICY_RULES_VERSION",
     "PolicyDecision",
     "PolicyEngine",
     "PolicyObligations",

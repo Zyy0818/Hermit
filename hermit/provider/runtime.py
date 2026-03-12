@@ -60,7 +60,6 @@ def format_tool_result_content(value: Any, limit: int) -> Any:
         return _tool_result_json_text(serialized, limit)
     return serialized
 
-
 @dataclass
 class AgentResult:
     text: str
@@ -77,6 +76,8 @@ class AgentResult:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    execution_status: str = "succeeded"
+    status_managed_by_kernel: bool = False
 
 
 class AgentRuntime:
@@ -264,6 +265,7 @@ class AgentRuntime:
                     task_id=task_context.task_id if task_context else None,
                     step_id=task_context.step_id if task_context else None,
                     step_attempt_id=task_context.step_attempt_id if task_context else None,
+                    execution_status="failed",
                 )
 
             usage.input_tokens += response.usage.input_tokens
@@ -281,6 +283,7 @@ class AgentRuntime:
                     task_id=task_context.task_id if task_context else None,
                     step_id=task_context.step_id if task_context else None,
                     step_attempt_id=task_context.step_attempt_id if task_context else None,
+                    execution_status="failed",
                 )
 
             response_blocks = [normalize_block(block) for block in response.content]
@@ -297,6 +300,7 @@ class AgentRuntime:
                     task_id=task_context.task_id if task_context else None,
                     step_id=task_context.step_id if task_context else None,
                     step_attempt_id=task_context.step_attempt_id if task_context else None,
+                    execution_status="succeeded",
                 )
 
             tool_use_blocks = [block for block in response_blocks if block_value(block, "type") == "tool_use"]
@@ -355,6 +359,7 @@ class AgentRuntime:
                 task_id=task_context.task_id if task_context else None,
                 step_id=task_context.step_id if task_context else None,
                 step_attempt_id=task_context.step_attempt_id if task_context else None,
+                execution_status="succeeded",
             )
         except Exception as exc:
             log.error("final_summary_failed", error=str(exc))
@@ -367,6 +372,7 @@ class AgentRuntime:
                 task_id=task_context.task_id if task_context else None,
                 step_id=task_context.step_id if task_context else None,
                 step_attempt_id=task_context.step_attempt_id if task_context else None,
+                execution_status="failed",
             )
 
     def _execute_tool_turn(
@@ -429,6 +435,8 @@ class AgentRuntime:
                     task_id=task_context.task_id,
                     step_id=task_context.step_id,
                     step_attempt_id=task_context.step_attempt_id,
+                    execution_status=exec_result.execution_status,
+                    status_managed_by_kernel=exec_result.state_applied,
                 )
 
             if exec_result.denied and task_context is not None:
@@ -446,6 +454,8 @@ class AgentRuntime:
                     task_id=task_context.task_id,
                     step_id=task_context.step_id,
                     step_attempt_id=task_context.step_attempt_id,
+                    execution_status=exec_result.execution_status,
+                    status_managed_by_kernel=exec_result.state_applied,
                 )
 
             if on_tool_call:
@@ -467,11 +477,11 @@ class AgentRuntime:
         tool_name: str,
         tool_input: dict[str, Any],
     ) -> ToolExecutionResult:
-        if self.tool_executor is None or task_context is None:
-            raw_result = self.registry.call(tool_name, tool_input)
-            return ToolExecutionResult(
-                model_content=format_tool_result_content(raw_result, self.tool_output_limit),
-                raw_result=raw_result,
+        if self.tool_executor is None:
+            raise RuntimeError("Task-scoped kernel executor is required for tool execution.")
+        if task_context is None:
+            raise RuntimeError(
+                f"Tool '{tool_name}' requires task-scoped governed execution; task context is missing."
             )
         return self.tool_executor.execute(task_context, tool_name, tool_input)
 
@@ -523,6 +533,7 @@ class AgentRuntime:
                     turns=turn,
                     tool_calls=tool_calls,
                     messages=messages,
+                    execution_status="failed",
                 )
 
             messages.append({"role": "assistant", "content": response_blocks})
@@ -534,6 +545,7 @@ class AgentRuntime:
                     tool_calls=tool_calls,
                     thinking=extract_thinking(response_blocks),
                     messages=messages,
+                    execution_status="succeeded",
                 )
 
             tool_use_blocks = [block for block in response_blocks if block_value(block, "type") == "tool_use"]
@@ -545,10 +557,11 @@ class AgentRuntime:
                 tool_name = str(block_value(block, "name"))
                 tool_input = dict(block_value(block, "input", {}) or {})
                 try:
-                    raw_result = self.registry.call(tool_name, tool_input)
-                    serialized = format_tool_result_content(raw_result, self.tool_output_limit)
-                except KeyError:
-                    serialized = f"Error: Unknown tool '{tool_name}'. Available: {list(self.registry._tools.keys())}"
+                    if self.tool_executor is None:
+                        raise RuntimeError("Task-scoped kernel executor is required for streaming tool execution.")
+                    raise RuntimeError(
+                        f"Tool '{tool_name}' requires task-scoped governed execution; task context is missing."
+                    )
                 except Exception as exc:
                     serialized = f"Error executing {tool_name}: {type(exc).__name__}: {exc}"
                 tool_result_blocks.append(
@@ -590,6 +603,7 @@ class AgentRuntime:
                 turns=self.max_turns + 1,
                 tool_calls=tool_calls,
                 messages=messages,
+                execution_status="succeeded",
             )
         except Exception as exc:
             log.error("final_summary_failed_stream", error=str(exc))
@@ -599,4 +613,5 @@ class AgentRuntime:
                 turns=self.max_turns + 1,
                 tool_calls=tool_calls,
                 messages=messages,
+                execution_status="failed",
             )

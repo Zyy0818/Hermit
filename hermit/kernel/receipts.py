@@ -22,6 +22,12 @@ class ReceiptService:
         approval_ref: str | None,
         output_refs: list[str],
         result_summary: str,
+        result_code: str = "succeeded",
+        decision_ref: str | None = None,
+        permit_ref: str | None = None,
+        policy_ref: str | None = None,
+        witness_ref: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         receipt = self.store.create_receipt(
             task_id=task_id,
@@ -34,5 +40,11 @@ class ReceiptService:
             approval_ref=approval_ref,
             output_refs=output_refs,
             result_summary=result_summary,
+            result_code=result_code,
+            decision_ref=decision_ref,
+            permit_ref=permit_ref,
+            policy_ref=policy_ref,
+            witness_ref=witness_ref,
+            idempotency_key=idempotency_key,
         )
         return receipt.receipt_id
