@@ -1,35 +1,35 @@
-# Provider 与 Profile
+# Providers and Profiles
 
-这份文档专门说明 Hermit 当前支持的 provider 模式、鉴权来源，以及 `config.toml` profile 的用法。
+This document focuses on the provider modes Hermit currently supports, the available auth sources, and how `config.toml` profiles work.
 
-## 当前支持的 provider
+## Currently Supported Providers
 
-当前代码支持三种 provider：
+The current code supports three providers:
 
 - `claude`
 - `codex`
 - `codex-oauth`
 
-provider 入口在 [`hermit/provider/services.py`](../hermit/provider/services.py)。
+The provider entrypoint is [`hermit/provider/services.py`](../hermit/provider/services.py).
 
 ## 1. `claude`
 
-默认 provider。
+This is the default provider.
 
-适用场景：
+Typical use cases:
 
-- 直接使用 Anthropic API
-- 使用 Claude 兼容的企业网关 / 代理
+- direct Anthropic API access
+- a Claude-compatible enterprise gateway / proxy
 
-### 直连 Anthropic
+### Direct Anthropic Access
 
-最简单配置：
+Simplest configuration:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### 走兼容网关
+### Via a Compatible Gateway
 
 ```bash
 HERMIT_PROVIDER=claude
@@ -39,17 +39,17 @@ HERMIT_CUSTOM_HEADERS=X-Biz-Id: my-team
 HERMIT_MODEL=claude-3-7-sonnet-latest
 ```
 
-兼容别名：
+Compatible aliases:
 
-- `HERMIT_CLAUDE_AUTH_TOKEN` 等价 `HERMIT_AUTH_TOKEN`
-- `HERMIT_CLAUDE_BASE_URL` 等价 `HERMIT_BASE_URL`
-- `HERMIT_CLAUDE_HEADERS` 等价 `HERMIT_CUSTOM_HEADERS`
+- `HERMIT_CLAUDE_AUTH_TOKEN` is equivalent to `HERMIT_AUTH_TOKEN`
+- `HERMIT_CLAUDE_BASE_URL` is equivalent to `HERMIT_BASE_URL`
+- `HERMIT_CLAUDE_HEADERS` is equivalent to `HERMIT_CUSTOM_HEADERS`
 
 ## 2. `codex`
 
-这不是“调用本机 codex CLI”，而是直接走 OpenAI Responses API。
+This does not mean “call the local codex CLI.” It goes directly through the OpenAI Responses API.
 
-最常见配置：
+Most common configuration:
 
 ```bash
 HERMIT_PROVIDER=codex
@@ -57,64 +57,64 @@ HERMIT_OPENAI_API_KEY=sk-...
 HERMIT_MODEL=gpt-5.4
 ```
 
-可选项：
+Optional fields:
 
 ```bash
 HERMIT_OPENAI_BASE_URL=https://api.openai.com/v1
 HERMIT_OPENAI_HEADERS=X-Project: hermit
 ```
 
-### 一个容易误解的点
+### One Common Misunderstanding
 
-如果本机有 `~/.codex/auth.json`，但其中没有可用的 OpenAI API key，`codex` 模式不会自动帮你“借用桌面登录态”。
+If `~/.codex/auth.json` exists locally but does not contain a usable OpenAI API key, `codex` mode will not automatically “borrow” the desktop login session.
 
-当前实现会直接报错，提示：
+The current implementation fails immediately and tells you:
 
-- 需要 `HERMIT_OPENAI_API_KEY`
-- 或本地 `~/.codex/auth.json` 里存在 API-key-backed auth state
+- `HERMIT_OPENAI_API_KEY` is required
+- or local `~/.codex/auth.json` must contain API-key-backed auth state
 
 ## 3. `codex-oauth`
 
-这个模式才会真正读取 `~/.codex/auth.json` 里的 OAuth token。
+This is the mode that actually reads OAuth tokens from `~/.codex/auth.json`.
 
-适用场景：
+Typical use cases:
 
-- 你已经在本机登录了 Codex / ChatGPT 桌面体系
-- 想直接重用 access / refresh token
+- you are already signed into the local Codex / ChatGPT desktop environment
+- you want to reuse the existing access / refresh tokens directly
 
-示例：
+Example:
 
 ```bash
 HERMIT_PROVIDER=codex-oauth
 HERMIT_MODEL=gpt-5.4
 ```
 
-要求：
+Requirements:
 
-- `~/.codex/auth.json` 存在
-- 其中同时包含 `access_token` 与 `refresh_token`
+- `~/.codex/auth.json` must exist
+- it must contain both `access_token` and `refresh_token`
 
-如果文件不存在，Hermit 会在启动时直接报错。
+If the file is missing, Hermit fails immediately at startup.
 
-## model 解析逻辑
+## Model Resolution Logic
 
-provider 选择后，最终 model 解析还有一个细节：
+After a provider is selected, there is one more detail in model resolution:
 
-- 如果你在 `codex` / `codex-oauth` 模式下仍请求了 `claude...` 开头的模型名
-- Hermit 会尝试读取 `~/.codex/config.toml` 里的 `model`
-- 如果仍拿不到，就回退到默认的 `gpt-5.4`
+- if you are in `codex` / `codex-oauth` mode but still request a model name starting with `claude`
+- Hermit will try to read the `model` field from `~/.codex/config.toml`
+- if it still cannot resolve one, it falls back to the default `gpt-5.4`
 
-也就是说，`codex*` 模式不适合继续保留 Claude 风格的默认 model 名。
+In other words, `codex*` modes are not a good fit for keeping a Claude-style default model name around.
 
-## `config.toml` profile
+## `config.toml` Profiles
 
-profile 文件路径：
+Profile file path:
 
 ```text
 ~/.hermit/config.toml
 ```
 
-最常见写法：
+Most common format:
 
 ```toml
 default_profile = "codex-local"
@@ -131,17 +131,17 @@ claude_base_url = "https://example.internal/claude"
 claude_headers = "X-Biz-Id: workbench"
 ```
 
-### 选择 profile 的方式
+### How a Profile Is Selected
 
 1. `default_profile`
 2. `HERMIT_PROFILE`
-3. `profiles resolve --name ...` 只是查看，不会写入
+3. `profiles resolve --name ...` only inspects; it does not write anything
 
-环境变量仍然可以覆盖 profile 值。
+Environment variables can still override profile values.
 
-## 推荐配置示例
+## Recommended Configuration Examples
 
-### 个人本机，直接用 Claude
+### Personal Machine, Direct Claude Access
 
 ```toml
 default_profile = "default"
@@ -151,9 +151,9 @@ provider = "claude"
 model = "claude-3-7-sonnet-latest"
 ```
 
-再把 `ANTHROPIC_API_KEY` 放进 `~/.hermit/.env`。
+Then put `ANTHROPIC_API_KEY` in `~/.hermit/.env`.
 
-### 个人本机，重用 Codex 登录态
+### Personal Machine, Reusing the Codex Login State
 
 ```toml
 default_profile = "codex-local"
@@ -164,7 +164,7 @@ model = "gpt-5.4"
 max_turns = 60
 ```
 
-### 团队内网，走 Claude 兼容网关
+### Internal Team Network, Using a Claude-Compatible Gateway
 
 ```toml
 default_profile = "work"
@@ -176,11 +176,11 @@ claude_base_url = "https://gateway.example.com/claude"
 claude_headers = "X-Biz-Id: hermit"
 ```
 
-再用 shell env 或 `~/.hermit/.env` 注入 token。
+Then inject the token through shell env or `~/.hermit/.env`.
 
-## 插件变量也来自 `config.toml`
+## Plugin Variables Also Come from `config.toml`
 
-除了 `[profiles.*]`，还支持：
+Besides `[profiles.*]`, the file also supports:
 
 ```toml
 [plugins.github.variables]
@@ -188,7 +188,7 @@ github_pat = "ghp_xxx"
 github_mcp_url = "https://api.githubcopilot.com/mcp/"
 ```
 
-插件变量会在加载 `plugin.toml` 时参与模板渲染，例如：
+Plugin variables participate in template rendering when `plugin.toml` is loaded, for example:
 
 ```toml
 [config]
@@ -198,7 +198,7 @@ url = "{{ github_mcp_url }}"
 Authorization = "Bearer {{ github_pat }}"
 ```
 
-## 常用检查命令
+## Common Inspection Commands
 
 ```bash
 hermit profiles list
@@ -207,15 +207,15 @@ hermit auth status
 hermit config show
 ```
 
-最实用的排查顺序通常是：
+The most practical troubleshooting order is usually:
 
 1. `hermit profiles list`
 2. `hermit profiles resolve --name ...`
 3. `hermit auth status`
 4. `hermit config show`
 
-## 这轮审查确认的事实
+## Facts Confirmed in This Review
 
-- `codex` 当前已经明确绑定 OpenAI Responses API
-- `codex-oauth` 才是读取 `~/.codex/auth.json` token 的模式
-- profile 与 env 的叠加关系是真实可用能力，不应继续只靠测试文件理解
+- `codex` is currently explicitly bound to the OpenAI Responses API
+- `codex-oauth` is the mode that reads tokens from `~/.codex/auth.json`
+- the profile + env layering is real supported behavior and should not be inferred only from tests

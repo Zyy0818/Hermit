@@ -1,67 +1,67 @@
-# Serve 故障排查
+# Serve Troubleshooting
 
-这份文档聚焦 `hermit serve --adapter feishu` 的长期运行问题，尤其是：
+This document focuses on long-running issues around `hermit serve --adapter feishu`, especially when:
 
-- 服务看起来“突然挂了”
-- 飞书还能看到最后一条回复，但后续消息没有响应
-- menubar 还在，`serve` 本体却不在
-- 日志里没有 traceback，只剩一个 stale PID
+- the service appears to have “died unexpectedly”
+- Feishu still shows the last reply, but later messages get no response
+- the menubar is still running while `serve` itself is gone
+- the logs have no traceback and only a stale PID remains
 
-## 先看三个事实面
+## Start with Three Perspectives
 
-### 1. 进程面：服务是不是还活着
+### 1. Process Perspective: Is the service still alive?
 
-优先用环境控制脚本确认：
+Use the environment control script first:
 
 ```bash
 make env-status ENV=dev
 ```
 
-重点看：
+Focus on:
 
-- `[service]` 是否为空
-- `PID_FILE=` 里是不是还留着旧 PID
-- `[menubar]` 是否还在
+- whether `[service]` is empty
+- whether `PID_FILE=` still contains an old PID
+- whether `[menubar]` is still running
 
-常见现象：
+Common patterns:
 
-- `service` 为空、`menubar` 还在：说明控制层还活着，但 `serve` 本体已经退出
-- `PID_FILE` 有值但进程不存在：说明这是 stale PID，不是活进程
+- `service` is empty but `menubar` is still running: the control layer is still alive, but the `serve` process has already exited
+- `PID_FILE` has a value but the process does not exist: that is a stale PID, not a live process
 
-### 2. 生命周期面：最后一次退出原因是什么
+### 2. Lifecycle Perspective: What caused the last exit?
 
-从这版开始，`serve` 会把当前状态和最后一次退出原因写到：
+From this version onward, `serve` writes its current state and the last exit reason to:
 
 - `~/.hermit/logs/serve-feishu-status.json`
 - `~/.hermit/logs/serve-feishu-exit-history.jsonl`
 
-`dev` / `test` 环境对应：
+For `dev` / `test`, the corresponding files are:
 
 - `~/.hermit-dev/logs/serve-feishu-status.json`
 - `~/.hermit-dev/logs/serve-feishu-exit-history.jsonl`
 
-推荐先看：
+Start with:
 
 ```bash
 cat ~/.hermit-dev/logs/serve-feishu-status.json
 ```
 
-常见字段：
+Common fields:
 
 - `phase`: `starting` / `running` / `reloading` / `stopped` / `crashed`
 - `reason`: `startup` / `signal` / `adapter_stopped` / `exception`
-- `signal`: 例如 `SIGTERM` / `SIGHUP` / `SIGINT`
-- `detail`: 人类可读的退出说明
-- `exception_type` / `exception_message` / `traceback`: 未处理异常时会写
+- `signal`: for example `SIGTERM` / `SIGHUP` / `SIGINT`
+- `detail`: human-readable exit explanation
+- `exception_type` / `exception_message` / `traceback`: written for unhandled exceptions
 
-注意：
+Notes:
 
-- `SIGTERM`、`SIGHUP`、`SIGINT` 现在都能记录
-- `SIGKILL` 无法被进程捕获，所以如果是 `SIGKILL`，通常只会留下 stale PID，而不会有优雅退出记录
+- `SIGTERM`, `SIGHUP`, and `SIGINT` are now recorded
+- `SIGKILL` cannot be caught by the process, so a `SIGKILL` case usually leaves only a stale PID, not a graceful exit record
 
-### 3. 业务面：是任务失败，还是服务本身死了
+### 3. Business Perspective: Did a task fail, or did the service die?
 
-如果飞书里“最后一条消息成功发出”，不要立刻假设业务逻辑崩了。先看 kernel 账本：
+If Feishu shows that “the last message was sent successfully,” do not immediately assume the business logic failed. Check the kernel ledger first:
 
 ```bash
 sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
@@ -71,21 +71,21 @@ sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
    limit 40;"
 ```
 
-如果你看到：
+If you see:
 
 - `approval.granted`
 - `receipt.issued`
 - `task.completed`
 
-说明任务链路本身是走通的。
+then the task path itself succeeded.
 
-如果这些事件之后突然再也没有新的 `task.created` / `step.started`，而飞书后续消息也不进 kernel，通常说明挂的是 `serve` 宿主，而不是单个任务。
+If there are no new `task.created` / `step.started` events after that point, and later Feishu messages never enter the kernel, the usual explanation is that the `serve` host process died, not that a single task failed.
 
-## 从“最后一条回复”逆推
+## Work Backward from “the Last Reply”
 
-这是排 `14:03 回复完就崩` 这类问题最有用的路径。
+This is the most useful path for issues like “it replied at 14:03 and then died.”
 
-### 1. 查最后一个 conversation
+### 1. Find the last conversation
 
 ```bash
 sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
@@ -96,7 +96,7 @@ sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
    limit 10;"
 ```
 
-### 2. 查这条 conversation 的消息与 task
+### 2. Inspect that conversation’s messages and tasks
 
 ```bash
 sqlite3 -line ~/.hermit-dev/kernel/state.db \
@@ -115,7 +115,7 @@ sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
    order by updated_at desc;"
 ```
 
-### 3. 查 task 有没有真正跑完
+### 3. Check whether the task actually completed
 
 ```bash
 sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
@@ -127,16 +127,16 @@ sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
    order by occurred_at;"
 ```
 
-如果最后能看到 `task.completed`，说明：
+If the end of the event stream includes `task.completed`, that means:
 
-- 任务本身已经完成
-- “最后一条回复之后服务不见了”更像进程生命周期问题，不像任务逻辑失败
+- the task itself finished
+- “the service disappeared after the last reply” is more likely a process lifecycle problem than a task logic failure
 
-## 查工具到底执行了什么
+## Check What the Tools Actually Did
 
-如果任务里有审批、shell 命令、文件写入，不要猜。直接看 receipt 和 artifact。
+If the task involved approvals, shell commands, or file writes, do not guess. Check the receipts and artifacts directly.
 
-### 1. 查 receipt
+### 1. Check receipts
 
 ```bash
 sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
@@ -147,7 +147,7 @@ sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
    order by created_at;"
 ```
 
-### 2. 查实际命令输入 / 输出
+### 2. Check the actual command input / output
 
 ```bash
 sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
@@ -158,57 +158,57 @@ sqlite3 -header -column ~/.hermit-dev/kernel/state.db \
    order by created_at;"
 ```
 
-然后直接打开对应文件：
+Then open the corresponding files directly:
 
-- `tool_input`：实际工具输入
-- `tool_output`：实际 stdout / stderr / returncode
-- `approval_packet`：审批时给用户看的命令预览
+- `tool_input`: the actual tool input
+- `tool_output`: the actual stdout / stderr / returncode
+- `approval_packet`: the command preview shown to the user during approval
 
-这一步可以明确区分：
+This lets you clearly distinguish:
 
-- 是不是只执行了只读命令
-- 有没有真的删文件
-- 有没有因为 approval mismatch 重新发起审批
+- whether only read-only commands were executed
+- whether files were actually deleted
+- whether approval mismatch triggered a new approval request
 
-## 日志怎么读
+## How to Read the Logs
 
-`serve` 相关日志通常在：
+`serve`-related logs are usually in:
 
 - `~/.hermit-dev/logs/dev-restart-service.out`
 - `~/.hermit-dev/logs/serve-feishu-status.json`
 - `~/.hermit-dev/logs/serve-feishu-exit-history.jsonl`
 
-`menubar` 相关日志通常在：
+`menubar`-related logs are usually in:
 
 - `~/.hermit-dev/logs/companion.log`
 - `~/.hermit-dev/logs/feishu-menubar-stdout.log`
 - `~/.hermit-dev/logs/feishu-menubar-stderr.log`
 
-注意：
+Notes:
 
-- 过去 `dev-restart-service.out` 在重定向场景下容易被 block buffering 影响，导致“最后几分钟什么都没刷出来”
-- 现在 `serve` 启动时会强制 stdout/stderr 走无缓冲模式，定位会更可靠
+- historically, `dev-restart-service.out` could be affected by block buffering under redirected output, so “nothing appeared in the last few minutes” was not always trustworthy
+- `serve` now forces unbuffered stdout/stderr at startup, so the logs are more reliable for diagnosis
 
-## 这次问题里最有用的判断方式
+## The Most Useful Decision Path for This Class of Issue
 
-如果你遇到和这次类似的现象，可以按这个顺序判断：
+If you hit a problem similar to this one, use this order:
 
 1. `make env-status ENV=dev`
-2. 看 `serve-feishu-status.json`
-3. 看 `kernel/state.db` 里最后几条 `events`
-4. 看对应 task 的 `receipts` 和 `artifacts`
-5. 最后再回头看 `dev-restart-service.out`
+2. inspect `serve-feishu-status.json`
+3. inspect the latest `events` in `kernel/state.db`
+4. inspect the matching task’s `receipts` and `artifacts`
+5. only then go back to `dev-restart-service.out`
 
-原因很简单：
+The reason is simple:
 
-- `status.json` 告诉你进程是怎么死的
-- `kernel` 告诉你最后一个任务有没有真正完成
-- `artifact` 告诉你工具到底做了什么
-- 普通 stdout 日志只能作为补充，不能单独当真相来源
+- `status.json` tells you how the process died
+- `kernel` tells you whether the last task actually completed
+- `artifacts` tell you what the tools really did
+- plain stdout logs are only supporting evidence, not the single source of truth
 
-## 已知边界
+## Known Boundaries
 
-- `SIGTERM` / `SIGHUP` / `SIGINT`：现在能记录
-- 未处理 Python 异常：现在能记录 traceback
-- `SIGKILL`：无法优雅捕获，只能从 stale PID、kernel 事件中断、系统层痕迹反推
-- 如果服务是由外部宿主临时拉起又被宿主回收，Hermit 只能记录“自己收到的退出信号”，无法总是知道“是谁发的”
+- `SIGTERM` / `SIGHUP` / `SIGINT`: now recorded
+- unhandled Python exceptions: now record traceback
+- `SIGKILL`: cannot be caught gracefully; you can only infer it from stale PIDs, missing kernel events, and system-level traces
+- if the service was started temporarily by an external host and later reclaimed by that host, Hermit can only record the signal it received itself; it cannot always know who sent it

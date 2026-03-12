@@ -1,10 +1,10 @@
-# CLI 与运维参考
+# CLI and Operations Reference
 
-这份文档覆盖当前实际存在的 CLI 命令、常见启动方式，以及长期运行相关的操作约定。
+This document covers the CLI commands that currently exist, the common startup paths, and the operational conventions around long-running processes.
 
-## 顶层命令
+## Top-Level Commands
 
-`uv run hermit --help` 当前可见命令：
+Commands currently shown by `uv run hermit --help`:
 
 - `setup`
 - `init`
@@ -21,159 +21,159 @@
 - `profiles`
 - `auth`
 
-## 基础命令
+## Basic Commands
 
 ### `hermit setup`
 
-交互式首次配置向导：
+Interactive first-run setup wizard:
 
-- 写入 `~/.hermit/.env`
-- 可选配置 Feishu
-- 自动初始化 workspace
+- writes `~/.hermit/.env`
+- optionally configures Feishu
+- initializes the workspace automatically
 
 ### `hermit init`
 
-初始化 workspace 目录与默认上下文文件。
+Initializes the workspace directories and the default context file.
 
 ### `hermit startup-prompt`
 
-打印最终启动 system prompt，适合调试：
+Prints the final startup system prompt, useful for debugging:
 
 - base context
 - rules
 - skills catalog
-- hook 注入内容
+- hook-injected content
 
 ### `hermit run "..."`
 
-单次执行，不进入交互式会话。
+Runs a single task without entering an interactive session.
 
 ### `hermit chat`
 
-进入交互式多轮会话。
+Starts an interactive multi-turn session.
 
-可选参数：
+Optional parameters:
 
 - `--session-id`
 - `--debug`
 
-## chat / serve 中可用的 slash commands
+## Slash Commands Available in `chat` / `serve`
 
-core commands：
+Core commands:
 
 - `/new`
 - `/history`
 - `/help`
-- `/quit`（仅 CLI）
+- `/quit` (CLI only)
 
-builtin 插件额外命令：
+Additional builtin plugin commands:
 
 - `/compact`
 - `/plan`
 - `/usage`
 
-注意：这些 slash commands 是 `AgentRunner` 系统层命令，不经过 LLM。
+Note: these slash commands are system-level commands handled by `AgentRunner`; they do not go through the LLM.
 
-## `serve` 与 `reload`
+## `serve` and `reload`
 
 ### `hermit serve --adapter feishu`
 
-长期运行模式。当前内置 adapter 主要是 `feishu`。
+Long-running mode. The main builtin adapter at the moment is `feishu`.
 
-serve 启动过程会：
+Startup flow for `serve`:
 
-1. 读取配置
-2. 做环境自检
-3. 发现插件
-4. 构建 runtime
-5. 启动 adapter
-6. 同时让 scheduler / webhook 等 `SERVE_START` hook 生效
+1. read configuration
+2. run environment self-checks
+3. discover plugins
+4. build the runtime
+5. start the adapter
+6. activate `SERVE_START` hooks such as scheduler / webhook
 
 ### `hermit reload --adapter feishu`
 
-向运行中的服务发送 `SIGHUP`，触发优雅重载：
+Sends `SIGHUP` to the running service and triggers a graceful reload:
 
-1. 停止当前 adapter
-2. 重新读取配置
-3. 重新发现插件
-4. 重建工具和 system prompt
-5. 重启 adapter
+1. stop the current adapter
+2. reload configuration
+3. rediscover plugins
+4. rebuild tools and the system prompt
+5. restart the adapter
 
-这比直接重启进程更适合保留原 PID 和由外部进程管理器接管的场景。
+This is better than a full process restart when you want to keep the same PID or let an external process manager continue owning the process.
 
-## 启动前环境自检
+## Pre-Start Environment Checks
 
-`serve` 命令会在真正启动前输出一轮预检。
+Before `serve` actually starts, it prints a round of preflight checks.
 
-以 `feishu` adapter 为例，会检查：
+For the `feishu` adapter, it checks:
 
-- profile 来源
-- provider 与 model
-- LLM 鉴权是否可用
-- 飞书 App ID / Secret 来源
-- 飞书进度卡片是否开启
-- scheduler 默认飞书通知是否配置
+- profile source
+- provider and model
+- whether LLM auth is available
+- Feishu App ID / Secret source
+- whether Feishu progress cards are enabled
+- whether default Feishu notifications for the scheduler are configured
 
-如果关键项缺失，`serve` 会直接退出，而不是半启动后失败。
+If a critical item is missing, `serve` exits immediately instead of half-starting and failing later.
 
 ## `config` / `profiles` / `auth`
 
 ### `hermit config show`
 
-输出当前解析后的完整配置快照。
+Outputs the fully resolved configuration snapshot.
 
-最适合确认：
+Best used to confirm:
 
-- 当前选中的 profile
-- 实际 provider / model
-- webhook / scheduler 是否开启
-- auth 状态是否可用
+- the currently selected profile
+- the effective provider / model
+- whether webhook / scheduler are enabled
+- whether auth is available
 
 ### `hermit profiles list`
 
-列出 `~/.hermit/config.toml` 中的所有 profile。
+Lists all profiles in `~/.hermit/config.toml`.
 
 ### `hermit profiles resolve --name <profile>`
 
-查看某个 profile 被解析后的值。
+Shows the resolved values for a specific profile.
 
 ### `hermit auth status`
 
-查看当前 provider 会使用哪种鉴权来源。
+Shows which auth source the current provider will use.
 
-## `plugin` 子命令
+## `plugin` Subcommands
 
 ### `hermit plugin list`
 
-列出 builtin 与已安装插件。
+Lists builtin and installed plugins.
 
 ### `hermit plugin install <git-url>`
 
-通过 `git clone --depth 1` 安装插件到 `~/.hermit/plugins/<name>`。
+Installs a plugin into `~/.hermit/plugins/<name>` using `git clone --depth 1`.
 
 ### `hermit plugin remove <name>`
 
-删除已安装插件目录。
+Deletes an installed plugin directory.
 
 ### `hermit plugin info <name>`
 
-输出插件 manifest 的核心信息。
+Prints the core information from a plugin manifest.
 
-## `schedule` 子命令
+## `schedule` Subcommands
 
 ### `hermit schedule list`
 
-列出所有已注册任务及下次执行时间。
+Lists all registered jobs and their next run time.
 
 ### `hermit schedule add`
 
-三种互斥调度方式：
+Three mutually exclusive scheduling modes:
 
 - `--cron`
 - `--once`
 - `--interval`
 
-示例：
+Examples:
 
 ```bash
 hermit schedule add \
@@ -196,93 +196,65 @@ hermit schedule add \
   --interval 300
 ```
 
-注意：
+Notes:
 
-- `interval` 最小值是 `60`
-- 添加任务后，要等下次 `hermit serve` 启动时才真正进入运行态
+- the minimum `interval` is `60`
+- after adding a job, it only becomes active the next time `hermit serve` starts
 
-### 其他命令
+### Other Commands
 
 - `hermit schedule remove <id>`
 - `hermit schedule enable <id>`
 - `hermit schedule disable <id>`
 - `hermit schedule history --job-id ... --limit 20`
 
-## `autostart` 子命令
+## `autostart` Subcommands
 
-当前仅面向 macOS `launchd`：
+Currently only for macOS `launchd`:
 
 - `hermit autostart enable --adapter feishu`
 - `hermit autostart disable --adapter feishu`
 - `hermit autostart status`
 
-实现特点：
+Implementation details:
 
-- 每个 adapter 有独立 LaunchAgent plist
-- 不同 adapter 之间不会互相覆盖
+- each adapter gets its own LaunchAgent plist
+- different adapters do not overwrite one another
 
 ## `sessions`
 
-`hermit sessions` 会列出当前已知 session 文件名。
+`hermit sessions` lists the currently known session filenames.
 
-session 持久化位置：
+Session persistence paths:
 
-- 活跃：`~/.hermit/sessions/*.json`
-- 归档：`~/.hermit/sessions/archive/*.json`
+- active: `~/.hermit/sessions/*.json`
+- archived: `~/.hermit/sessions/archive/*.json`
 
 ## Docker / Compose
 
-当前 compose 里的服务等价命令是：
+The service command in the current Compose setup is:
 
 ```bash
 hermit serve --adapter feishu
 ```
 
-不要再写成：
+Do not write it as:
 
 ```bash
 hermit serve feishu
 ```
 
-因为当前 CLI 实现里 `adapter` 是 option，不是 positional argument。
+Because in the current CLI implementation, `adapter` is an option, not a positional argument.
 
-## menu bar companion
+## Menu Bar Companion
 
-menu bar companion 的相关命令：
+Related menu bar companion commands:
 
 - `hermit-menubar --adapter feishu`
 - `hermit-menubar-install-app --adapter feishu --open`
 
-它不是 `serve` 的替代品，而是 macOS 上的控制层。
+It is not a replacement for `serve`; it is the control layer on macOS.
 
-## 测试与排查
+## Testing and Troubleshooting
 
-运行测试：
-
-```bash
-uv run pytest -q
-```
-
-查看命令帮助：
-
-```bash
-uv run hermit --help
-uv run hermit schedule add --help
-uv run hermit serve --help
-```
-
-长期运行问题排查：
-
-- [`docs/serve-troubleshooting.md`](./serve-troubleshooting.md)
-
-如果 `serve` 看起来“回复完最后一条消息就挂了”，优先检查：
-
-1. `make env-status ENV=dev`
-2. `~/.hermit-dev/logs/serve-feishu-status.json`
-3. `~/.hermit-dev/kernel/state.db` 里的 `events / receipts / artifacts`
-
-## 这轮更新里修正的运维文档问题
-
-- `serve` 的正确调用方式是 `--adapter feishu`
-- `config` / `profiles` / `auth` 三组命令此前几乎没有被文档化
-- `schedule add` 的三种互斥模式此前没有被明确写清
+Run tests:

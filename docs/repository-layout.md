@@ -1,8 +1,8 @@
 # Repository Layout
 
-这份文档描述当前仓库的真实结构与职责边界，不再写“未来打算怎么整理”。
+This document describes the actual current repository structure and the responsibility boundaries between areas. It is not a “future cleanup plan.”
 
-## 顶层结构
+## Top-Level Structure
 
 ```text
 .
@@ -18,7 +18,7 @@
 └── Makefile
 ```
 
-## `hermit/` 包结构
+## `hermit/` Package Structure
 
 ```text
 hermit/
@@ -38,7 +38,7 @@ hermit/
 
 ## `hermit/builtin/`
 
-内置插件目录，当前主要包括：
+Directory for builtin plugins. The main ones currently include:
 
 - `memory`
 - `image_memory`
@@ -55,16 +55,16 @@ hermit/
 - `planner`
 - `usage`
 
-每个插件通常包含：
+Each plugin usually contains:
 
 - `plugin.toml`
 - `tools.py` / `hooks.py` / `commands.py` / `adapter.py` / `mcp.py`
 - `skills/`
-- 可选的 `rules/`
+- optional `rules/`
 
 ## `hermit/core/`
 
-当前 runtime 核心层：
+Current runtime core layer:
 
 - `agent.py`
 - `runner.py`
@@ -72,41 +72,41 @@ hermit/
 - `session.py`
 - `tools.py`
 
-这里不承载“产品能力”，只承载通用执行框架。
+This layer does not hold product features. It only holds the shared execution framework.
 
 ## `hermit/plugin/`
 
-插件基础设施：
+Plugin infrastructure:
 
-- `base.py` 定义 manifest、hook event、command / adapter / subagent 规格
-- `loader.py` 负责解析 `plugin.toml` 和加载入口
-- `manager.py` 汇总所有插件资产
-- `config.py` 解析插件变量与模板
+- `base.py` defines manifests, hook events, and the command / adapter / subagent contracts
+- `loader.py` parses `plugin.toml` and loads entrypoints
+- `manager.py` aggregates all plugin assets
+- `config.py` resolves plugin variables and templates
 
 ## `hermit/provider/`
 
-provider 相关代码：
+Provider-related code:
 
-- `contracts.py` 统一 provider 协议
-- `messages.py` block 规范化
-- `runtime.py` 通用 tool loop
-- `services.py` provider 构造与辅助服务
-- `profiles.py` 解析 `config.toml`
-- `providers/` 放具体 provider 实现
+- `contracts.py` defines the unified provider contract
+- `messages.py` normalizes blocks
+- `runtime.py` implements the shared tool loop
+- `services.py` builds providers and helper services
+- `profiles.py` parses `config.toml`
+- `providers/` contains concrete provider implementations
 
 ## `hermit/companion/`
 
-独立的 macOS companion 层：
+Separate macOS companion layer:
 
-- `control.py` 服务控制
-- `menubar.py` 菜单栏 UI
-- `appbundle.py` 本地 app bundle 与 Login Item
+- `control.py` service control
+- `menubar.py` menu bar UI
+- `appbundle.py` local app bundle and Login Item handling
 
-它不属于插件系统。
+It is not part of the plugin system.
 
 ## `docs/`
 
-当前仓库内最重要的文档：
+The most important documentation currently in the repository:
 
 - `architecture.md`
 - `configuration.md`
@@ -118,7 +118,7 @@ provider 相关代码：
 
 ## `tests/`
 
-测试覆盖面已经比较完整，当前重点包括：
+Test coverage is already fairly broad. The current focus includes:
 
 - CLI
 - config / profile
@@ -128,36 +128,36 @@ provider 相关代码：
 - Feishu adapter
 - companion
 
-这轮检查实际跑通：
+This review actually ran:
 
 ```bash
 uv run pytest -q
 ```
 
-结果：
+Result:
 
 - `332 passed`
 
-## 当前仓库里的已知组织特征
+## Known Structural Characteristics in the Current Repository
 
-### `build/` 是打包产物，不是源码
+### `build/` Is a Packaging Artifact, Not Source
 
-仓库当前包含 `build/lib/...` 产物镜像。阅读和修改时应以 `hermit/` 下源码为准。
+The repository currently includes mirrored packaging output under `build/lib/...`. Read and modify the source under `hermit/`, not the build artifacts.
 
-### 根目录仍有少量非核心文件
+### There Are Still a Few Non-Core Files at the Root
 
-例如：
+For example:
 
 - `beijing_weekend_trip_march2026.md`
 
-这类文件不影响运行，但不属于核心项目结构。
+These files do not affect runtime behavior, but they are not part of the core project structure.
 
-### 插件层是功能扩展主战场
+### The Plugin Layer Is the Main Extension Surface
 
-Hermit 的能力大多优先下沉到 `hermit/builtin/`，而不是继续膨胀 `core/`。
+Most Hermit capabilities are now pushed down into `hermit/builtin/` instead of continuing to expand `core/`.
 
-## 这份文档相对旧版本的变化
+## What Changed in This Version of the Document
 
-- 删掉了“下一步建议”式内容
-- 改为按当前真实目录结构说明职责
-- 明确区分源码、插件、companion、测试、打包产物
+- removed “next step suggestion” style content
+- rewrote the document around the real current directory structure
+- clearly separated source, plugins, companion, tests, and packaging artifacts

@@ -1,89 +1,89 @@
 # Desktop Companion
 
-Hermit 菜单栏 companion 是一个独立于 runtime 的 macOS 控制进程，不属于插件体系。
+The Hermit menu bar companion is a macOS control process that is separate from the runtime and not part of the plugin system.
 
-对应入口：
+Related entrypoints:
 
 - `hermit-menubar`
 - `hermit-menubar-install-app`
 
-源码位置：
+Source files:
 
 - [`hermit/companion/menubar.py`](../hermit/companion/menubar.py)
 - [`hermit/companion/control.py`](../hermit/companion/control.py)
 - [`hermit/companion/appbundle.py`](../hermit/companion/appbundle.py)
 
-## 设计边界
+## Design Boundary
 
-menu bar companion 的职责是控制，不是承载 agent runtime。
+The menu bar companion is a control layer, not the place where the agent runtime lives.
 
-它负责：
+It is responsible for:
 
-- 查看服务状态
-- 启动 / 停止 / reload `hermit serve`
-- 管理 `launchd` 自启
-- 管理菜单栏 app 自身的 Login Item
-- 打开设置、README、Wiki、日志目录、Hermit home
-- 展示 About 面板，方便确认当前版本与运行上下文
+- viewing service status
+- starting / stopping / reloading `hermit serve`
+- managing `launchd` autostart
+- managing the menu bar app’s own Login Item
+- opening settings, README, Wiki, the logs directory, and the Hermit home directory
+- showing an About panel so the current version and runtime context are easy to verify
 
-它不负责：
+It is not responsible for:
 
-- 直接执行插件逻辑
-- 直接替代 `serve`
-- 接管 session / memory / scheduler 主逻辑
+- executing plugin logic directly
+- replacing `serve`
+- owning the main session / memory / scheduler logic
 
-## 安装
+## Installation
 
-需要 macOS，并安装菜单栏依赖：
+Requires macOS and the menu bar dependencies:
 
 ```bash
 pip install -e ".[dev,macos]"
 ```
 
-如果走仓库的一键安装：
+If you use the repository’s one-step installer:
 
 ```bash
 bash install.sh
 ```
 
-安装脚本会顺带安装 `hermit-menubar` 并尝试安装本地 app bundle。
+The install script also installs `hermit-menubar` and tries to install the local app bundle.
 
-## 启动方式
+## Startup Modes
 
-默认管理 `feishu` adapter：
+Manage the `feishu` adapter by default:
 
 ```bash
 hermit-menubar
 ```
 
-显式指定 adapter：
+Explicitly select an adapter:
 
 ```bash
 hermit-menubar --adapter feishu
 ```
 
-指定 profile：
+Specify a profile:
 
 ```bash
 hermit-menubar --adapter feishu --profile codex-local
 ```
 
-指定 base dir：
+Specify a base dir:
 
 ```bash
 hermit-menubar --base-dir ~/.hermit --adapter feishu
 ```
 
-## 当前菜单项
+## Current Menu Items
 
-菜单栏每 5 秒刷新一次状态，展示：
+The menu bar refreshes status every 5 seconds and shows:
 
-- 运行状态与 PID
-- 当前 profile
-- 当前 provider
-- 当前 model
+- runtime status and PID
+- current profile
+- current provider
+- current model
 
-可执行动作：
+Available actions:
 
 - Start Service
 - Stop Service
@@ -99,46 +99,46 @@ hermit-menubar --base-dir ~/.hermit --adapter feishu
 - Open Hermit Home
 - About Hermit
 
-## 服务控制实现
+## Service Control Implementation
 
-menu bar 并不直接嵌入 runtime，而是通过命令行控制：
+The menu bar does not embed the runtime directly. It controls it through CLI commands:
 
 - `hermit serve --adapter <adapter>`
 - `hermit reload --adapter <adapter>`
 - `hermit autostart enable --adapter <adapter>`
 - `hermit autostart disable --adapter <adapter>`
 
-日志输出默认写入：
+Logs are written by default to:
 
 ```text
 ~/.hermit/logs/
 ```
 
-例如：
+For example:
 
 - `feishu-menubar-stdout.log`
 - `feishu-menubar-stderr.log`
 
-## app bundle 与 Login Item
+## App Bundle and Login Item
 
-`hermit-menubar-install-app` 会在本地生成一个可双击打开的 app bundle。
+`hermit-menubar-install-app` generates a double-clickable local app bundle.
 
-当前设计：
+Current design:
 
-- prod app 默认位于 `~/Applications/Hermit.app`
-- dev/test 会自动带环境后缀，例如 `~/Applications/Hermit Dev.app`
-- launcher 会把 adapter / profile / base-dir 以环境变量和命令参数方式传入
-- Login Item 是菜单栏 app 自身，不是 `hermit serve`
+- the default prod app lives at `~/Applications/Hermit.app`
+- dev/test automatically get environment suffixes, for example `~/Applications/Hermit Dev.app`
+- the launcher passes adapter / profile / base-dir through environment variables and command arguments
+- the Login Item belongs to the menu bar app itself, not `hermit serve`
 
-这意味着：
+That means:
 
-- 菜单栏 app 可以在登录时启动
-- app 再去控制后台 `serve`
-- GUI 层与 runtime 生命周期仍然解耦
+- the menu bar app can start at login
+- the app can then control the background `serve`
+- the GUI layer and runtime lifecycle remain decoupled
 
-## 多环境建议
+## Multi-Environment Guidance
 
-如果同机维护 prod / dev / test，建议不要直接手敲 `HERMIT_BASE_DIR`，而是统一用包装脚本：
+If you maintain prod / dev / test on the same machine, do not hand-type `HERMIT_BASE_DIR`. Use the wrapper scripts consistently:
 
 ```bash
 scripts/hermit-menubar-env.sh prod --adapter feishu
@@ -147,22 +147,22 @@ scripts/hermit-menubar-install-env.sh dev --open
 scripts/hermit-autostart-env.sh test enable --adapter feishu
 ```
 
-区分规则：
+Naming rules:
 
 - prod app: `Hermit.app`
 - dev app: `Hermit Dev.app`
 - test app: `Hermit Test.app`
 
-对应 login item 名称也跟随 app 名，不会互相覆盖。
+The matching Login Item names follow the app names, so they do not overwrite one another.
 
-## 配置文件行为
+## Config File Behavior
 
-当你从菜单栏点击 `Open Settings` 时：
+When you click `Open Settings` from the menu bar:
 
-- 如果 `~/.hermit/config.toml` 不存在
-- companion 会先生成一个默认模板
+- if `~/.hermit/config.toml` does not exist
+- the companion first generates a default template
 
-默认模板会包含：
+The default template includes:
 
 ```toml
 default_profile = "default"
@@ -172,15 +172,15 @@ provider = "claude"
 model = "claude-3-7-sonnet-latest"
 ```
 
-## 限制与注意事项
+## Limits and Notes
 
-- 仅支持 macOS
-- 缺少 `rumps` 时不会启动
-- 不是进程管理器替代品；长期托管仍建议交给 `launchd`
-- 只是控制层，不应把业务逻辑继续堆进 `hermit/companion/`
+- macOS only
+- will not start without `rumps`
+- not a replacement for a real process manager; for long-running hosting, `launchd` is still the better choice
+- it is only a control layer, so business logic should not keep accumulating under `hermit/companion/`
 
-## 这轮文档更新修正的点
+## What This Documentation Update Corrects
 
-- companion 已经是独立模块，不应继续写成“附属脚本”
-- 配置、日志、Login Item 的行为此前文档不完整
-- 现在所有服务控制示例都统一使用 `--adapter`
+- the companion is now documented as an independent module, not a “helper script”
+- the previous docs did not fully describe config, logs, and Login Item behavior
+- all service control examples now consistently use `--adapter`

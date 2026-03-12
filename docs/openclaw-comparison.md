@@ -1,29 +1,29 @@
-# Hermit 与 OpenClaw 的定位比较
+# Hermit and OpenClaw Positioning Comparison
 
-这份文档只做高层定位比较，不追求对 OpenClaw 做逐文件、逐版本的实现分析。
+This document is only a high-level positioning comparison. It is not intended to be a file-by-file or version-by-version implementation analysis of OpenClaw.
 
-约束：
+Constraints:
 
-- Hermit 侧结论以当前仓库源码为准
-- OpenClaw 侧只保留稳定的公开定位比较，不把易变的外部实现细节写死
+- conclusions about Hermit are based on the current repository source
+- conclusions about OpenClaw are limited to stable public positioning, without freezing volatile external implementation details into the document
 
-## 一句话结论
+## One-Sentence Conclusion
 
-两者都属于本地优先 agent 系统，但设计重心不同：
+Both are local-first agent systems, but their design priorities are different:
 
-- Hermit 偏 runtime-first、个人工作流、可读源码
-- OpenClaw 更偏 platform-first、通道面更宽、运维面更重
+- Hermit is more runtime-first, centered on personal workflows and readable source
+- OpenClaw is more platform-first, with a broader channel surface and heavier operational overhead
 
-## Hermit 的当前现实定位
+## Hermit’s Current Real Positioning
 
-从仓库源码看，Hermit 的中心是：
+Based on the current repository, Hermit is centered on:
 
 - `AgentRunner`
 - `AgentRuntime`
 - `PluginManager`
-- `~/.hermit` 文件状态目录
+- the `~/.hermit` file-based state directory
 
-当前已落地的表面主要是：
+The surfaces currently implemented are:
 
 - CLI
 - Feishu adapter
@@ -32,49 +32,49 @@
 - MCP
 - macOS companion
 
-## Hermit 的优势
+## Hermit’s Strengths
 
-如果你更看重下面这些点，Hermit 更匹配：
+Hermit is a better fit if you care more about:
 
-- 可以在较短时间内读透 runtime
-- 想把状态保留在本机文件系统
-- 想通过插件继续长出私有能力
-- 更偏个人工作流，而不是完整平台
+- being able to understand the runtime in a relatively short time
+- keeping state on the local filesystem
+- extending private capabilities through plugins
+- building around a personal workflow instead of a full platform
 
-## Hermit 的代价
+## Hermit’s Tradeoffs
 
-这类设计也有明确代价：
+This design also comes with clear tradeoffs:
 
-- 控制面较轻
-- 默认通道较少
-- 产品化封装程度不如更重的平台
-- 某些能力需要自己动手扩展插件
+- a lighter control plane
+- fewer built-in channels by default
+- less productized packaging than heavier platforms
+- some capabilities require writing your own plugins
 
-## 与更重平台的差异
+## How It Differs from Heavier Platforms
 
-平台型系统通常会强调：
+Platform-oriented systems usually emphasize:
 
-- 更多 channel
-- 更完整控制台
-- 更重的网关与运维面
-- 更标准化的多租户或团队能力
+- more channels
+- a fuller control console
+- a heavier gateway and operations layer
+- more standardized multi-tenant or team capabilities
 
-Hermit 目前并不试图在这些维度上与之正面竞争。
+Hermit is not currently trying to compete head-on on those dimensions.
 
-## 什么时候选 Hermit
+## When to Choose Hermit
 
-更适合选择 Hermit 的情况：
+Hermit is a better choice when:
 
-- 你要的是一个个人 agent runtime，而不是产品平台
-- 你希望自己能改 provider、插件和状态模型
-- 你更在意“本机可检查、可恢复、可审计”
-- 你愿意接受更少的默认通道与更轻的控制面
+- you want a personal agent runtime, not a product platform
+- you want to modify the provider, plugins, and state model yourself
+- you care more about local inspectability, recoverability, and auditability
+- you are willing to accept fewer default channels and a lighter control plane
 
-## 这轮文档更新的原则
+## Principles Behind This Documentation Update
 
-旧版本包含一些更容易随外部产品变化而失真的描述。
+The previous version contained some descriptions that were more likely to drift as external products changed.
 
-这次更新后，这份文档只保留：
+After this update, the document keeps only:
 
-- 对 Hermit 当前代码库稳定成立的结论
-- 对“轻 runtime vs 重平台”这一层面的定位比较
+- conclusions that are stably true for the current Hermit codebase
+- the positioning comparison at the level of “light runtime vs heavy platform”
