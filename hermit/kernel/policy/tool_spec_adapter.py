@@ -6,6 +6,7 @@ from typing import Any
 
 from hermit.core.tools import ToolSpec
 from hermit.kernel.context import TaskExecutionContext
+from hermit.kernel.contracts import contract_for
 from hermit.kernel.policy.models import ActionRequest
 
 
@@ -68,6 +69,7 @@ def build_action_request(
     action_class = infer_action_class(tool)
     workspace_root = attempt_ctx.workspace_root if attempt_ctx else ""
     request_id = f"req_{uuid.uuid4().hex[:12]}"
+    contract = contract_for(action_class)
     return ActionRequest(
         request_id=request_id,
         idempotency_key=request_id,
@@ -79,7 +81,7 @@ def build_action_request(
         tool_input=tool_input,
         action_class=action_class,
         resource_scopes=normalize_scope_hints(tool.resource_scope_hint, workspace_root=workspace_root),
-        risk_hint=tool.risk_hint or ("low" if tool.readonly or action_class == "read_local" else "high"),
+        risk_hint=tool.risk_hint or contract.default_risk_band,
         idempotent=bool(tool.idempotent),
         requires_receipt=bool(tool.requires_receipt) if tool.requires_receipt is not None else not tool.readonly,
         supports_preview=bool(tool.supports_preview),

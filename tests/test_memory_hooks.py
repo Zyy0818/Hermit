@@ -90,6 +90,25 @@ def test_inject_memory_logs_counts_when_entries_exist(tmp_path) -> None:
     log_mock.assert_called_once()
 
 
+def test_inject_memory_prefers_kernel_memory_records_when_available(tmp_path) -> None:
+    settings = _settings(tmp_path, include_kernel=True)
+    store = KernelStore(settings.kernel_db_path)
+    store.create_memory_record(
+        task_id="task_kernel_memory",
+        conversation_id="chat-kernel-memory",
+        category="项目约定",
+        content="Kernel memory takes precedence",
+        confidence=0.9,
+        evidence_refs=[],
+    )
+    engine = MemoryEngine(settings.memory_file)
+    engine.save({"项目约定": [MemoryEntry(category="项目约定", content="legacy mirror entry")]})
+
+    content = hooks._inject_memory(engine, settings)
+
+    assert "Kernel memory takes precedence" in content
+
+
 def test_save_memories_returns_early_without_messages(tmp_path) -> None:
     settings = _settings(tmp_path)
     engine = MemoryEngine(settings.memory_file)

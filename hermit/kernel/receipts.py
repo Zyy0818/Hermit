@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from hermit.kernel.artifacts import ArtifactStore
+from hermit.kernel.proofs import ProofService
 from typing import Any
 
 from hermit.kernel.store import KernelStore
 
 
 class ReceiptService:
-    def __init__(self, store: KernelStore) -> None:
+    def __init__(self, store: KernelStore, artifact_store: ArtifactStore | None = None) -> None:
         self.store = store
+        self.artifact_store = artifact_store or ArtifactStore(store.db_path.parent / "artifacts")
+        self.proofs = ProofService(store, self.artifact_store)
 
     def issue(
         self,
@@ -29,6 +33,11 @@ class ReceiptService:
         policy_ref: str | None = None,
         witness_ref: str | None = None,
         idempotency_key: str | None = None,
+        rollback_supported: bool = False,
+        rollback_strategy: str | None = None,
+        rollback_status: str = "not_requested",
+        rollback_ref: str | None = None,
+        rollback_artifact_refs: list[str] | None = None,
     ) -> str:
         receipt = self.store.create_receipt(
             task_id=task_id,
@@ -48,5 +57,11 @@ class ReceiptService:
             policy_ref=policy_ref,
             witness_ref=witness_ref,
             idempotency_key=idempotency_key,
+            rollback_supported=rollback_supported,
+            rollback_strategy=rollback_strategy,
+            rollback_status=rollback_status,
+            rollback_ref=rollback_ref,
+            rollback_artifact_refs=rollback_artifact_refs,
         )
+        self.proofs.ensure_receipt_bundle(receipt.receipt_id)
         return receipt.receipt_id

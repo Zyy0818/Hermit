@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -8,6 +11,7 @@ from typing import Any
 from hermit.core.runner import AgentRunner
 from hermit.core.session import SessionManager
 from hermit.core.tools import ToolRegistry, ToolSpec
+from hermit.builtin.scheduler.models import JobExecutionRecord, ScheduledJob
 from hermit.kernel.approval_copy import ApprovalCopyService
 from hermit.kernel.approvals import ApprovalService
 from hermit.kernel.artifacts import ArtifactStore
@@ -15,8 +19,12 @@ from hermit.kernel.context import TaskExecutionContext
 from hermit.kernel.controller import TaskController
 from hermit.kernel.executor import ToolExecutor
 from hermit.kernel.policy import PolicyEngine
+from hermit.kernel.proofs import ProofService
+from hermit.kernel.projections import ProjectionService
 from hermit.kernel.receipts import ReceiptService
+from hermit.kernel.rollbacks import RollbackService
 from hermit.kernel.store import KernelSchemaError, KernelStore
+from hermit.kernel.permits import CapabilityGrantError
 from hermit.plugin.base import PluginContext
 from hermit.plugin.hooks import HooksEngine
 from hermit.plugin.manager import PluginManager
@@ -218,6 +226,63 @@ def test_task_controller_prefers_latest_pending_approval_for_natural_language(tm
     assert controller.resolve_text_command("chat-approval", f"始终允许此目录 {approval.approval_id}") == ("approve_always_directory", approval.approval_id, "")
 
 
+def test_task_controller_resolves_natural_language_case_and_rollback(tmp_path: Path) -> None:
+    store, _artifacts, controller, executor, ctx = _kernel_runtime(tmp_path)
+    result = executor.execute(
+        ctx,
+        "write_file",
+        {"path": "nl-control.txt", "content": "hello\n"},
+    )
+
+    assert controller.resolve_text_command("chat-kernel", "看看这个任务") == ("case", ctx.task_id, "")
+    assert controller.resolve_text_command("chat-kernel", "回滚这次操作") == ("rollback", result.receipt_id, "")
+
+
+def test_task_controller_resolves_other_natural_language_commands(tmp_path: Path) -> None:
+    store, _artifacts, controller, executor, ctx = _kernel_runtime(tmp_path)
+    executor.execute(ctx, "write_file", {"path": "nl-more.txt", "content": "hello\n"})
+    grant = store.create_path_grant(
+        subject_kind="conversation",
+        subject_ref="chat-kernel",
+        action_class="write_local",
+        path_prefix=str((tmp_path / "workspace").resolve()),
+        path_display="workspace",
+        created_by="user",
+        approval_ref=None,
+        decision_ref=None,
+        policy_ref=None,
+    )
+    job = ScheduledJob.create(name="Daily", prompt="run", schedule_type="interval", interval_seconds=60)
+    store.create_schedule(job)
+    store.append_schedule_history(
+        JobExecutionRecord(
+            job_id=job.id,
+            job_name=job.name,
+            started_at=time.time() - 1,
+            finished_at=time.time(),
+            success=True,
+            result_text="ok",
+        )
+    )
+
+    assert controller.resolve_text_command("chat-kernel", "帮助") == ("show_help", "", "")
+    assert controller.resolve_text_command("chat-kernel", "查看历史") == ("show_history", "", "")
+    assert controller.resolve_text_command("chat-kernel", "任务列表") == ("task_list", "", "")
+    assert controller.resolve_text_command("chat-kernel", "查看这个任务的事件") == ("task_events", ctx.task_id, "")
+    assert controller.resolve_text_command("chat-kernel", "查看这个任务的收据") == ("task_receipts", ctx.task_id, "")
+    assert controller.resolve_text_command("chat-kernel", "查看这个任务的证明") == ("task_proof", ctx.task_id, "")
+    assert controller.resolve_text_command("chat-kernel", "导出这个任务的证明") == ("task_proof_export", ctx.task_id, "")
+    assert controller.resolve_text_command("chat-kernel", "查看授权") == ("grant_list", "", "")
+    assert controller.resolve_text_command("chat-kernel", f"撤销授权 {grant.grant_id}") == ("grant_revoke", grant.grant_id, "")
+    assert controller.resolve_text_command("chat-kernel", "定时任务列表") == ("schedule_list", "", "")
+    assert controller.resolve_text_command("chat-kernel", f"查看定时历史 {job.id}") == ("schedule_history", job.id, "")
+    assert controller.resolve_text_command("chat-kernel", f"启用定时任务 {job.id}") == ("schedule_enable", job.id, "")
+    assert controller.resolve_text_command("chat-kernel", f"禁用定时任务 {job.id}") == ("schedule_disable", job.id, "")
+    assert controller.resolve_text_command("chat-kernel", f"删除定时任务 {job.id}") == ("schedule_remove", job.id, "")
+    assert controller.resolve_text_command("chat-kernel", "重建这个任务投影") == ("projection_rebuild", ctx.task_id, "")
+    assert controller.resolve_text_command("chat-kernel", "重建所有投影") == ("projection_rebuild_all", "", "")
+
+
 def test_tool_executor_blocks_sensitive_mutation_and_creates_preview_artifact(tmp_path: Path) -> None:
     store, artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
     target = Path(ctx.workspace_root) / ".env"
@@ -281,7 +346,49 @@ def test_tool_executor_executes_previewed_workspace_write_without_approval_and_i
     permit = store.get_execution_permit(executed.permit_id or "")
     assert decision is not None and decision.verdict == "allow"
     assert permit is not None and permit.status == "consumed"
+    assert receipt.receipt_bundle_ref is not None
+    assert receipt.proof_mode == "hash_chained"
+    bundle_artifact = store.get_artifact(receipt.receipt_bundle_ref)
+    assert bundle_artifact is not None and bundle_artifact.kind == "receipt.bundle"
+    bundle_payload = json.loads(_artifacts.read_text(bundle_artifact.uri))
+    assert bundle_payload["receipt_id"] == receipt.receipt_id
+    assert bundle_payload["context_manifest_ref"]
+    assert bundle_payload["task_event_head_hash"]
     assert any(event["event_type"] == "receipt.issued" for event in store.list_events(task_id=ctx.task_id))
+
+
+def test_tool_executor_enforces_permit_before_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
+
+    def _raise_denied(*args, **kwargs):
+        raise CapabilityGrantError("scope_mismatch", "Capability grant no longer covers this write.")
+
+    monkeypatch.setattr(executor.permit_service, "enforce", _raise_denied)
+
+    result = executor.execute(
+        ctx,
+        "write_file",
+        {"path": "blocked.txt", "content": "never written\n"},
+    )
+
+    assert result.denied is True
+    assert result.result_code == "dispatch_denied"
+    assert result.receipt_id is not None
+    assert not (Path(ctx.workspace_root) / "blocked.txt").exists()
+
+    attempt = store.get_step_attempt(ctx.step_attempt_id)
+    task = store.get_task(ctx.task_id)
+    permit = store.get_execution_permit(result.permit_id or "")
+    receipt = store.get_receipt(result.receipt_id or "")
+    projection = store.build_task_projection(ctx.task_id)
+
+    assert attempt is not None and attempt.status == "failed"
+    assert task is not None and task.status == "failed"
+    assert permit is not None and permit.status == "issued"
+    assert receipt is not None and receipt.result_code == "dispatch_denied"
+    assert any(event["event_type"] == "dispatch.denied" for event in store.list_events(task_id=ctx.task_id))
+    assert projection["permits"][result.permit_id]["status"] == "issued"
+    assert projection["receipts"][result.receipt_id]["result_code"] == "dispatch_denied"
 
 
 def test_policy_engine_defaults_readonly_to_allow_and_unknown_mutation_to_approval(tmp_path: Path) -> None:
@@ -1027,6 +1134,127 @@ def test_runner_preserves_reconciling_status_for_reconciled_tool_outcomes(tmp_pa
     assert store.get_task(task.task_id).status == "reconciling"
 
 
+def test_executor_reconciles_command_side_effects_from_target_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    artifacts = ArtifactStore(tmp_path / "kernel" / "artifacts")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="chat-command-reconcile",
+        goal="run command maybe",
+        source_channel="chat",
+        kind="respond",
+        workspace_root=str(workspace),
+    )
+
+    def flaky_bash(payload: dict[str, Any]) -> dict[str, Any]:
+        target = workspace / "from-cmd.txt"
+        target.write_text("cmd\n", encoding="utf-8")
+        raise RuntimeError(f"command crashed after writing: {payload['command']}")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="bash",
+            description="Run shell command.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=flaky_bash,
+            action_class="execute_command",
+            resource_scope_hint=str(workspace),
+            risk_hint="critical",
+            requires_receipt=True,
+            supports_preview=True,
+        )
+    )
+    executor = ToolExecutor(
+        registry=registry,
+        store=store,
+        artifact_store=artifacts,
+        policy_engine=PolicyEngine(),
+        approval_service=ApprovalService(store),
+        receipt_service=ReceiptService(store),
+        tool_output_limit=2000,
+    )
+
+    first = executor.execute(ctx, "bash", {"command": "touch from-cmd.txt"})
+    assert first.approval_id is not None
+    ApprovalService(store).approve(first.approval_id)
+
+    result = executor.execute(ctx, "bash", {"command": "touch from-cmd.txt"})
+
+    assert result.receipt_id is not None
+    assert result.result_code == "reconciled_applied"
+    assert result.execution_status == "reconciling"
+    assert (workspace / "from-cmd.txt").read_text(encoding="utf-8") == "cmd\n"
+    receipt = store.list_receipts(task_id=ctx.task_id, limit=1)[0]
+    assert receipt.result_code == "reconciled_applied"
+
+
+def test_executor_reconciles_git_mutation_from_repo_state(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=workspace, check=True, capture_output=True, text=True)
+    tracked = workspace / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    artifacts = ArtifactStore(tmp_path / "kernel" / "artifacts")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="chat-git-reconcile",
+        goal="git mutate maybe",
+        source_channel="chat",
+        kind="respond",
+        workspace_root=str(workspace),
+    )
+
+    def flaky_git(payload: dict[str, Any]) -> dict[str, Any]:
+        tracked.write_text("after\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=workspace, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "after"], cwd=workspace, check=True, capture_output=True, text=True)
+        raise RuntimeError(f"git crashed after mutation: {payload['command']}")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="git_mutation",
+            description="Run a git mutation command.",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=flaky_git,
+            action_class="vcs_mutation",
+            resource_scope_hint=str(workspace),
+            risk_hint="critical",
+            requires_receipt=True,
+            supports_preview=True,
+        )
+    )
+    executor = ToolExecutor(
+        registry=registry,
+        store=store,
+        artifact_store=artifacts,
+        policy_engine=PolicyEngine(),
+        approval_service=ApprovalService(store),
+        receipt_service=ReceiptService(store),
+        tool_output_limit=2000,
+    )
+
+    first = executor.execute(ctx, "git_mutation", {"command": "git commit -am after"})
+    assert first.approval_id is not None
+    ApprovalService(store).approve(first.approval_id)
+
+    result = executor.execute(ctx, "git_mutation", {"command": "git commit -am after"})
+
+    assert result.receipt_id is not None
+    assert result.result_code == "reconciled_applied"
+    assert result.execution_status == "reconciling"
+    assert any(event["event_type"] == "outcome.uncertain" for event in store.list_events(task_id=ctx.task_id))
+
+
 def test_runner_marks_unknown_outcome_as_needs_attention(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -1245,3 +1473,109 @@ def test_runner_approve_resumes_attempt_and_finalizes_task(tmp_path: Path) -> No
     assert store.get_task(ctx.task_id).status == "completed"
     assert store.get_step(ctx.step_id).status == "succeeded"
     assert pm.post_run_calls == [("chat-approve", "all done")]
+
+
+def test_runner_dispatches_natural_language_case_and_rollback_without_slash(tmp_path: Path) -> None:
+    store, artifacts, controller, executor, ctx = _kernel_runtime(tmp_path)
+    result = executor.execute(ctx, "write_file", {"path": "runner-nl.txt", "content": "after\n"})
+    grant = store.create_path_grant(
+        subject_kind="conversation",
+        subject_ref="chat-kernel",
+        action_class="write_local",
+        path_prefix=str((tmp_path / "workspace").resolve()),
+        path_display="workspace",
+        created_by="user",
+        approval_ref=None,
+        decision_ref=None,
+        policy_ref=None,
+    )
+    job = ScheduledJob.create(name="RunnerJob", prompt="run", schedule_type="interval", interval_seconds=60)
+    store.create_schedule(job)
+    store.append_schedule_history(
+        JobExecutionRecord(
+            job_id=job.id,
+            job_name=job.name,
+            started_at=time.time() - 1,
+            finished_at=time.time(),
+            success=True,
+            result_text="ok",
+        )
+    )
+
+    class FakeAgent:
+        def generate(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("Natural-language control should not reach the agent")
+
+    runner = AgentRunner(
+        FakeAgent(),  # type: ignore[arg-type]
+        SessionManager(tmp_path / "sessions", store=store),
+        PluginManager(),
+        task_controller=controller,
+    )
+    runner.agent.kernel_store = store  # type: ignore[attr-defined]
+
+    case_result = runner.dispatch("chat-kernel", "看看这个任务")
+    rollback_result = runner.dispatch("chat-kernel", "回滚这次操作")
+    help_result = runner.dispatch("chat-kernel", "帮助")
+    history_result = runner.dispatch("chat-kernel", "查看历史")
+    list_result = runner.dispatch("chat-kernel", "任务列表")
+    proof_result = runner.dispatch("chat-kernel", "查看这个任务的证明")
+    grant_result = runner.dispatch("chat-kernel", "查看授权")
+    schedule_result = runner.dispatch("chat-kernel", "定时任务列表")
+    schedule_history_result = runner.dispatch("chat-kernel", f"查看定时历史 {job.id}")
+    schedule_disable_result = runner.dispatch("chat-kernel", f"禁用定时任务 {job.id}")
+    grant_revoke_result = runner.dispatch("chat-kernel", f"撤销授权 {grant.grant_id}")
+
+    assert case_result.is_command is True
+    assert json.loads(case_result.text)["task"]["task_id"] == ctx.task_id
+    assert rollback_result.is_command is True
+    assert json.loads(rollback_result.text)["status"] == "succeeded"
+    assert help_result.is_command is True and "/task" in help_result.text
+    assert history_result.is_command is True and "当前会话" in history_result.text
+    assert list_result.is_command is True and json.loads(list_result.text)[0]["task_id"] == ctx.task_id
+    assert proof_result.is_command is True and json.loads(proof_result.text)["task"]["task_id"] == ctx.task_id
+    assert grant_result.is_command is True and json.loads(grant_result.text)[0]["grant_id"] == grant.grant_id
+    assert schedule_result.is_command is True and json.loads(schedule_result.text)[0]["id"] == job.id
+    assert schedule_history_result.is_command is True and json.loads(schedule_history_result.text)[0]["job_id"] == job.id
+    assert schedule_disable_result.is_command is True and "Disabled task" in schedule_disable_result.text
+    assert grant_revoke_result.is_command is True and "Revoked grant" in grant_revoke_result.text
+
+
+def test_rollback_service_restores_local_write_from_prestate(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / "rollback.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    store, artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
+    ctx.workspace_root = str(workspace)
+
+    result = executor.execute(
+        ctx,
+        "write_file",
+        {"path": "rollback.txt", "content": "after\n"},
+    )
+
+    receipt = store.get_receipt(result.receipt_id or "")
+    assert receipt is not None
+    assert receipt.rollback_supported is True
+    assert target.read_text(encoding="utf-8") == "after\n"
+
+    payload = RollbackService(store, artifacts).execute(receipt.receipt_id)
+
+    assert payload["status"] == "succeeded"
+    assert target.read_text(encoding="utf-8") == "before\n"
+    assert store.get_receipt(receipt.receipt_id).rollback_status == "succeeded"
+
+
+def test_projection_service_rebuilds_and_caches_task_case(tmp_path: Path) -> None:
+    store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
+    executor.execute(ctx, "write_file", {"path": "projection.txt", "content": "hello\n"})
+
+    payload = ProjectionService(store).rebuild_task(ctx.task_id)
+    cached = store.get_projection_cache(ctx.task_id)
+
+    assert payload["task"]["task_id"] == ctx.task_id
+    assert payload["proof"]["chain_verification"]["valid"] is True
+    assert cached is not None
+    assert cached["payload"]["task"]["task_id"] == ctx.task_id

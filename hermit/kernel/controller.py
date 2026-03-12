@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import re
 import time
 
 from hermit.kernel.context import TaskExecutionContext
+from hermit.kernel.control_intents import parse_control_intent
 from hermit.kernel.store import KernelStore
 
-_APPROVE_RE = re.compile(r"^(?:/task\s+approve|批准|approve)\s+([a-z0-9_]+)$", re.IGNORECASE)
-_APPROVE_ONCE_RE = re.compile(r"^(?:批准一次|approve_once)\s+([a-z0-9_]+)$", re.IGNORECASE)
-_APPROVE_ALWAYS_DIR_RE = re.compile(r"^(?:始终允许此目录|approve_always_directory)\s+([a-z0-9_]+)$", re.IGNORECASE)
-_DENY_RE = re.compile(r"^(?:/task\s+deny|拒绝|deny)\s+([a-z0-9_]+)(?:\s+(.+))?$", re.IGNORECASE)
-_PENDING_APPROVE_TEXT = {"开始执行", "执行吧", "确认执行", "继续执行", "approve", "通过", "批准", "同意"}
 _AUTO_PARENT = object()
 
 
@@ -114,20 +109,19 @@ class TaskController:
         self.store.update_task_status(ctx.task_id, "blocked")
 
     def resolve_text_command(self, conversation_id: str, text: str) -> tuple[str, str, str] | None:
-        stripped = text.strip()
-        match = _APPROVE_RE.match(stripped)
-        if match:
-            return ("approve_once", match.group(1), "")
-        match = _APPROVE_ONCE_RE.match(stripped)
-        if match:
-            return ("approve_once", match.group(1), "")
-        match = _APPROVE_ALWAYS_DIR_RE.match(stripped)
-        if match:
-            return ("approve_always_directory", match.group(1), "")
-        match = _DENY_RE.match(stripped)
-        if match:
-            return ("deny", match.group(1), match.group(2) or "")
         pending = self.store.get_latest_pending_approval(conversation_id)
-        if pending and stripped in _PENDING_APPROVE_TEXT:
-            return ("approve_once", pending.approval_id, "")
-        return None
+        latest_task = self.store.get_last_task_for_conversation(conversation_id)
+        latest_receipts = (
+            self.store.list_receipts(task_id=latest_task.task_id, limit=1)
+            if latest_task is not None
+            else []
+        )
+        intent = parse_control_intent(
+            text,
+            pending_approval_id=pending.approval_id if pending is not None else None,
+            latest_task_id=latest_task.task_id if latest_task is not None else None,
+            latest_receipt_id=latest_receipts[0].receipt_id if latest_receipts else None,
+        )
+        if intent is None:
+            return None
+        return (intent.action, intent.target_id, intent.reason)

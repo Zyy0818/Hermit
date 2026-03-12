@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
+from hermit.kernel.proofs import ProofService
 from hermit.kernel.store import KernelStore
 from hermit.main import _build_serve_preflight, _notify_reload, app
 
@@ -376,6 +377,221 @@ def test_task_list_show_and_receipts_commands_read_kernel_state(tmp_path, monkey
     receipts_result = runner.invoke(app, ["task", "receipts", "--task-id", task.task_id])
     assert receipts_result.exit_code == 0
     assert "write_file executed successfully" in receipts_result.output
+
+
+def test_task_explain_command_summarizes_authority_chain(tmp_path, monkeypatch) -> None:
+    from hermit.config import get_settings
+    from hermit.kernel.store import KernelStore
+
+    base_dir = tmp_path / ".hermit"
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    get_settings.cache_clear()
+
+    store = KernelStore(base_dir / "kernel" / "state.db")
+    store.ensure_conversation("cli-explain", source_channel="chat")
+    task = store.create_task(
+        conversation_id="cli-explain",
+        title="CLI Explain Task",
+        goal="Explain one governed execution",
+        source_channel="chat",
+    )
+    step = store.create_step(task_id=task.task_id, kind="respond")
+    attempt = store.create_step_attempt(task_id=task.task_id, step_id=step.step_id)
+    decision = store.create_decision(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        decision_type="execution_authorization",
+        verdict="allow",
+        reason="Policy allowed this write.",
+        evidence_refs=["artifact_action", "artifact_policy"],
+        action_type="write_local",
+    )
+    permit = store.create_execution_permit(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        decision_ref=decision.decision_id,
+        approval_ref=None,
+        policy_ref="policy_1",
+        action_class="write_local",
+        resource_scope=["workspace"],
+        constraints={"target_paths": ["workspace/example.txt"]},
+        idempotency_key="idem_1",
+        expires_at=None,
+    )
+    store.create_receipt(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        action_type="write_local",
+        input_refs=["artifact_in"],
+        environment_ref="artifact_env",
+        policy_result={"decision": "allow"},
+        approval_ref=None,
+        output_refs=["artifact_out"],
+        result_summary="write_file executed successfully",
+        result_code="succeeded",
+        decision_ref=decision.decision_id,
+        permit_ref=permit.permit_id,
+        policy_ref="policy_1",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["task", "explain", task.task_id])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["task"]["task_id"] == task.task_id
+    assert payload["operator_answers"]["why_execute"] == "Policy allowed this write."
+    assert payload["operator_answers"]["authority"]["permit"]["permit_id"] == permit.permit_id
+    assert payload["operator_answers"]["authority"]["target_paths"] == ["workspace/example.txt"]
+    assert payload["operator_answers"]["outcome"]["result_summary"] == "write_file executed successfully"
+
+
+def test_task_proof_commands_report_and_export_proof_bundle(tmp_path, monkeypatch) -> None:
+    from hermit.config import get_settings
+    from hermit.kernel.store import KernelStore
+
+    base_dir = tmp_path / ".hermit"
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    get_settings.cache_clear()
+
+    store = KernelStore(base_dir / "kernel" / "state.db")
+    store.ensure_conversation("cli-proof", source_channel="chat")
+    task = store.create_task(
+        conversation_id="cli-proof",
+        title="CLI Proof Task",
+        goal="Export proof bundle",
+        source_channel="chat",
+    )
+    step = store.create_step(task_id=task.task_id, kind="respond")
+    attempt = store.create_step_attempt(task_id=task.task_id, step_id=step.step_id)
+    decision = store.create_decision(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        decision_type="execution_authorization",
+        verdict="allow",
+        reason="Policy allowed this write.",
+        evidence_refs=["artifact_action"],
+        action_type="write_local",
+    )
+    permit = store.create_execution_permit(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        decision_ref=decision.decision_id,
+        approval_ref=None,
+        policy_ref="policy_1",
+        action_class="write_local",
+        resource_scope=["workspace"],
+        constraints={"target_paths": ["workspace/example.txt"]},
+        idempotency_key="idem_cli_proof",
+        expires_at=None,
+    )
+    legacy_receipt = store.create_receipt(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        action_type="write_local",
+        input_refs=["artifact_in"],
+        environment_ref="artifact_env",
+        policy_result={"decision": "allow"},
+        approval_ref=None,
+        output_refs=["artifact_out"],
+        result_summary="legacy receipt",
+        result_code="succeeded",
+        decision_ref=decision.decision_id,
+        permit_ref=permit.permit_id,
+        policy_ref="policy_1",
+    )
+
+    runner = CliRunner()
+    proof_result = runner.invoke(app, ["task", "proof", task.task_id])
+    assert proof_result.exit_code == 0
+    proof_payload = json.loads(proof_result.output)
+    assert proof_payload["chain_verification"]["valid"] is True
+    assert proof_payload["missing_receipt_bundle_count"] == 1
+
+    output_path = tmp_path / "proof.json"
+    export_result = runner.invoke(app, ["task", "proof-export", task.task_id, "--output", str(output_path)])
+    assert export_result.exit_code == 0
+    export_payload = json.loads(export_result.output)
+    assert export_payload["status"] == "verified"
+    assert export_payload["proof_bundle_ref"]
+    assert output_path.read_text(encoding="utf-8").strip() == export_result.output.strip()
+    refreshed_receipt = store.get_receipt(legacy_receipt.receipt_id)
+    assert refreshed_receipt is not None and refreshed_receipt.receipt_bundle_ref is not None
+    assert ProofService(store).build_proof_summary(task.task_id)["missing_receipt_bundle_count"] == 0
+
+
+def test_task_case_and_projection_rebuild_commands(tmp_path, monkeypatch) -> None:
+    from hermit.config import get_settings
+    from hermit.kernel.store import KernelStore
+
+    base_dir = tmp_path / ".hermit"
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    get_settings.cache_clear()
+
+    store = KernelStore(base_dir / "kernel" / "state.db")
+    store.ensure_conversation("cli-case", source_channel="chat")
+    task = store.create_task(
+        conversation_id="cli-case",
+        title="CLI Case Task",
+        goal="Show operator case",
+        source_channel="chat",
+    )
+    step = store.create_step(task_id=task.task_id, kind="respond")
+    attempt = store.create_step_attempt(task_id=task.task_id, step_id=step.step_id)
+    decision = store.create_decision(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        decision_type="execution_authorization",
+        verdict="allow",
+        reason="Policy allowed this write.",
+        evidence_refs=[],
+        action_type="write_local",
+    )
+    permit = store.create_execution_permit(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        decision_ref=decision.decision_id,
+        approval_ref=None,
+        policy_ref="policy_case",
+        action_class="write_local",
+        resource_scope=["workspace"],
+        constraints={"target_paths": ["workspace/case.txt"]},
+        idempotency_key="idem_case",
+        expires_at=None,
+    )
+    store.create_receipt(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        action_type="write_local",
+        input_refs=["artifact_in"],
+        environment_ref="artifact_env",
+        policy_result={"decision": "allow"},
+        approval_ref=None,
+        output_refs=["artifact_out"],
+        result_summary="case result",
+        result_code="succeeded",
+        decision_ref=decision.decision_id,
+        permit_ref=permit.permit_id,
+        policy_ref="policy_case",
+    )
+
+    runner = CliRunner()
+    case_result = runner.invoke(app, ["task", "case", task.task_id])
+    rebuild_result = runner.invoke(app, ["task", "projections-rebuild", task.task_id])
+
+    assert case_result.exit_code == 0
+    assert json.loads(case_result.output)["operator_answers"]["why_execute"] == "Policy allowed this write."
+    assert rebuild_result.exit_code == 0
+    assert json.loads(rebuild_result.output)["task"]["task_id"] == task.task_id
 
 
 def test_task_approve_and_deny_commands_delegate_to_runner(tmp_path, monkeypatch) -> None:

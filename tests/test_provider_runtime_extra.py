@@ -1,0 +1,360 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+
+from hermit.core.tools import ToolRegistry
+from hermit.kernel.executor import ToolExecutionResult
+from hermit.provider.contracts import (
+    ProviderEvent,
+    ProviderFeatures,
+    ProviderRequest,
+    ProviderResponse,
+    UsageMetrics,
+)
+from hermit.provider.runtime import (
+    AgentRuntime,
+    _tool_result_json_text,
+    format_tool_result_content,
+    truncate_middle_text,
+)
+
+
+class FakeProvider:
+    def __init__(
+        self,
+        *,
+        name: str = "fake",
+        features: ProviderFeatures | None = None,
+        responses: list[ProviderResponse] | None = None,
+        stream_events: list[list[ProviderEvent | SimpleNamespace]] | None = None,
+        generate_error: Exception | None = None,
+        stream_error: Exception | None = None,
+    ) -> None:
+        self.name = name
+        self.features = features or ProviderFeatures()
+        self._responses = list(responses or [])
+        self._stream_events = list(stream_events or [])
+        self._generate_error = generate_error
+        self._stream_error = stream_error
+        self.requests: list[ProviderRequest] = []
+
+    def generate(self, request: ProviderRequest) -> ProviderResponse:
+        self.requests.append(request)
+        if self._generate_error is not None:
+            raise self._generate_error
+        return self._responses.pop(0)
+
+    def stream(self, request: ProviderRequest):
+        self.requests.append(request)
+        if self._stream_error is not None:
+            raise self._stream_error
+        yield from self._stream_events.pop(0)
+
+    def clone(self, *, model: str | None = None, system_prompt: str | None = None) -> "FakeProvider":
+        return self
+
+
+def test_truncate_middle_text_and_json_helpers() -> None:
+    assert truncate_middle_text("abcdef", 0) == "abcdef"
+    assert truncate_middle_text("abcdef", 4) == "abcd"
+
+    truncated = truncate_middle_text("x" * 80, 40)
+    assert "\n...\n" in truncated
+    assert len(truncated) <= 40
+
+    payload_text = _tool_result_json_text({"b": 2, "a": 1}, 20)
+    assert payload_text.startswith("{")
+    assert '"a"' in payload_text
+
+
+def test_format_tool_result_content_handles_strings_dicts_and_blocks() -> None:
+    assert format_tool_result_content("hello", 10) == "hello"
+    assert isinstance(format_tool_result_content({"a": 1}, 50), str)
+    assert format_tool_result_content({"type": "text", "text": "hi"}, 50) == [
+        {"type": "text", "text": "hi"}
+    ]
+    assert format_tool_result_content(
+        [{"type": "image", "source": {"type": "url", "url": "https://example.com"}}], 50
+    ) == [{"type": "image", "source": {"type": "url", "url": "https://example.com"}}]
+    list_payload = format_tool_result_content([{"a": 1}], 50)
+    assert isinstance(list_payload, str)
+    assert '"a"' in list_payload
+
+
+def test_runtime_clone_and_request_handle_thinking_support() -> None:
+    provider = FakeProvider(features=ProviderFeatures(supports_thinking=False))
+    registry = ToolRegistry()
+    runtime = AgentRuntime(
+        provider=provider,
+        registry=registry,
+        model="base-model",
+        system_prompt="sys",
+        thinking_budget=10,
+        max_turns=2,
+    )
+
+    clone = runtime.clone(model="child-model", system_prompt="child", max_turns=5)
+    request = runtime._request([{"role": "user", "content": "hi"}], disable_tools=True, readonly_only=False, stream=False)
+
+    assert clone.model == "child-model"
+    assert clone.system_prompt == "child"
+    assert clone.max_turns == 5
+    assert request.thinking_budget == 0
+    assert request.system_prompt == "sys"
+
+
+def test_runtime_resume_requires_tool_executor() -> None:
+    runtime = AgentRuntime(provider=FakeProvider(), registry=ToolRegistry(), model="fake")
+    with pytest.raises(RuntimeError, match="Task resume requires a configured ToolExecutor"):
+        runtime.resume(step_attempt_id="attempt", task_context=SimpleNamespace())
+
+
+def test_runtime_run_returns_provider_error_payload() -> None:
+    provider = FakeProvider(
+        responses=[ProviderResponse(content=[{"type": "text", "text": "ignored"}], error="bad gateway")]
+    )
+    runtime = AgentRuntime(provider=provider, registry=ToolRegistry(), model="fake")
+
+    result = runtime.run("hello")
+
+    assert result.text == "[API Error] bad gateway"
+    assert result.execution_status == "failed"
+
+
+def test_runtime_run_raises_when_tool_use_has_no_blocks() -> None:
+    provider = FakeProvider(responses=[ProviderResponse(content=[], stop_reason="tool_use")])
+    runtime = AgentRuntime(provider=provider, registry=ToolRegistry(), model="fake")
+
+    with pytest.raises(RuntimeError, match="Provider requested tool_use without tool blocks"):
+        runtime.run("hello")
+
+
+def test_runtime_run_max_turns_final_summary_success() -> None:
+    provider = FakeProvider(
+        responses=[
+            ProviderResponse(
+                content=[{"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}],
+                stop_reason="tool_use",
+            ),
+            ProviderResponse(content=[{"type": "text", "text": "summary"}], stop_reason="end_turn"),
+        ]
+    )
+    runtime = AgentRuntime(
+        provider=provider,
+        registry=ToolRegistry(),
+        model="fake",
+        max_turns=1,
+        tool_executor=SimpleNamespace(
+            execute=lambda *_args, **_kwargs: ToolExecutionResult(model_content="ok", raw_result="ok")
+        ),
+    )
+    task_ctx = SimpleNamespace(task_id="task", step_id="step", step_attempt_id="attempt")
+
+    result = runtime.run("hello", task_context=task_ctx)
+
+    assert result.text == "summary"
+    assert result.turns == 2
+    assert result.messages[-2]["role"] == "user"
+    assert "最大允许的工具调用轮次" in result.messages[-2]["content"]
+
+
+def test_runtime_run_max_turns_final_summary_failure() -> None:
+    class FailingSummaryProvider(FakeProvider):
+        def generate(self, request: ProviderRequest) -> ProviderResponse:
+            self.requests.append(request)
+            if len(self.requests) > 1:
+                raise RuntimeError("summary boom")
+            return self._responses.pop(0)
+
+    provider = FailingSummaryProvider(
+        responses=[
+            ProviderResponse(
+                content=[{"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}],
+                stop_reason="tool_use",
+            )
+        ]
+    )
+    runtime = AgentRuntime(
+        provider=provider,
+        registry=ToolRegistry(),
+        model="fake",
+        max_turns=1,
+        tool_executor=SimpleNamespace(
+            execute=lambda *_args, **_kwargs: ToolExecutionResult(model_content="ok", raw_result="ok")
+        ),
+    )
+    task_ctx = SimpleNamespace(task_id="task", step_id="step", step_attempt_id="attempt")
+
+    result = runtime.run("hello", task_context=task_ctx)
+
+    assert "汇总失败：summary boom" in result.text
+    assert result.execution_status == "failed"
+
+
+def test_execute_tool_turn_handles_callbacks_unknown_tools_and_failures() -> None:
+    registry = ToolRegistry()
+    call_names: list[str] = []
+
+    def execute(_task_context, tool_name: str, _tool_input: dict) -> ToolExecutionResult:
+        call_names.append(tool_name)
+        raise KeyError(tool_name)
+
+    runtime = AgentRuntime(
+        provider=FakeProvider(),
+        registry=registry,
+        model="fake",
+        tool_executor=SimpleNamespace(execute=execute),
+    )
+    started: list[tuple[str, dict]] = []
+    called: list[tuple[str, dict, object]] = []
+
+    result_blocks, tool_calls = runtime._execute_tool_turn(
+        messages=[],
+        tool_use_blocks=[
+            {"type": "tool_use", "id": "1", "name": "missing", "input": {"a": 1}},
+            {"type": "tool_use", "id": "2", "name": "explode", "input": {"b": 2}},
+        ],
+        tool_result_blocks=[],
+        turn=1,
+        on_tool_call=lambda name, payload, result: called.append((name, payload, result)),
+        on_tool_start=lambda name, payload: started.append((name, payload)),
+        disable_tools=False,
+        readonly_only=False,
+        task_context=SimpleNamespace(task_id="task", step_id="step", step_attempt_id="attempt"),
+        usage=UsageMetrics(),
+        tool_calls=0,
+    )
+
+    assert tool_calls == 2
+    assert started == [("missing", {"a": 1}), ("explode", {"b": 2})]
+    assert "Unknown tool" in result_blocks[0]["content"]
+    assert "Unknown tool" in called[0][2]
+    assert "Unknown tool" in result_blocks[1]["content"]
+    assert call_names == ["missing", "explode"]
+
+
+def test_execute_tool_turn_handles_blocked_and_denied_results() -> None:
+    blocked_exec = ToolExecutionResult(
+        model_content="blocked",
+        raw_result="blocked",
+        blocked=True,
+        approval_id="approval-1",
+        approval_message="needs approval",
+        execution_status="blocked",
+        state_applied=True,
+    )
+    denied_exec = replace(
+        blocked_exec,
+        blocked=False,
+        denied=True,
+        model_content="[Policy Denied] nope",
+        execution_status="failed",
+    )
+    persisted: list[dict] = []
+    runtime = AgentRuntime(
+        provider=FakeProvider(),
+        registry=ToolRegistry(),
+        model="fake",
+        tool_executor=SimpleNamespace(
+            execute=lambda *_args, **_kwargs: blocked_exec,
+            persist_blocked_state=lambda task_context, **kwargs: persisted.append(
+                {"task_context": task_context, **kwargs}
+            ),
+        ),
+    )
+    task_ctx = SimpleNamespace(task_id="task", step_id="step", step_attempt_id="attempt")
+
+    blocked = runtime._execute_tool_turn(
+        messages=[{"role": "assistant", "content": []}],
+        tool_use_blocks=[{"type": "tool_use", "id": "1", "name": "write", "input": {}}],
+        tool_result_blocks=[],
+        turn=1,
+        on_tool_call=None,
+        on_tool_start=None,
+        disable_tools=False,
+        readonly_only=False,
+        task_context=task_ctx,
+        usage=UsageMetrics(),
+        tool_calls=0,
+    )
+    assert blocked.blocked is True
+    assert blocked.text == "needs approval"
+    assert persisted[0]["pending_tool_blocks"][0]["name"] == "write"
+
+    runtime.tool_executor.execute = lambda *_args, **_kwargs: denied_exec  # type: ignore[attr-defined]
+    denied = runtime._execute_tool_turn(
+        messages=[],
+        tool_use_blocks=[{"type": "tool_use", "id": "1", "name": "write", "input": {}}],
+        tool_result_blocks=[],
+        turn=1,
+        on_tool_call=None,
+        on_tool_start=None,
+        disable_tools=False,
+        readonly_only=False,
+        task_context=task_ctx,
+        usage=UsageMetrics(),
+        tool_calls=0,
+    )
+    assert denied.text == "[Policy Denied] nope"
+    assert denied.execution_status == "failed"
+
+
+def test_execute_tool_requires_executor_and_task_context() -> None:
+    runtime = AgentRuntime(provider=FakeProvider(), registry=ToolRegistry(), model="fake")
+    with pytest.raises(RuntimeError, match="kernel executor is required"):
+        runtime._execute_tool(task_context=None, tool_name="echo", tool_input={})
+
+    runtime.tool_executor = SimpleNamespace(execute=lambda *_args, **_kwargs: None)
+    with pytest.raises(RuntimeError, match="task context is missing"):
+        runtime._execute_tool(task_context=None, tool_name="echo", tool_input={})
+
+
+def test_run_stream_raises_when_tool_use_has_no_blocks() -> None:
+    provider = FakeProvider(
+        features=ProviderFeatures(supports_streaming=True),
+        stream_events=[[SimpleNamespace(type="message_end", stop_reason="tool_use", usage=UsageMetrics())]],
+    )
+    runtime = AgentRuntime(provider=provider, registry=ToolRegistry(), model="fake")
+
+    with pytest.raises(RuntimeError, match="Provider requested tool_use without tool blocks"):
+        runtime.run_stream("hello")
+
+
+def test_run_stream_max_turns_summary_success_and_failure() -> None:
+    success_provider = FakeProvider(
+        features=ProviderFeatures(supports_streaming=True),
+        stream_events=[
+            [
+                SimpleNamespace(
+                    type="block_end",
+                    block={"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}},
+                ),
+                SimpleNamespace(type="message_end", stop_reason="tool_use", usage=UsageMetrics()),
+            ]
+        ],
+        responses=[ProviderResponse(content=[{"type": "text", "text": "summary"}])],
+    )
+    runtime = AgentRuntime(provider=success_provider, registry=ToolRegistry(), model="fake", max_turns=1)
+    success = runtime.run_stream("hello")
+    assert success.text == "summary"
+    assert success.turns == 2
+
+    fail_provider = FakeProvider(
+        features=ProviderFeatures(supports_streaming=True),
+        stream_events=[
+            [
+                SimpleNamespace(
+                    type="block_end",
+                    block={"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}},
+                ),
+                SimpleNamespace(type="message_end", stop_reason="tool_use", usage=UsageMetrics()),
+            ]
+        ],
+        generate_error=RuntimeError("summary boom"),
+    )
+    failed = AgentRuntime(provider=fail_provider, registry=ToolRegistry(), model="fake", max_turns=1).run_stream("hello")
+    assert "汇总失败：summary boom" in failed.text
+    assert failed.execution_status == "failed"

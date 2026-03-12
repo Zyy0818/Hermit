@@ -19,6 +19,30 @@ _SENSITIVE_ABS_PREFIXES = (
 )
 
 
+def derive_command_observables(command: str, *, workspace_root: str = "") -> dict[str, object]:
+    observables: dict[str, object] = {
+        "command_preview": command,
+        "command_flags": {
+            "writes_disk": any(token in command for token in (">", ">>", "tee ", "mv ", "cp ", "touch ", "mkdir ")),
+            "deletes_files": "rm " in command or "trash " in command.lower(),
+            "sudo": "sudo " in command.lower(),
+            "curl_pipe_sh": "curl" in command.lower() and "| sh" in command.lower(),
+            "git_push": "git push" in command.lower(),
+            "network_access": any(token in command.lower() for token in ("curl ", "wget ", "http://", "https://")),
+        },
+        "network_hosts": _extract_hosts(command),
+        "target_paths": _extract_command_paths(command, workspace_root=workspace_root),
+    }
+    lowered = command.lower()
+    if "git push" in lowered:
+        observables["vcs_operation"] = "git_push"
+    elif "git commit" in lowered:
+        observables["vcs_operation"] = "git_commit"
+    elif "git checkout" in lowered:
+        observables["vcs_operation"] = "git_checkout"
+    return observables
+
+
 def derive_request(request: ActionRequest) -> ActionRequest:
     derived = dict(request.derived)
     tool_input = request.tool_input if isinstance(request.tool_input, dict) else {}
@@ -34,20 +58,10 @@ def derive_request(request: ActionRequest) -> ActionRequest:
             if outside_workspace:
                 derived["outside_workspace_roots"] = [_outside_workspace_root(target_path)]
                 derived["grant_candidate_prefix"] = _grant_candidate_prefix(target_path)
-    if request.tool_name == "bash" or request.action_class == "execute_command":
+    if request.tool_name == "bash" or request.action_class in {"execute_command", "vcs_mutation"}:
         command = str(tool_input.get("command", "")).strip()
         if command:
-            lower = command.lower()
-            derived["command_preview"] = command
-            derived["command_flags"] = {
-                "writes_disk": any(token in command for token in (">", ">>", "tee ", "mv ", "cp ", "touch ", "mkdir ")),
-                "deletes_files": "rm " in command or "trash " in lower,
-                "sudo": "sudo " in lower,
-                "curl_pipe_sh": "curl" in lower and "| sh" in lower,
-                "git_push": "git push" in lower,
-                "network_access": any(token in lower for token in ("curl ", "wget ", "http://", "https://")),
-            }
-            derived["network_hosts"] = _extract_hosts(command)
+            derived.update(derive_command_observables(command, workspace_root=workspace_root))
     request.derived = derived
     return request
 
@@ -116,3 +130,29 @@ def _extract_hosts(command: str) -> list[str]:
             host = token.split("://", 1)[1].split("/", 1)[0]
             hosts.append(host)
     return list(dict.fromkeys(hosts))
+
+
+def _extract_command_paths(command: str, *, workspace_root: str) -> list[str]:
+    paths: list[str] = []
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return paths
+
+    command_name = tokens[0].lower()
+    if command_name in {"touch", "mkdir", "rm"}:
+        for token in tokens[1:]:
+            if token.startswith("-"):
+                continue
+            paths.append(_resolve_target(token, workspace_root))
+    elif command_name in {"cp", "mv"} and len(tokens) >= 3:
+        destination = tokens[-1]
+        if not destination.startswith("-"):
+            paths.append(_resolve_target(destination, workspace_root))
+
+    for index, token in enumerate(tokens[:-1]):
+        if token in {">", ">>"}:
+            paths.append(_resolve_target(tokens[index + 1], workspace_root))
+    return list(dict.fromkeys(path for path in paths if path))

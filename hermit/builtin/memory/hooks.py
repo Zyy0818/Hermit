@@ -77,10 +77,10 @@ def register(ctx: PluginContext) -> None:
         return
 
     engine = MemoryEngine(settings.memory_file)
-    ctx.add_hook(HookEvent.SYSTEM_PROMPT, lambda: _inject_memory(engine), priority=10)
+    ctx.add_hook(HookEvent.SYSTEM_PROMPT, lambda: _inject_memory(engine, settings), priority=10)
     ctx.add_hook(
         HookEvent.PRE_RUN,
-        lambda prompt, **kwargs: _inject_relevant_memory(engine, prompt),
+        lambda prompt, **kwargs: _inject_relevant_memory(engine, settings, prompt),
         priority=15,
     )
     ctx.add_hook(
@@ -100,8 +100,8 @@ def register(ctx: PluginContext) -> None:
     )
 
 
-def _inject_memory(engine: MemoryEngine) -> str:
-    categories = engine.load()
+def _inject_memory(engine: MemoryEngine, settings: Any | None = None) -> str:
+    categories = _knowledge_categories(engine, settings)
     prompt = engine.summary_prompt(categories, limit_per_category=3)
     if not prompt:
         log.info("memory_injected", categories=0, entries=0)
@@ -112,11 +112,40 @@ def _inject_memory(engine: MemoryEngine) -> str:
     return f"<memory_context>\n{prompt}\n</memory_context>"
 
 
-def _inject_relevant_memory(engine: MemoryEngine, prompt: str) -> str:
-    relevant = engine.retrieval_prompt(prompt, limit=5, char_budget=900)
+def _inject_relevant_memory(
+    engine: MemoryEngine,
+    settings: Any | str | None,
+    prompt: str | None = None,
+) -> str:
+    # Keep backward compatibility with older helper call sites/tests that pass
+    # only `(engine, prompt)`.
+    if prompt is None:
+        prompt = str(settings or "")
+        settings = None
+    categories = _knowledge_categories(engine, settings)
+    relevant = engine.retrieval_prompt(prompt, categories=categories, limit=5, char_budget=900)
     if not relevant:
         return prompt
     return f"<relevant_memory>\n{relevant}\n</relevant_memory>\n\n{prompt}"
+
+
+def _knowledge_categories(engine: MemoryEngine, settings: Any | None) -> Dict[str, List[MemoryEntry]]:
+    if settings is None:
+        return engine.load()
+    kernel_db_path = getattr(settings, "kernel_db_path", None)
+    if not kernel_db_path:
+        return engine.load()
+    from hermit.kernel.knowledge import MemoryRecordService
+    from hermit.kernel.store import KernelStore
+
+    store = KernelStore(Path(kernel_db_path))
+    try:
+        service = MemoryRecordService(store, mirror_path=Path(settings.memory_file))
+        service.bootstrap_from_markdown(Path(settings.memory_file))
+        categories = service.active_categories()
+        return categories or engine.load()
+    finally:
+        store.close()
 
 
 def _save_memories(
@@ -255,7 +284,8 @@ def _promote_memories_via_kernel(
     from hermit.kernel.context import capture_execution_environment
     from hermit.kernel.controller import TaskController
     from hermit.kernel.decisions import DecisionService
-    from hermit.kernel.permits import ExecutionPermitService
+    from hermit.kernel.knowledge import BeliefService, MemoryRecordService
+    from hermit.kernel.permits import CapabilityGrantError, ExecutionPermitService
     from hermit.kernel.policy import ActionRequest, PolicyEngine
     from hermit.kernel.receipts import ReceiptService
     from hermit.kernel.store import KernelStore
@@ -274,8 +304,10 @@ def _promote_memories_via_kernel(
         )
         policy_engine = PolicyEngine()
         decision_service = DecisionService(store)
+        belief_service = BeliefService(store)
+        memory_service = MemoryRecordService(store, mirror_path=Path(settings.memory_file))
         permit_service = ExecutionPermitService(store)
-        receipt_service = ReceiptService(store)
+        receipt_service = ReceiptService(store, artifact_store)
         request_id = f"memreq_{uuid.uuid4().hex[:12]}"
 
         transcript = _format_transcript(messages)
@@ -394,6 +426,11 @@ def _promote_memories_via_kernel(
             action_class="memory_write",
             resource_scope=["memory_store"],
             idempotency_key=request_id,
+            constraints={
+                "mode": mode,
+                "entry_count": len(new_entries),
+                "categories": sorted({entry.category for entry in new_entries}),
+            },
         )
         store.update_step_attempt(
             ctx.step_attempt_id,
@@ -402,18 +439,78 @@ def _promote_memories_via_kernel(
             permit_id=permit_id,
         )
         store.update_step(ctx.step_id, status="dispatching")
-
-        if mode == "checkpoint":
-            engine.append_entries(new_entries)
-        else:
-            session_idx = _bump_session_index(settings.session_state_file)
-            engine.record_session(
-                new_entries=new_entries,
-                used_keywords=used_keywords,
-                session_index=session_idx,
-                merge_fn=_consolidate_category_entries,
-                merge_threshold=6,
+        try:
+            permit_service.enforce(
+                permit_id,
+                action_class="memory_write",
+                resource_scope=["memory_store"],
+                constraints={
+                    "mode": mode,
+                    "entry_count": len(new_entries),
+                    "categories": sorted({entry.category for entry in new_entries}),
+                },
             )
+        except CapabilityGrantError as exc:
+            store.append_event(
+                event_type="dispatch.denied",
+                entity_type="execution_permit",
+                entity_id=permit_id,
+                task_id=ctx.task_id,
+                step_id=ctx.step_id,
+                actor="kernel",
+                payload={
+                    "permit_ref": permit_id,
+                    "decision_ref": decision_id,
+                    "error_code": exc.code,
+                    "error": str(exc),
+                    "tool_name": action_request.tool_name,
+                },
+            )
+            store.update_step_attempt(
+                ctx.step_attempt_id,
+                status="failed",
+                waiting_reason=str(exc),
+                decision_id=decision_id,
+                permit_id=permit_id,
+            )
+            store.update_step(ctx.step_id, status="failed")
+            controller.finalize_result(ctx, status="failed")
+            return False
+
+        promoted_beliefs = []
+        promoted_memories = []
+        for entry in new_entries:
+            belief = belief_service.record(
+                task_id=ctx.task_id,
+                conversation_id=ctx.conversation_id,
+                scope_kind="conversation",
+                scope_ref=ctx.conversation_id,
+                category=entry.category,
+                content=entry.content,
+                confidence=entry.confidence,
+                evidence_refs=[transcript_ref, extraction_ref, action_ref],
+                supersedes=list(entry.supersedes),
+            )
+            memory = memory_service.promote_from_belief(
+                belief=belief,
+                conversation_id=ctx.conversation_id,
+            )
+            promoted_beliefs.append(belief.belief_id)
+            promoted_memories.append(memory.memory_id)
+        memory_service.render_mirror(Path(settings.memory_file))
+
+        rollback_ref = _store_memory_artifact(
+            store,
+            artifact_store,
+            task_id=ctx.task_id,
+            step_id=ctx.step_id,
+            kind="rollback.memory_targets",
+            payload={"belief_ids": promoted_beliefs, "memory_ids": promoted_memories},
+            metadata={"mode": mode, "entry_count": len(promoted_memories)},
+            event_type="memory.rollback_captured",
+            entity_id=ctx.step_attempt_id,
+            task_context=ctx,
+        )
 
         output_ref = _store_memory_artifact(
             store,
@@ -460,6 +557,9 @@ def _promote_memories_via_kernel(
             permit_ref=permit_id,
             policy_ref=policy_ref,
             idempotency_key=request_id,
+            rollback_supported=True,
+            rollback_strategy="supersede_or_invalidate",
+            rollback_artifact_refs=[rollback_ref],
         )
         permit_service.consume(permit_id)
         controller.finalize_result(ctx, status="succeeded")

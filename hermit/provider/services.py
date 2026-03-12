@@ -180,7 +180,7 @@ def build_runtime(
         policy_engine=PolicyEngine(),
         approval_service=ApprovalService(kernel_store),
         approval_copy_service=approval_copy_service,
-        receipt_service=ReceiptService(kernel_store),
+        receipt_service=ReceiptService(kernel_store, artifact_store),
         tool_output_limit=settings.tool_output_limit,
     )
     runtime = AgentRuntime(

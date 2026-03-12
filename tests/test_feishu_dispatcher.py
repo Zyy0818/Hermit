@@ -693,12 +693,25 @@ def test_feishu_control_messages_bypass_prompt_wrapping() -> None:
     from hermit.builtin.feishu.adapter import FeishuAdapter
 
     adapter = FeishuAdapter()
-    adapter._runner = type("Runner", (), {"task_controller": None})()
+    task_controller = type(
+        "TaskController",
+        (),
+        {
+            "resolve_text_command": staticmethod(
+                lambda _session_id, text: ("case", "task_123", "")
+                if text in {"看看这个任务", "定时任务列表"}
+                else None
+            )
+        },
+    )()
+    adapter._runner = type("Runner", (), {"task_controller": task_controller})()
 
     assert adapter._should_dispatch_raw("oc_1", "批准 approval_123") is True
     assert adapter._should_dispatch_raw("oc_1", "开始执行") is True
     assert adapter._should_dispatch_raw("oc_1", "通过") is True
     assert adapter._should_dispatch_raw("oc_1", "批准") is True
+    assert adapter._should_dispatch_raw("oc_1", "看看这个任务") is True
+    assert adapter._should_dispatch_raw("oc_1", "定时任务列表") is True
     assert adapter._should_dispatch_raw("oc_1", "普通问题") is False
 
 

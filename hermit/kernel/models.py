@@ -97,6 +97,7 @@ class ExecutionPermitRecord:
     policy_ref: str | None
     action_class: str
     resource_scope: list[str] = field(default_factory=list)
+    constraints: dict[str, Any] = field(default_factory=dict)
     idempotency_key: str | None = None
     status: str = "issued"
     issued_at: float | None = None
@@ -157,7 +158,70 @@ class ReceiptRecord:
     policy_ref: str | None = None
     witness_ref: str | None = None
     idempotency_key: str | None = None
+    receipt_bundle_ref: str | None = None
+    proof_mode: str = "none"
+    signature: str | None = None
+    rollback_supported: bool = False
+    rollback_strategy: str | None = None
+    rollback_status: str = "not_requested"
+    rollback_ref: str | None = None
+    rollback_artifact_refs: list[str] = field(default_factory=list)
     created_at: float | None = None
+
+
+@dataclass
+class BeliefRecord:
+    belief_id: str
+    task_id: str
+    conversation_id: str | None
+    scope_kind: str
+    scope_ref: str
+    category: str
+    content: str
+    status: str = "active"
+    confidence: float = 0.5
+    trust_tier: str = "observed"
+    evidence_refs: list[str] = field(default_factory=list)
+    supersedes: list[str] = field(default_factory=list)
+    contradicts: list[str] = field(default_factory=list)
+    memory_ref: str | None = None
+    invalidated_at: float | None = None
+    created_at: float | None = None
+    updated_at: float | None = None
+
+
+@dataclass
+class MemoryRecord:
+    memory_id: str
+    task_id: str
+    conversation_id: str | None
+    category: str
+    content: str
+    status: str = "active"
+    confidence: float = 0.5
+    trust_tier: str = "durable"
+    evidence_refs: list[str] = field(default_factory=list)
+    supersedes: list[str] = field(default_factory=list)
+    source_belief_ref: str | None = None
+    invalidated_at: float | None = None
+    created_at: float | None = None
+    updated_at: float | None = None
+
+
+@dataclass
+class RollbackRecord:
+    rollback_id: str
+    task_id: str
+    step_id: str
+    step_attempt_id: str
+    receipt_ref: str
+    action_type: str
+    strategy: str
+    status: str = "not_requested"
+    result_summary: str | None = None
+    artifact_refs: list[str] = field(default_factory=list)
+    created_at: float | None = None
+    executed_at: float | None = None
 
 
 @dataclass
@@ -174,3 +238,6 @@ class ConversationRecord:
     total_cache_creation_tokens: int = 0
     created_at: float = 0.0
     updated_at: float = 0.0
+
+
+CapabilityGrantRecord = ExecutionPermitRecord

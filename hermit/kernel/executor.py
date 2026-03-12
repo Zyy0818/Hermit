@@ -13,10 +13,11 @@ from hermit.core.tools import ToolRegistry, ToolSpec, serialize_tool_result
 from hermit.kernel.approval_copy import ApprovalCopyService
 from hermit.kernel.approvals import ApprovalService
 from hermit.kernel.artifacts import ArtifactStore
+from hermit.kernel.contracts import contract_for
 from hermit.kernel.context import TaskExecutionContext, capture_execution_environment
 from hermit.kernel.decisions import DecisionService
 from hermit.kernel.path_grants import PathGrantService
-from hermit.kernel.permits import ExecutionPermitService
+from hermit.kernel.permits import CapabilityGrantError, ExecutionPermitService
 from hermit.kernel.policy import (
     POLICY_RULES_VERSION,
     ActionRequest,
@@ -102,7 +103,7 @@ def _execution_status_from_result_code(result_code: str) -> str:
         return "awaiting_approval"
     if result_code in {"denied"}:
         return "failed"
-    if result_code in {"reconciled_applied", "reconciled_not_applied"}:
+    if result_code in {"reconciled_applied", "reconciled_not_applied", "reconciled_observed"}:
         return "reconciling"
     if result_code == "unknown_outcome":
         return "needs_attention"
@@ -360,6 +361,7 @@ class ToolExecutor:
                 action_class=action_type,
                 resource_scope=list(action_request.resource_scopes),
                 idempotency_key=action_request.idempotency_key,
+                constraints=self._permit_constraints(action_request, grant_ref=grant_id),
             )
             self.store.update_step_attempt(
                 attempt_ctx.step_attempt_id,
@@ -370,10 +372,42 @@ class ToolExecutor:
                 state_witness_ref=witness_ref,
             )
             self.store.update_step(attempt_ctx.step_id, status="dispatching")
+
+        if governed and permit_id is not None:
+            try:
+                self.permit_service.enforce(
+                    permit_id,
+                    action_class=action_type,
+                    resource_scope=list(action_request.resource_scopes),
+                    constraints=self._permit_constraints(action_request, grant_ref=grant_id),
+                )
+            except CapabilityGrantError as exc:
+                return self._handle_dispatch_denied(
+                    tool=tool,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    attempt_ctx=attempt_ctx,
+                    policy=policy,
+                    policy_ref=policy_ref,
+                    decision_id=decision_id,
+                    permit_id=permit_id,
+                    grant_ref=grant_id,
+                    approval_ref=matched_approval.approval_id if matched_approval is not None else None,
+                    witness_ref=witness_ref,
+                    error=exc,
+                    idempotency_key=action_request.idempotency_key,
+                )
             if grant_id is not None:
                 self.path_grant_service.mark_used(grant_id)
             if matched_approval is not None:
                 self.store.consume_approval(matched_approval.approval_id)
+
+        rollback_plan = self._prepare_rollback_plan(
+            action_type=action_type,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            attempt_ctx=attempt_ctx,
+        )
 
         try:
             raw_result = tool.handler(tool_input)
@@ -394,6 +428,7 @@ class ToolExecutor:
                     witness_ref=witness_ref,
                     exc=exc,
                     idempotency_key=action_request.idempotency_key,
+                    action_request=action_request,
                 )
             raise
 
@@ -431,6 +466,9 @@ class ToolExecutor:
                     approval_mode=approval_mode,
                     grant_id=grant_id,
                 ),
+                rollback_supported=rollback_plan["supported"],
+                rollback_strategy=rollback_plan["strategy"],
+                rollback_artifact_refs=rollback_plan["artifact_refs"],
             )
         return ToolExecutionResult(
             model_content=model_content,
@@ -1003,6 +1041,117 @@ class ToolExecutor:
             return f"{tool_name} executed successfully after one-time approval."
         return f"{tool_name} executed successfully"
 
+    def _prepare_rollback_plan(
+        self,
+        *,
+        action_type: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        attempt_ctx: TaskExecutionContext,
+    ) -> dict[str, Any]:
+        contract = contract_for(action_type)
+        strategy = contract.rollback_strategy
+        artifact_refs: list[str] = []
+        supported = False
+        if action_type in {"write_local", "patch_file"}:
+            raw_path = str(tool_input.get("path", "") or "").strip()
+            if raw_path:
+                target = Path(raw_path)
+                if not target.is_absolute():
+                    target = Path(attempt_ctx.workspace_root or ".") / raw_path
+                payload = {
+                    "tool_name": tool_name,
+                    "path": str(target),
+                    "existed": target.exists(),
+                    "content": target.read_text(encoding="utf-8") if target.exists() else "",
+                }
+                artifact_refs.append(
+                    self._store_inline_json_artifact(
+                        task_id=attempt_ctx.task_id,
+                        step_id=attempt_ctx.step_id,
+                        kind="rollback.prestate",
+                        payload=payload,
+                        metadata={"action_type": action_type, "strategy": strategy},
+                    )
+                )
+                supported = True
+        elif action_type == "vcs_mutation":
+            repo = Path(attempt_ctx.workspace_root or ".")
+            try:
+                head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=repo,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                dirty = bool(
+                    subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        cwd=repo,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout.strip()
+                )
+                artifact_refs.append(
+                    self._store_inline_json_artifact(
+                        task_id=attempt_ctx.task_id,
+                        step_id=attempt_ctx.step_id,
+                        kind="rollback.prestate",
+                        payload={"repo_path": str(repo), "head": head, "dirty": dirty},
+                        metadata={"action_type": action_type, "strategy": strategy},
+                    )
+                )
+                supported = not dirty
+            except Exception:
+                supported = False
+        elif action_type == "memory_write":
+            strategy = "supersede_or_invalidate"
+            supported = True
+        return {"supported": supported, "strategy": strategy, "artifact_refs": artifact_refs}
+
+    def _store_inline_json_artifact(
+        self,
+        *,
+        task_id: str,
+        step_id: str,
+        kind: str,
+        payload: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> str:
+        uri, content_hash = self.artifact_store.store_json(payload)
+        artifact = self.store.create_artifact(
+            task_id=task_id,
+            step_id=step_id,
+            kind=kind,
+            uri=uri,
+            content_hash=content_hash,
+            producer="tool_executor",
+            retention_class="audit",
+            trust_tier="observed",
+            metadata=metadata,
+        )
+        return artifact.artifact_id
+
+    def _permit_constraints(
+        self,
+        action_request: ActionRequest,
+        *,
+        grant_ref: str | None,
+    ) -> dict[str, Any]:
+        constraints = dict(action_request.derived.get("constraints", {}))
+        constraints.update(
+            {
+                "target_paths": list(action_request.derived.get("target_paths", [])),
+                "network_hosts": list(action_request.derived.get("network_hosts", [])),
+                "command_preview": action_request.derived.get("command_preview"),
+            }
+        )
+        if grant_ref:
+            constraints["grant_ref"] = grant_ref
+        return {key: value for key, value in constraints.items() if value not in (None, [], {}, "")}
+
     def _supersede_attempt_for_witness_drift(
         self,
         *,
@@ -1047,12 +1196,15 @@ class ToolExecutor:
         witness_ref: str | None,
         exc: Exception,
         idempotency_key: str | None,
+        action_request: ActionRequest,
     ) -> ToolExecutionResult:
         action_type = tool.action_class or self.policy_engine.infer_action_class(tool)
         outcome = self.reconcile_service.reconcile(
             action_type=action_type,
             tool_input=tool_input,
             workspace_root=attempt_ctx.workspace_root,
+            observables=dict(action_request.derived),
+            witness=self._load_witness_payload(witness_ref),
         )
         result_code = outcome.result_code if outcome.result_code != "still_unknown" else "unknown_outcome"
         task_status = "needs_attention" if result_code == "unknown_outcome" else "reconciling"
@@ -1118,6 +1270,100 @@ class ToolExecutor:
             state_applied=True,
         )
 
+    def _load_witness_payload(self, witness_ref: str | None) -> dict[str, Any]:
+        if not witness_ref:
+            return {}
+        artifact = self.store.get_artifact(witness_ref)
+        if artifact is None:
+            return {}
+        try:
+            payload = json.loads(self.artifact_store.read_text(artifact.uri))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _handle_dispatch_denied(
+        self,
+        *,
+        tool: ToolSpec,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        attempt_ctx: TaskExecutionContext,
+        policy: PolicyDecision,
+        policy_ref: str | None,
+        decision_id: str | None,
+        permit_id: str,
+        grant_ref: str | None,
+        approval_ref: str | None,
+        witness_ref: str | None,
+        error: CapabilityGrantError,
+        idempotency_key: str | None,
+    ) -> ToolExecutionResult:
+        self.store.append_event(
+            event_type="dispatch.denied",
+            entity_type="execution_permit",
+            entity_id=permit_id,
+            task_id=attempt_ctx.task_id,
+            step_id=attempt_ctx.step_id,
+            actor="kernel",
+            payload={
+                "permit_ref": permit_id,
+                "decision_ref": decision_id,
+                "error_code": error.code,
+                "error": str(error),
+                "tool_name": tool_name,
+            },
+        )
+        now = time.time()
+        self.store.update_step_attempt(
+            attempt_ctx.step_attempt_id,
+            status="failed",
+            waiting_reason=str(error),
+            decision_id=decision_id,
+            permit_id=permit_id,
+            state_witness_ref=witness_ref,
+            finished_at=now,
+        )
+        self.store.update_step(attempt_ctx.step_id, status="failed", finished_at=now)
+        self.store.update_task_status(attempt_ctx.task_id, "failed")
+
+        receipt_id = None
+        if policy.requires_receipt:
+            receipt_id = self._issue_receipt(
+                tool=tool,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                raw_result={"error": str(error), "error_code": error.code},
+                attempt_ctx=attempt_ctx,
+                approval_ref=approval_ref,
+                policy=policy,
+                policy_ref=policy_ref,
+                decision_ref=decision_id,
+                permit_ref=permit_id,
+                grant_ref=grant_ref,
+                witness_ref=witness_ref,
+                result_code="dispatch_denied",
+                idempotency_key=idempotency_key,
+                result_summary=str(error),
+                output_kind="dispatch_error",
+            )
+
+        return ToolExecutionResult(
+            model_content=f"[Capability Denied] {error}",
+            raw_result={"error": str(error), "error_code": error.code},
+            denied=True,
+            policy_decision=policy,
+            receipt_id=receipt_id,
+            decision_id=decision_id,
+            permit_id=permit_id,
+            grant_ref=grant_ref,
+            policy_ref=policy_ref,
+            witness_ref=witness_ref,
+            result_code="dispatch_denied",
+            execution_status="failed",
+            state_applied=True,
+        )
+
     def _issue_receipt(
         self,
         *,
@@ -1137,6 +1383,9 @@ class ToolExecutor:
         idempotency_key: str | None,
         result_summary: str | None = None,
         output_kind: str = "tool_output",
+        rollback_supported: bool = False,
+        rollback_strategy: str | None = None,
+        rollback_artifact_refs: list[str] | None = None,
     ) -> str:
         input_uri, input_hash = self.artifact_store.store_json({"tool": tool_name, "input": tool_input})
         input_artifact = self.store.create_artifact(
@@ -1194,4 +1443,7 @@ class ToolExecutor:
             policy_ref=policy_ref,
             witness_ref=witness_ref,
             idempotency_key=idempotency_key,
+            rollback_supported=rollback_supported,
+            rollback_strategy=rollback_strategy,
+            rollback_artifact_refs=rollback_artifact_refs,
         )

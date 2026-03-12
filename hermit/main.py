@@ -54,7 +54,15 @@ from hermit.context import build_base_context, ensure_default_context_file
 from hermit.core.runner import AgentRunner
 from hermit.core.session import SessionManager
 from hermit.i18n import resolve_locale, tr
-from hermit.kernel import ApprovalCopyService, KernelStore, TaskController
+from hermit.kernel import (
+    ApprovalCopyService,
+    KernelStore,
+    ProjectionService,
+    RollbackService,
+    SupervisionService,
+    TaskController,
+)
+from hermit.kernel.proofs import ProofService
 from hermit.logging import configure_logging
 from hermit.plugin.manager import PluginManager
 from hermit.provider.runtime import AgentResult
@@ -1281,6 +1289,63 @@ def task_receipts(
     """Show receipts."""
     store = _get_kernel_store()
     payload = [receipt.__dict__ for receipt in store.list_receipts(task_id=task_id, limit=limit)]
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@task_app.command("explain")
+def task_explain(task_id: str = typer.Argument(..., help="Task ID.")) -> None:
+    """Explain why a task executed, under what authority, and what changed."""
+    store = _get_kernel_store()
+    typer.echo(json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2))
+
+
+@task_app.command("case")
+def task_case(task_id: str = typer.Argument(..., help="Task ID.")) -> None:
+    """Show unified operator case view for one task."""
+    store = _get_kernel_store()
+    typer.echo(json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2))
+
+
+@task_app.command("proof")
+def task_proof(task_id: str = typer.Argument(..., help="Task ID.")) -> None:
+    """Show proof summary for one task."""
+    store = _get_kernel_store()
+    summary = ProofService(store).build_proof_summary(task_id)
+    typer.echo(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+@task_app.command("proof-export")
+def task_proof_export(
+    task_id: str = typer.Argument(..., help="Task ID."),
+    output: Optional[Path] = typer.Option(None, help="Optional path to write the exported proof bundle."),
+) -> None:
+    """Export one task's proof bundle."""
+    store = _get_kernel_store()
+    bundle = ProofService(store).export_task_proof(task_id)
+    payload = json.dumps(bundle, ensure_ascii=False, indent=2)
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(payload + "\n", encoding="utf-8")
+    typer.echo(payload)
+
+
+@task_app.command("rollback")
+def task_rollback(receipt_id: str = typer.Argument(..., help="Receipt ID.")) -> None:
+    """Execute a supported rollback for one receipt."""
+    store = _get_kernel_store()
+    payload = RollbackService(store).execute(receipt_id)
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@task_app.command("projections-rebuild")
+def task_projections_rebuild(
+    task_id: Optional[str] = typer.Argument(None, help="Optional task ID."),
+    all_tasks: bool = typer.Option(False, "--all", help="Rebuild all task projections."),
+) -> None:
+    """Rebuild operator projection cache."""
+    store = _get_kernel_store()
+    service = ProjectionService(store)
+    payload = service.rebuild_all() if all_tasks or not task_id else service.rebuild_task(task_id)
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 

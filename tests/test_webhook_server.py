@@ -102,6 +102,58 @@ def _seed_kernel_records(store: KernelStore) -> tuple[str, str]:
     return task.task_id, approval.approval_id
 
 
+def _seed_proof_records(store: KernelStore) -> tuple[str, str]:
+    store.ensure_conversation("webhook-proof", source_channel="webhook")
+    task = store.create_task(
+        conversation_id="webhook-proof",
+        title="Webhook proof test",
+        goal="Inspect proof output",
+        source_channel="webhook",
+    )
+    step = store.create_step(task_id=task.task_id, kind="respond")
+    attempt = store.create_step_attempt(task_id=task.task_id, step_id=step.step_id)
+    decision = store.create_decision(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        decision_type="execution_authorization",
+        verdict="allow",
+        reason="Policy allowed this write.",
+        evidence_refs=["artifact_action"],
+        action_type="write_local",
+    )
+    permit = store.create_execution_permit(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        decision_ref=decision.decision_id,
+        approval_ref=None,
+        policy_ref="policy_1",
+        action_class="write_local",
+        resource_scope=["workspace"],
+        constraints={"target_paths": ["workspace/example.txt"]},
+        idempotency_key="idem_webhook_proof",
+        expires_at=None,
+    )
+    receipt = store.create_receipt(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        action_type="write_local",
+        input_refs=["artifact_in"],
+        environment_ref="artifact_env",
+        policy_result={"decision": "allow"},
+        approval_ref=None,
+        output_refs=["artifact_out"],
+        result_summary="webhook proof receipt",
+        result_code="succeeded",
+        decision_ref=decision.decision_id,
+        permit_ref=permit.permit_id,
+        policy_ref="policy_1",
+    )
+    return task.task_id, receipt.receipt_id
+
+
 # ---------------------------------------------------------------------------
 # Route registration and health endpoints
 # ---------------------------------------------------------------------------
@@ -214,6 +266,78 @@ class TestControlEndpoints:
 
         assert resp.status_code == 200
         assert resp.json()["approvals"][0]["approval_id"] == approval_id
+
+    def test_proof_endpoints_return_summary_and_export(self, control_config, hooks, tmp_path: Path) -> None:
+        store = KernelStore(tmp_path / "kernel" / "state.db")
+        task_id, receipt_id = _seed_proof_records(store)
+        server = WebhookServer(control_config, hooks)
+        server._runner = SimpleNamespace(
+            task_controller=SimpleNamespace(store=store),
+            _resolve_approval=MagicMock(),
+        )
+        client = TestClient(server._app)
+
+        summary = client.get(
+            f"/tasks/{task_id}/proof",
+            headers={"X-Hermit-Signature-256": self._sign(b"", "control-secret")},
+        )
+        assert summary.status_code == 200
+        assert summary.json()["chain_verification"]["valid"] is True
+        assert summary.json()["missing_receipt_bundle_count"] == 1
+
+        export = client.post(
+            f"/tasks/{task_id}/proof/export",
+            headers={"X-Hermit-Signature-256": self._sign(b"", "control-secret")},
+        )
+        assert export.status_code == 200
+        assert export.json()["status"] == "verified"
+        assert export.json()["proof_bundle_ref"]
+        assert store.get_receipt(receipt_id).receipt_bundle_ref is not None
+
+    def test_case_and_projection_endpoints_return_operator_payload(self, control_config, hooks, tmp_path: Path) -> None:
+        store = KernelStore(tmp_path / "kernel" / "state.db")
+        task_id, _receipt_id = _seed_proof_records(store)
+        server = WebhookServer(control_config, hooks)
+        server._runner = SimpleNamespace(
+            task_controller=SimpleNamespace(store=store),
+            _resolve_approval=MagicMock(),
+        )
+        client = TestClient(server._app)
+
+        case_resp = client.get(
+            f"/tasks/{task_id}/case",
+            headers={"X-Hermit-Signature-256": self._sign(b"", "control-secret")},
+        )
+        rebuild_body = json.dumps({"task_id": task_id}).encode()
+        rebuild_resp = client.post(
+            "/projections/rebuild",
+            content=rebuild_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hermit-Signature-256": self._sign(rebuild_body, "control-secret"),
+            },
+        )
+
+        assert case_resp.status_code == 200
+        assert case_resp.json()["task"]["task_id"] == task_id
+        assert rebuild_resp.status_code == 200
+        assert rebuild_resp.json()["task"]["task_id"] == task_id
+
+    def test_proof_endpoints_require_valid_signature(self, control_config, hooks, tmp_path: Path) -> None:
+        store = KernelStore(tmp_path / "kernel" / "state.db")
+        task_id, _receipt_id = _seed_proof_records(store)
+        server = WebhookServer(control_config, hooks)
+        server._runner = SimpleNamespace(
+            task_controller=SimpleNamespace(store=store),
+            _resolve_approval=MagicMock(),
+        )
+        client = TestClient(server._app, raise_server_exceptions=False)
+
+        resp = client.get(
+            f"/tasks/{task_id}/proof",
+            headers={"X-Hermit-Signature-256": "sha256=badhash"},
+        )
+        assert resp.status_code == 401
 
     def test_approve_endpoint_uses_task_conversation(self, control_config, hooks, tmp_path: Path) -> None:
         store = KernelStore(tmp_path / "kernel" / "state.db")

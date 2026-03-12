@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, Optional
 
@@ -87,11 +88,11 @@ class AgentRunner:
         if self.task_controller is not None:
             resolution = self.task_controller.resolve_text_command(session_id, stripped)
             if resolution is not None:
-                action, approval_id, reason = resolution
-                return self._resolve_approval(
+                action, target_id, reason = resolution
+                return self._dispatch_control_action(
                     session_id,
                     action=action,
-                    approval_id=approval_id,
+                    target_id=target_id,
                     reason=reason,
                     on_tool_call=on_tool_call,
                     on_tool_start=on_tool_start,
@@ -219,6 +220,128 @@ class AgentRunner:
         self.pm.on_session_start(session_id)
         self._session_started.add(session_id)
 
+    def _dispatch_control_action(
+        self,
+        session_id: str,
+        *,
+        action: str,
+        target_id: str,
+        reason: str = "",
+        on_tool_call: Optional[ToolCallback] = None,
+        on_tool_start: Optional[ToolStartCallback] = None,
+    ) -> DispatchResult:
+        if action in {"approve_once", "approve_always_directory", "deny"}:
+            return self._resolve_approval(
+                session_id,
+                action=action,
+                approval_id=target_id,
+                reason=reason,
+                on_tool_call=on_tool_call,
+                on_tool_start=on_tool_start,
+            )
+        if action == "new_session":
+            self.reset_session(session_id)
+            return DispatchResult("已开启新会话。", is_command=True)
+        if action == "show_history":
+            session = self.session_manager.get_or_create(session_id)
+            user_turns = sum(1 for m in session.messages if m.get("role") == "user")
+            total = len(session.messages)
+            return DispatchResult(f"当前会话：{user_turns} 轮用户消息，共 {total} 条记录。", is_command=True)
+        if action == "show_help":
+            lines = ["**可用命令**"]
+            for cmd, (_fn, help_text, cli_only) in sorted(self._commands.items()):
+                if self.serve_mode and cli_only:
+                    continue
+                lines.append(f"- `{cmd}` — {help_text}")
+            return DispatchResult("\n".join(lines), is_command=True)
+
+        store = getattr(getattr(self, "agent", None), "kernel_store", None)
+        if store is None:
+            return DispatchResult(text="Task kernel is not available.", is_command=True)
+
+        if action == "task_list":
+            payload = [task.__dict__ for task in store.list_tasks(limit=20)]
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "case":
+            from hermit.kernel.supervision import SupervisionService
+
+            payload = SupervisionService(store).build_task_case(target_id)
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "task_events":
+            payload = store.list_events(task_id=target_id, limit=100)
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "task_receipts":
+            payload = [receipt.__dict__ for receipt in store.list_receipts(task_id=target_id, limit=50)]
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "task_proof":
+            from hermit.kernel.proofs import ProofService
+
+            payload = ProofService(store).build_proof_summary(target_id)
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "task_proof_export":
+            from hermit.kernel.proofs import ProofService
+
+            payload = ProofService(store).export_task_proof(target_id)
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "rollback":
+            from hermit.kernel.rollbacks import RollbackService
+
+            payload = RollbackService(store).execute(target_id)
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "projection_rebuild":
+            from hermit.kernel.projections import ProjectionService
+
+            payload = ProjectionService(store).rebuild_task(target_id)
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "projection_rebuild_all":
+            from hermit.kernel.projections import ProjectionService
+
+            payload = ProjectionService(store).rebuild_all()
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "grant_list":
+            payload = [
+                grant.__dict__
+                for grant in store.list_path_grants(
+                    subject_kind="conversation",
+                    subject_ref=session_id,
+                    limit=50,
+                )
+            ]
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "grant_revoke":
+            grant = store.get_path_grant(target_id)
+            if grant is None:
+                return DispatchResult(text=f"Grant not found: {target_id}", is_command=True)
+            store.update_path_grant(
+                target_id,
+                status="revoked",
+                actor="user",
+                event_type="grant.revoked",
+                payload={"status": "revoked"},
+            )
+            return DispatchResult(text=f"Revoked grant '{target_id}'.", is_command=True)
+        if action == "schedule_list":
+            payload = [job.to_dict() for job in store.list_schedules()]
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "schedule_history":
+            payload = [
+                record.to_dict() for record in store.list_schedule_history(job_id=target_id or None, limit=10)
+            ]
+            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+        if action == "schedule_enable":
+            job = store.update_schedule(target_id, enabled=True)
+            message = f"Enabled task '{target_id}'." if job is not None else f"Error: no task with id '{target_id}' found."
+            return DispatchResult(text=message, is_command=True)
+        if action == "schedule_disable":
+            job = store.update_schedule(target_id, enabled=False)
+            message = f"Disabled task '{target_id}'." if job is not None else f"Error: no task with id '{target_id}' found."
+            return DispatchResult(text=message, is_command=True)
+        if action == "schedule_remove":
+            deleted = store.delete_schedule(target_id)
+            message = f"Removed task '{target_id}'." if deleted else f"Error: no task with id '{target_id}' found."
+            return DispatchResult(text=message, is_command=True)
+        return DispatchResult(text=f"Unsupported control action: {action}", is_command=True)
+
     def _resolve_approval(
         self,
         session_id: str,
@@ -329,11 +452,15 @@ def _cmd_help(runner: AgentRunner, _session_id: str, _text: str) -> DispatchResu
     return DispatchResult("\n".join(lines), is_command=True)
 
 
-@AgentRunner.register_command("/task", "审批与任务控制；支持 /task approve <id> 和 /task deny <id>")
+@AgentRunner.register_command("/task", "任务控制；支持 approve/deny/case/rollback")
 def _cmd_task(runner: AgentRunner, session_id: str, text: str) -> DispatchResult:
     parts = text.strip().split(maxsplit=2)
-    if len(parts) < 3 or parts[1] not in {"approve", "deny"}:
-        return DispatchResult("用法：/task approve <approval_id> 或 /task deny <approval_id>", is_command=True)
+    if len(parts) < 3 or parts[1] not in {"approve", "deny", "case", "rollback"}:
+        return DispatchResult(
+            "用法：/task approve <approval_id> | /task deny <approval_id> | /task case <task_id> | /task rollback <receipt_id>",
+            is_command=True,
+        )
     action = parts[1]
-    approval_id = parts[2].strip()
-    return runner._resolve_approval(session_id, action=action, approval_id=approval_id)
+    target_id = parts[2].strip()
+    mapped_action = {"approve": "approve_once", "deny": "deny", "case": "case", "rollback": "rollback"}[action]
+    return runner._dispatch_control_action(session_id, action=mapped_action, target_id=target_id)

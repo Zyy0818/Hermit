@@ -14,6 +14,10 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from hermit.builtin.webhook.models import WebhookConfig, WebhookRoute
+from hermit.kernel.proofs import ProofService
+from hermit.kernel.projections import ProjectionService
+from hermit.kernel.rollbacks import RollbackService
+from hermit.kernel.supervision import SupervisionService
 from hermit.plugin.base import HookEvent
 
 if TYPE_CHECKING:
@@ -80,6 +84,11 @@ class WebhookServer:
         self._app.add_api_route("/tasks", self._list_tasks, methods=["GET"])
         self._app.add_api_route("/tasks/{task_id}", self._show_task, methods=["GET"])
         self._app.add_api_route("/tasks/{task_id}/events", self._task_events, methods=["GET"])
+        self._app.add_api_route("/tasks/{task_id}/case", self._task_case, methods=["GET"])
+        self._app.add_api_route("/tasks/{task_id}/proof", self._task_proof, methods=["GET"])
+        self._app.add_api_route("/tasks/{task_id}/proof/export", self._task_proof_export, methods=["POST"])
+        self._app.add_api_route("/receipts/{receipt_id}/rollback", self._receipt_rollback, methods=["POST"])
+        self._app.add_api_route("/projections/rebuild", self._rebuild_projections, methods=["POST"])
         self._app.add_api_route("/approvals/pending", self._list_pending_approvals, methods=["GET"])
         self._app.add_api_route("/approvals/{approval_id}/approve", self._approve, methods=["POST"])
         self._app.add_api_route("/approvals/{approval_id}/deny", self._deny, methods=["POST"])
@@ -231,6 +240,39 @@ class WebhookServer:
         await self._verify_control_request(request)
         store = self._kernel_store()
         return {"events": store.list_events(task_id=task_id, limit=limit)}
+
+    async def _task_case(self, task_id: str, request: Request) -> dict[str, Any]:
+        await self._verify_control_request(request)
+        store = self._kernel_store()
+        return SupervisionService(store).build_task_case(task_id)
+
+    async def _task_proof(self, task_id: str, request: Request) -> dict[str, Any]:
+        await self._verify_control_request(request)
+        store = self._kernel_store()
+        return ProofService(store).build_proof_summary(task_id)
+
+    async def _task_proof_export(self, task_id: str, request: Request) -> dict[str, Any]:
+        await self._verify_control_request(request)
+        store = self._kernel_store()
+        return ProofService(store).export_task_proof(task_id)
+
+    async def _receipt_rollback(self, receipt_id: str, request: Request) -> dict[str, Any]:
+        await self._verify_control_request(request)
+        store = self._kernel_store()
+        return RollbackService(store).execute(receipt_id)
+
+    async def _rebuild_projections(self, request: Request) -> dict[str, Any]:
+        body = await self._verify_control_request(request)
+        task_id = ""
+        if body:
+            try:
+                import json
+                task_id = str(json.loads(body).get("task_id", "") or "").strip()
+            except Exception:
+                task_id = ""
+        store = self._kernel_store()
+        service = ProjectionService(store)
+        return service.rebuild_task(task_id) if task_id else service.rebuild_all()
 
     async def _list_pending_approvals(
         self,
