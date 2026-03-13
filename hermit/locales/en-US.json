@@ -75,7 +75,7 @@
   "menubar.error.mac_only": "Hermit menu bar companion only runs on macOS.",
   "menubar.error.missing_rumps": "Missing macOS menu bar dependency 'rumps'. Install with `pip install '.[macos]'`.",
   "plugin.compact.description": "Compact the current session context (LLM summary)",
-  "plugin.computer_use.description": "macOS Computer Use: screenshot, mouse, and keyboard control",
+  "plugin.computer_use.description": "macOS Computer Use: last-resort desktop UI automation when no native tool/API exists",
   "plugin.feishu.description": "Feishu (Lark) messaging adapter via lark-oapi WebSocket long connection",
   "plugin.feishu.variable.app_id": "Feishu app id",
   "plugin.feishu.variable.app_secret": "Feishu app secret",

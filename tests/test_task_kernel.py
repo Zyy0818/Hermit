@@ -651,6 +651,34 @@ def test_approval_copy_service_can_render_zh_cn(monkeypatch) -> None:
     assert "准备修改 1 个文件" in copy.summary
 
 
+def test_approval_copy_service_builds_structured_scheduler_copy() -> None:
+    service = ApprovalCopyService()
+    requested_action = {
+        "tool_name": "schedule_create",
+        "tool_input": {
+            "name": "Daily digest",
+            "prompt": "Summarize failed jobs and post a short digest to the chat with the top causes.",
+            "schedule_type": "interval",
+            "interval_seconds": 3600,
+        },
+        "reason": "Creating this schedule means Hermit will run automatically later.",
+        "risk_level": "medium",
+    }
+
+    copy = service.resolve_copy(requested_action, "approval_schedule")
+    canonical = service.build_canonical_copy(requested_action, "approval_schedule")
+
+    assert copy.title == "Confirm Scheduled Task Creation"
+    assert "Daily digest" in copy.summary
+    assert "every 1 hour" in copy.summary
+    assert len(copy.sections) == 2
+    assert copy.sections[0].title == "What this action will do"
+    assert any("Prompt summary:" in item for item in copy.sections[0].items)
+    assert copy.sections[1].title == "Why this needs your approval"
+    assert copy.sections[1].items == ("Creating this schedule means Hermit will run automatically later.",)
+    assert canonical["sections"][0]["title"] == "What this action will do"
+
+
 def test_policy_engine_classifies_write_as_preview_with_approval(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -884,7 +912,22 @@ def test_builtin_tool_metadata_audit_marks_reads_and_writes_explicitly(tmp_path:
     scheduler_tools = _tool_map(ctx_scheduler)
     assert scheduler_tools["schedule_list"].readonly is True
     assert scheduler_tools["schedule_history"].action_class == "read_local"
+    assert scheduler_tools["schedule_create"].action_class == "scheduler_mutation"
     assert scheduler_tools["schedule_create"].requires_receipt is True
+    scheduler_decision = PolicyEngine().evaluate(
+        ActionRequest(
+            request_id="req_schedule_create",
+            tool_name="schedule_create",
+            tool_input={"name": "Daily", "prompt": "run", "schedule_type": "cron"},
+            action_class="scheduler_mutation",
+            resource_scopes=["scheduler_store"],
+            risk_hint="medium",
+            requires_receipt=True,
+        )
+    )
+    assert scheduler_decision.decision == "allow_with_receipt"
+    assert scheduler_decision.requires_receipt is True
+    assert scheduler_decision.obligations.require_approval is False
 
     ctx_feishu = PluginContext(hooks, settings=None)
     register_feishu_hooks(ctx_feishu)

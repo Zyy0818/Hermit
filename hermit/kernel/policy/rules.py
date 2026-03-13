@@ -54,6 +54,17 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         )
         return outcomes
 
+    if request.action_class == "scheduler_mutation":
+        outcomes.append(
+            RuleOutcome(
+                verdict="allow_with_receipt",
+                reasons=[PolicyReason("scheduler_mutation", "Scheduler mutations are allowed with a durable receipt.")],
+                obligations=PolicyObligations(require_receipt=True),
+                risk_level=request.risk_hint or "medium",
+            )
+        )
+        return outcomes
+
     if request.action_class == "attachment_ingest":
         actor_kind = str(request.actor.get("kind", "") or "")
         actor_id = str(request.actor.get("agent_id", "") or "")

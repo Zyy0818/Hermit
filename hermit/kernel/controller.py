@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from hermit.i18n import resolve_locale, tr
 from hermit.kernel.context import TaskExecutionContext
@@ -198,11 +199,18 @@ class TaskController:
         status: str,
         output_ref: str | None = None,
         result_preview: str | None = None,
+        result_text: str | None = None,
     ) -> None:
         now = time.time()
         self.store.update_step(ctx.step_id, status=status, output_ref=output_ref, finished_at=now)
         self.store.update_step_attempt(ctx.step_attempt_id, status=status, finished_at=now)
-        payload = {"result_preview": result_preview} if result_preview else None
+        payload: dict[str, Any] | None = None
+        if result_preview or result_text:
+            payload = {}
+            if result_preview:
+                payload["result_preview"] = result_preview
+            if result_text:
+                payload["result_text"] = result_text
         self.store.update_task_status(
             ctx.task_id,
             "completed" if status == "succeeded" else status,

@@ -250,8 +250,8 @@ def register(ctx: PluginContext) -> None:
             "required": ["name", "prompt", "schedule_type"],
         },
         handler=_handle_create,
-        action_class="write_local",
-        risk_hint="high",
+        action_class="scheduler_mutation",
+        risk_hint="medium",
         requires_receipt=True,
     ))
 
@@ -286,8 +286,8 @@ def register(ctx: PluginContext) -> None:
             "required": ["job_id"],
         },
         handler=_handle_delete,
-        action_class="write_local",
-        risk_hint="high",
+        action_class="scheduler_mutation",
+        risk_hint="medium",
         requires_receipt=True,
     ))
 
@@ -311,8 +311,8 @@ def register(ctx: PluginContext) -> None:
             "required": ["job_id"],
         },
         handler=_handle_update,
-        action_class="write_local",
-        risk_hint="high",
+        action_class="scheduler_mutation",
+        risk_hint="medium",
         requires_receipt=True,
     ))
 

@@ -124,6 +124,57 @@ def test_runtime_run_returns_provider_error_payload() -> None:
     assert result.execution_status == "failed"
 
 
+def test_runtime_resume_executes_pending_tool_results_before_appended_notes() -> None:
+    provider = FakeProvider(responses=[ProviderResponse(content=[{"type": "text", "text": "done"}])])
+    executed: list[tuple[str, dict[str, object]]] = []
+
+    runtime = AgentRuntime(
+        provider=provider,
+        registry=ToolRegistry(),
+        model="fake",
+        tool_executor=SimpleNamespace(
+            load_blocked_state=lambda _step_attempt_id: {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}],
+                    }
+                ],
+                "pending_tool_blocks": [{"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}],
+                "tool_result_blocks": [],
+                "next_turn": 2,
+                "disable_tools": False,
+                "readonly_only": False,
+                "suspend_kind": "awaiting_approval",
+            },
+            clear_blocked_state=lambda _step_attempt_id: None,
+            execute=lambda _task_context, tool_name, tool_input: (
+                executed.append((tool_name, tool_input))
+                or ToolExecutionResult(model_content={"ok": True}, raw_result={"ok": True})
+            ),
+            consume_appended_notes=lambda _task_context: (
+                [{"role": "user", "content": "[Task Note Appended]\n确认删除"}],
+                1,
+            ),
+        ),
+    )
+
+    result = runtime.resume(
+        step_attempt_id="attempt",
+        task_context=SimpleNamespace(task_id="task", step_id="step", step_attempt_id="attempt"),
+    )
+
+    assert result.text == "done"
+    assert executed == [("echo", {"value": "hi"})]
+    request_messages = provider.requests[0].messages
+    assert request_messages[0]["role"] == "assistant"
+    assert request_messages[1]["role"] == "user"
+    assert request_messages[1]["content"][0]["type"] == "tool_result"
+    assert request_messages[1]["content"][0]["tool_use_id"] == "call_1"
+    assert request_messages[2]["role"] == "user"
+    assert request_messages[2]["content"] == "[Task Note Appended]\n确认删除"
+
+
 def test_runtime_run_raises_when_tool_use_has_no_blocks() -> None:
     provider = FakeProvider(responses=[ProviderResponse(content=[], stop_reason="tool_use")])
     runtime = AgentRuntime(provider=provider, registry=ToolRegistry(), model="fake")

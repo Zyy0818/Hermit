@@ -75,7 +75,7 @@
   "menubar.error.mac_only": "Hermit 菜单栏 companion 仅支持 macOS。",
   "menubar.error.missing_rumps": "缺少 macOS 菜单栏依赖 'rumps'。请安装 `pip install '.[macos]'`。",
   "plugin.compact.description": "压缩当前会话上下文（LLM 摘要）",
-  "plugin.computer_use.description": "macOS Computer Use：截图、鼠标与键盘控制",
+  "plugin.computer_use.description": "macOS Computer Use：桌面 UI 兜底自动化（仅在无原生工具/API 时使用）",
   "plugin.feishu.description": "通过 lark-oapi WebSocket 长连接接入的飞书消息 adapter",
   "plugin.feishu.variable.app_id": "飞书 app id",
   "plugin.feishu.variable.app_secret": "飞书 app secret",

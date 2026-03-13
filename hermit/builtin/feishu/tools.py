@@ -553,7 +553,9 @@ def _build_send_message_tool() -> ToolSpec:
             "Send a text message to a Feishu chat or user. "
             "Use receive_id_type='chat_id' for group chats, 'open_id' for individual users. "
             "For Markdown formatting, use the existing reply mechanism instead. "
-            "Useful for proactively notifying teams about results or summaries."
+            "Prefer this over desktop automation for routine Feishu messaging whenever "
+            "you know the target receive_id. Useful for proactively notifying teams "
+            "about results or summaries."
         ),
         input_schema={
             "type": "object",

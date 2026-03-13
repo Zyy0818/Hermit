@@ -77,6 +77,30 @@ _TOOL_DISPLAY_KEYS: dict[str, str] = {
     "codex_exec": "feishu.reply.tool_display.codex_exec",
 }
 
+_TASK_TOPIC_LABEL_KEYS: dict[str, str] = {
+    "task.started": "feishu.reply.task_topic.kind.task.started",
+    "tool.submitted": "feishu.reply.task_topic.kind.tool.submitted",
+    "tool.progressed": "feishu.reply.task_topic.kind.tool.progressed",
+    "tool.status.changed": "feishu.reply.task_topic.kind.tool.status.changed",
+    "task.progress.summarized": "feishu.reply.task_topic.kind.task.progress.summarized",
+    "user.note.appended": "feishu.reply.task_topic.kind.user.note.appended",
+    "approval.requested": "feishu.reply.task_topic.kind.approval.requested",
+    "approval.resolved": "feishu.reply.task_topic.kind.approval.resolved",
+    "task.completed": "feishu.reply.task_topic.kind.task.completed",
+    "task.failed": "feishu.reply.task_topic.kind.task.failed",
+    "task.cancelled": "feishu.reply.task_topic.kind.task.cancelled",
+    "started": "feishu.reply.task_topic.phase.started",
+    "starting": "feishu.reply.task_topic.phase.starting",
+    "submitted": "feishu.reply.task_topic.phase.submitted",
+    "running": "feishu.reply.task_topic.phase.running",
+    "ready": "feishu.reply.task_topic.phase.ready",
+    "awaiting_approval": "feishu.reply.task_topic.phase.awaiting_approval",
+    "approval_resolved": "feishu.reply.task_topic.phase.approval_resolved",
+    "completed": "feishu.reply.task_topic.phase.completed",
+    "failed": "feishu.reply.task_topic.phase.failed",
+    "cancelled": "feishu.reply.task_topic.phase.cancelled",
+}
+
 
 def _t(message_key: str, *, locale: str | None = None, default: str | None = None, **kwargs: object) -> str:
     return tr(message_key, locale=resolve_locale(locale), default=default, **kwargs)
@@ -85,6 +109,20 @@ def _t(message_key: str, *, locale: str | None = None, default: str | None = Non
 def _tool_display(name: str, *, locale: str | None = None) -> str:
     key = _TOOL_DISPLAY_KEYS.get(name)
     return _t(key, locale=locale, default=name) if key else name
+
+
+def _humanize_task_topic_label(value: str) -> str:
+    cleaned = value.replace(".", " ").replace("_", " ").strip()
+    if not cleaned:
+        return ""
+    return cleaned[0].upper() + cleaned[1:]
+
+
+def _task_topic_label(value: str, *, locale: str | None = None) -> str:
+    key = _TASK_TOPIC_LABEL_KEYS.get(value)
+    if key:
+        return _t(key, locale=locale, default=_humanize_task_topic_label(value))
+    return _humanize_task_topic_label(value)
 
 
 @dataclass
@@ -850,6 +888,14 @@ def smart_reply(client: Any, message_id: str, text: str, *, locale: str | None =
     return send_text_reply(client, message_id, text)
 
 
+def smart_send_message(client: Any, chat_id: str, text: str, *, locale: str | None = None) -> Optional[str]:
+    """Send a new message to a chat using the same card/text heuristic as smart_reply()."""
+    if _should_use_card(text):
+        card = build_result_card(text, locale=locale)
+        return send_card(client, chat_id, card)
+    return send_text_message(client, chat_id, text)
+
+
 def build_thinking_card(hint: str | None = None, *, locale: str | None = None) -> dict:
     """Build a minimal card that can be PATCH-updated later."""
     content = hint or _t("feishu.reply.thinking.default", locale=locale)
@@ -879,6 +925,7 @@ def build_approval_card(
     *,
     title: str | None = None,
     detail: str | None = None,
+    sections: list[dict[str, Any]] | tuple[Any, ...] | None = None,
     command_preview: str | None = None,
     target_path: str | None = None,
     workspace_root: str | None = None,
@@ -966,7 +1013,41 @@ def build_approval_card(
     command = (command_preview or "").strip()
     body_elements: list[dict[str, Any]] = [_markdown_element(clean_text, margin="0 0 8px 0")]
     if clean_detail and clean_detail != clean_text:
-        body_elements.append(_markdown_element(clean_detail, text_size="small", margin="0 0 8px 0"))
+        detail_content = clean_detail
+        if not sections:
+            detail_content = f"**{_t('feishu.reply.approval.why_title', locale=locale)}**\n{clean_detail}"
+        body_elements.append(
+            _markdown_element(
+                detail_content,
+                text_size="small",
+                margin="0 0 8px 0",
+            )
+        )
+    for raw_section in sections or ():
+        section_title = ""
+        section_items: list[str] = []
+        if isinstance(raw_section, dict):
+            section_title = str(raw_section.get("title", "")).strip()
+            raw_items = raw_section.get("items")
+            if isinstance(raw_items, list):
+                section_items = [str(item).strip() for item in raw_items if str(item).strip()]
+        else:
+            section_title = str(getattr(raw_section, "title", "")).strip()
+            raw_items = getattr(raw_section, "items", ())
+            section_items = [str(item).strip() for item in raw_items if str(item).strip()]
+        if not section_title or not section_items:
+            continue
+        rendered_items = "\n".join(
+            f"- {sanitize_for_feishu(item, locale=locale)}"
+            for item in section_items
+        )
+        body_elements.append(
+            _markdown_element(
+                f"**{sanitize_for_feishu(section_title, locale=locale)}**\n{rendered_items}",
+                text_size="small",
+                margin="0 0 8px 0",
+            )
+        )
     if target_path:
         body_elements.append(_markdown_element(
             _t("feishu.reply.approval.target_path", locale=locale, target_path=sanitize_for_feishu(target_path, locale=locale)),
@@ -1108,6 +1189,35 @@ def build_approval_resolution_card(
     }
 
 
+def build_completion_status_card(
+    text: str | None = None,
+    *,
+    locale: str | None = None,
+) -> dict[str, Any]:
+    title = _t("feishu.reply.completion.title", locale=locale)
+    body = sanitize_for_feishu(
+        text or _t("feishu.reply.completion.body", locale=locale),
+        locale=locale,
+    )
+    return {
+        "schema": "2.0",
+        "config": {
+            "update_multi": True,
+            "summary": {"content": _t("feishu.reply.completion.summary", locale=locale)},
+        },
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": "green",
+        },
+        "body": {
+            "padding": "8px 12px 12px 12px",
+            "elements": [
+                _markdown_element(body, margin="0"),
+            ],
+        },
+    }
+
+
 def build_error_card(hint: str | None = None, *, locale: str | None = None) -> dict:
     """Build an error-state card for patching when the agent fails."""
     content = hint or _t("feishu.reply.error.default", locale=locale)
@@ -1221,11 +1331,12 @@ def build_task_topic_card(
 
     current_parts: list[str] = []
     if current_phase:
-        current_parts.append(current_phase)
+        current_parts.append(_task_topic_label(current_phase, locale=locale))
     if current_percent is not None:
         current_parts.append(f"{current_percent}%")
     current_header = " · ".join(current_parts)
-    current_text = f"**{current_header}**\n{current_hint}" if current_header else f"**Current**\n{current_hint}"
+    current_default = _t("feishu.reply.task_topic.current", locale=locale)
+    current_text = f"**{current_header}**\n{current_hint}" if current_header else f"**{current_default}**\n{current_hint}"
     elements.append(_markdown_element(current_text, margin="0 0 12px 0"))
 
     for item in reversed(items[-8:]):
@@ -1241,9 +1352,9 @@ def build_task_topic_card(
             progress_percent = None
         header_parts: list[str] = []
         if phase:
-            header_parts.append(phase)
+            header_parts.append(_task_topic_label(phase, locale=locale))
         elif kind:
-            header_parts.append(kind)
+            header_parts.append(_task_topic_label(kind, locale=locale))
         if progress_percent is not None:
             header_parts.append(f"{progress_percent}%")
         header = " · ".join(header_parts)

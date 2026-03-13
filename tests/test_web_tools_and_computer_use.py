@@ -260,3 +260,29 @@ def test_typing_keys_screen_size_and_open_app(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="screencapture is not available"):
         monkeypatch.setattr(actions, "_tool_exists", lambda name: False)
         actions.screenshot({})
+
+
+def test_computer_use_errors_explain_accessibility_and_cliclick(monkeypatch) -> None:
+    monkeypatch.setattr(actions, "_tool_exists", lambda name: False)
+    permission_error = 'System Events got an error: osascript is not permitted to send keystrokes. (1002)'
+    monkeypatch.setattr(actions, "_run_osascript", lambda script, argv=None: (_ for _ in ()).throw(RuntimeError(permission_error)))
+
+    with pytest.raises(RuntimeError, match="Grant Accessibility access") as type_exc:
+        actions.type_text({"text": "hello"})
+    assert "cliclick" in str(type_exc.value)
+
+    with pytest.raises(RuntimeError, match="Grant Accessibility access") as key_exc:
+        actions.press_key({"key": "enter"})
+    assert "cliclick" not in str(key_exc.value)
+
+
+def test_computer_use_errors_explain_osascript_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(actions, "_tool_exists", lambda name: False)
+    monkeypatch.setattr(
+        actions,
+        "_run_osascript",
+        lambda script, argv=None: (_ for _ in ()).throw(RuntimeError("Application is not running")),
+    )
+
+    with pytest.raises(RuntimeError, match="fell back to osascript/System Events"):
+        actions.type_text({"text": "hello"})

@@ -207,7 +207,6 @@ class AgentRuntime:
         loader = getattr(self.tool_executor, "load_suspended_state", None) or getattr(self.tool_executor, "load_blocked_state")
         snapshot = loader(step_attempt_id)
         messages = normalize_messages(list(snapshot.get("messages", [])))
-        messages = self._apply_appended_notes(messages, task_context)
         pending_tool_blocks = list(snapshot.get("pending_tool_blocks", []))
         tool_result_blocks = list(snapshot.get("tool_result_blocks", []))
         next_turn = int(snapshot.get("next_turn", 1))

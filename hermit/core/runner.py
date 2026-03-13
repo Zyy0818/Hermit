@@ -276,6 +276,7 @@ class AgentRunner:
                         task_ctx,
                         status=status,
                         result_preview=_result_preview(result.text or ""),
+                        result_text=result.text or "",
                     )
         if not (result.suspended or result.blocked):
             self.pm.on_post_run(result, session_id=session_id, session=session, runner=self)
@@ -338,6 +339,7 @@ class AgentRunner:
                     task_ctx,
                     status=status,
                     result_preview=_result_preview(result.text or ""),
+                    result_text=result.text or "",
                 )
             self.pm.on_post_run(result, session_id=task_ctx.conversation_id, session=session, runner=self)
         return result
@@ -578,6 +580,7 @@ class AgentRunner:
                     task_ctx,
                     status=status,
                     result_preview=_result_preview(result.text or ""),
+                    result_text=result.text or "",
                 )
             self.pm.on_post_run(result, session_id=session_id, session=session, runner=self)
         return DispatchResult(

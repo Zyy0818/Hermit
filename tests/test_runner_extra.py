@@ -118,8 +118,14 @@ class _FakeTaskController:
         self.started.append({"kwargs": kwargs, "ctx": ctx})
         return ctx
 
-    def finalize_result(self, ctx, status: str, result_preview: str | None = None) -> None:
-        self.finalized.append((ctx, status, result_preview))
+    def finalize_result(
+        self,
+        ctx,
+        status: str,
+        result_preview: str | None = None,
+        result_text: str | None = None,
+    ) -> None:
+        self.finalized.append((ctx, status, result_preview, result_text))
 
     def mark_blocked(self, ctx) -> None:
         self.blocked.append(ctx)
@@ -165,6 +171,7 @@ def test_runner_handle_and_status_paths() -> None:
     assert controller.started[0]["kwargs"]["policy_profile"] == "readonly"
     assert controller.finalized[0][1] == "succeeded"
     assert controller.finalized[0][2] == "answer"
+    assert controller.finalized[0][3] == "answer"
     assert plugin_manager.started == ["session"]
     assert plugin_manager.post_run == ["answer"]
     assert "<session_time>" in agent.run_calls[0]["prompt"]
@@ -216,6 +223,7 @@ def test_runner_resolve_approval_handles_missing_deny_and_approve_paths() -> Non
     assert controller.store.resolved[-1]["resolution"]["mode"] == "always_directory"
     assert controller.finalized[-1][1] == "failed"
     assert controller.finalized[-1][2] == "approved"
+    assert controller.finalized[-1][3] == "approved"
     assert plugin_manager.post_run[-1] == "approved"
 
     agent.resume_result = AgentResult(

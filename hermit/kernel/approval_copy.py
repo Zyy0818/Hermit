@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import datetime
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -10,10 +11,17 @@ Formatter = Callable[[dict[str, Any]], dict[str, str] | str | None]
 
 
 @dataclass
+class ApprovalSection:
+    title: str
+    items: tuple[str, ...] = ()
+
+
+@dataclass
 class ApprovalCopy:
     title: str
     summary: str
     detail: str
+    sections: tuple[ApprovalSection, ...] = ()
 
 
 class ApprovalCopyService:
@@ -37,24 +45,33 @@ class ApprovalCopyService:
     def _t(self, message_key: str, *, default: str | None = None, **kwargs: object) -> str:
         return tr(message_key, locale=resolve_locale(self._locale), default=default, **kwargs)
 
-    def build_canonical_copy(self, requested_action: dict[str, Any], approval_id: str | None = None) -> dict[str, str]:
+    def build_canonical_copy(self, requested_action: dict[str, Any], approval_id: str | None = None) -> dict[str, Any]:
         copy = self.describe(requested_action, approval_id=approval_id)
-        return {
+        payload: dict[str, Any] = {
             "title": copy.title,
             "summary": copy.summary,
             "detail": copy.detail,
         }
+        if copy.sections:
+            payload["sections"] = [
+                {
+                    "title": section.title,
+                    "items": list(section.items),
+                }
+                for section in copy.sections
+            ]
+        return payload
 
     def describe(self, requested_action: dict[str, Any], approval_id: str | None = None) -> ApprovalCopy:
+        facts = self._facts(requested_action, approval_id=approval_id)
         display_copy = dict(requested_action.get("display_copy", {}) or {})
         if display_copy:
             resolved = self._copy_from_mapping(display_copy)
             if resolved is not None:
-                return resolved
-        facts = self._facts(requested_action, approval_id=approval_id)
+                return self._ensure_sections(resolved, facts)
         formatted = self._format_with_optional_formatter(facts)
         if formatted is not None:
-            return formatted
+            return self._ensure_sections(formatted, facts)
         return self._template_copy(facts)
 
     def resolve_copy(self, requested_action: dict[str, Any], approval_id: str | None = None) -> ApprovalCopy:
@@ -103,8 +120,42 @@ class ApprovalCopyService:
         summary = str(payload.get("summary", "")).strip()
         detail = str(payload.get("detail", "")).strip()
         if title and summary:
-            return ApprovalCopy(title=title, summary=summary, detail=detail or summary)
+            return ApprovalCopy(
+                title=title,
+                summary=summary,
+                detail=detail or summary,
+                sections=self._sections_from_mapping(payload.get("sections")),
+            )
         return None
+
+    def _sections_from_mapping(self, raw_sections: Any) -> tuple[ApprovalSection, ...]:
+        if not isinstance(raw_sections, list):
+            return ()
+        sections: list[ApprovalSection] = []
+        for raw_section in raw_sections:
+            if not isinstance(raw_section, dict):
+                continue
+            title = str(raw_section.get("title", "")).strip()
+            raw_items = raw_section.get("items")
+            if not title or not isinstance(raw_items, list):
+                continue
+            items = tuple(str(item).strip() for item in raw_items if str(item).strip())
+            if items:
+                sections.append(ApprovalSection(title=title, items=items))
+        return tuple(sections)
+
+    def _ensure_sections(self, copy: ApprovalCopy, facts: dict[str, Any]) -> ApprovalCopy:
+        if copy.sections:
+            return copy
+        sections = self._sections_for_facts(facts)
+        if not sections:
+            return copy
+        return ApprovalCopy(
+            title=copy.title,
+            summary=copy.summary,
+            detail=copy.detail,
+            sections=sections,
+        )
 
     def _facts(self, requested_action: dict[str, Any], *, approval_id: str | None) -> dict[str, Any]:
         packet = dict(requested_action.get("approval_packet", {}) or {})
@@ -113,11 +164,15 @@ class ApprovalCopyService:
         command_preview = str(requested_action.get("command_preview", "") or "").strip()
         tool_name = str(requested_action.get("tool_name", "") or "").strip()
         risk_level = str(requested_action.get("risk_level", "") or packet.get("risk_level", "") or "high")
+        tool_input = requested_action.get("tool_input")
         return {
             "approval_id": approval_id or "",
             "title": str(packet.get("title", "")).strip(),
             "packet_summary": str(packet.get("summary", "")).strip(),
             "tool_name": tool_name,
+            "tool_input": dict(tool_input) if isinstance(tool_input, dict) else tool_input,
+            "action_class": str(requested_action.get("action_class", "") or "").strip(),
+            "reason": str(requested_action.get("reason", "") or "").strip(),
             "risk_level": risk_level,
             "target_paths": target_paths,
             "network_hosts": network_hosts,
@@ -127,6 +182,10 @@ class ApprovalCopyService:
         }
 
     def _template_copy(self, facts: dict[str, Any]) -> ApprovalCopy:
+        scheduler_copy = self._scheduler_copy(facts)
+        if scheduler_copy is not None:
+            return scheduler_copy
+
         command = facts["command_preview"]
         paths = facts["target_paths"]
         hosts = facts["network_hosts"]
@@ -204,3 +263,229 @@ class ApprovalCopyService:
             summary=summary,
             detail=detail,
         )
+
+    def _sections_for_facts(self, facts: dict[str, Any]) -> tuple[ApprovalSection, ...]:
+        tool_name = str(facts.get("tool_name", "") or "").strip()
+        if tool_name.startswith("schedule_"):
+            return self._scheduler_sections(facts)
+        return ()
+
+    def _scheduler_copy(self, facts: dict[str, Any]) -> ApprovalCopy | None:
+        tool_name = str(facts.get("tool_name", "") or "").strip()
+        if tool_name == "schedule_create":
+            tool_input = self._scheduler_input(facts)
+            name = str(tool_input.get("name", "")).strip() or self._t("kernel.approval.scheduler.item.name_unknown")
+            timing = self._describe_scheduler_timing(tool_input)
+            return ApprovalCopy(
+                title=self._t("kernel.approval.scheduler.create.title"),
+                summary=self._t("kernel.approval.scheduler.create.summary", name=name, timing=timing),
+                detail=self._t("kernel.approval.scheduler.create.detail"),
+                sections=self._scheduler_sections(facts),
+            )
+        if tool_name == "schedule_update":
+            tool_input = self._scheduler_input(facts)
+            job_id = str(tool_input.get("job_id", "")).strip() or self._t("kernel.approval.scheduler.item.job_unknown")
+            return ApprovalCopy(
+                title=self._t("kernel.approval.scheduler.update.title"),
+                summary=self._t("kernel.approval.scheduler.update.summary", job_id=job_id),
+                detail=self._t("kernel.approval.scheduler.update.detail"),
+                sections=self._scheduler_sections(facts),
+            )
+        if tool_name == "schedule_delete":
+            tool_input = self._scheduler_input(facts)
+            job_id = str(tool_input.get("job_id", "")).strip() or self._t("kernel.approval.scheduler.item.job_unknown")
+            return ApprovalCopy(
+                title=self._t("kernel.approval.scheduler.delete.title"),
+                summary=self._t("kernel.approval.scheduler.delete.summary", job_id=job_id),
+                detail=self._t("kernel.approval.scheduler.delete.detail"),
+                sections=self._scheduler_sections(facts),
+            )
+        return None
+
+    def _scheduler_sections(self, facts: dict[str, Any]) -> tuple[ApprovalSection, ...]:
+        tool_name = str(facts.get("tool_name", "") or "").strip()
+        tool_input = self._scheduler_input(facts)
+        detail_items: list[str] = []
+        reason_items: list[str] = []
+
+        if tool_name == "schedule_create":
+            name = str(tool_input.get("name", "")).strip()
+            prompt = self._summarize_text(str(tool_input.get("prompt", "")).strip(), limit=120)
+            timing = self._describe_scheduler_timing(tool_input)
+            if name:
+                detail_items.append(self._t("kernel.approval.scheduler.item.name", name=name))
+            if timing:
+                detail_items.append(self._t("kernel.approval.scheduler.item.timing", timing=timing))
+            if prompt:
+                detail_items.append(self._t("kernel.approval.scheduler.item.prompt", prompt=prompt))
+            reason_items.append(
+                self._scheduler_reason(
+                    facts,
+                    default_key="kernel.approval.scheduler.create.reason",
+                )
+            )
+        elif tool_name == "schedule_update":
+            job_id = str(tool_input.get("job_id", "")).strip()
+            if job_id:
+                detail_items.append(self._t("kernel.approval.scheduler.item.job_id", job_id=job_id))
+            name = str(tool_input.get("name", "")).strip()
+            if name:
+                detail_items.append(self._t("kernel.approval.scheduler.item.name_new", name=name))
+            prompt = self._summarize_text(str(tool_input.get("prompt", "")).strip(), limit=120)
+            if prompt:
+                detail_items.append(self._t("kernel.approval.scheduler.item.prompt_new", prompt=prompt))
+            if "enabled" in tool_input:
+                detail_items.append(
+                    self._t(
+                        "kernel.approval.scheduler.item.enabled_state",
+                        state=self._t(
+                            "kernel.approval.scheduler.item.enabled"
+                            if bool(tool_input.get("enabled"))
+                            else "kernel.approval.scheduler.item.disabled"
+                        ),
+                    )
+                )
+            if str(tool_input.get("cron_expr", "")).strip():
+                detail_items.append(
+                    self._t(
+                        "kernel.approval.scheduler.item.timing_new",
+                        timing=self._describe_scheduler_timing(
+                            {
+                                "schedule_type": "cron",
+                                "cron_expr": tool_input.get("cron_expr"),
+                            }
+                        ),
+                    )
+                )
+            reason_items.append(
+                self._scheduler_reason(
+                    facts,
+                    default_key="kernel.approval.scheduler.update.reason",
+                )
+            )
+        elif tool_name == "schedule_delete":
+            job_id = str(tool_input.get("job_id", "")).strip()
+            if job_id:
+                detail_items.append(self._t("kernel.approval.scheduler.item.job_id", job_id=job_id))
+            detail_items.append(self._t("kernel.approval.scheduler.delete.effect"))
+            reason_items.append(
+                self._scheduler_reason(
+                    facts,
+                    default_key="kernel.approval.scheduler.delete.reason",
+                )
+            )
+
+        sections: list[ApprovalSection] = []
+        if detail_items:
+            sections.append(
+                ApprovalSection(
+                    title=self._t("kernel.approval.section.details"),
+                    items=tuple(item for item in detail_items if item),
+                )
+            )
+        if reason_items:
+            sections.append(
+                ApprovalSection(
+                    title=self._t("kernel.approval.section.reason"),
+                    items=tuple(item for item in reason_items if item),
+                )
+            )
+        return tuple(section for section in sections if section.items)
+
+    def _scheduler_input(self, facts: dict[str, Any]) -> dict[str, Any]:
+        tool_input = facts.get("tool_input")
+        return dict(tool_input) if isinstance(tool_input, dict) else {}
+
+    def _scheduler_reason(self, facts: dict[str, Any], *, default_key: str) -> str:
+        reason = str(facts.get("reason", "") or "").strip()
+        return reason or self._t(default_key)
+
+    def _describe_scheduler_timing(self, tool_input: dict[str, Any]) -> str:
+        schedule_type = str(tool_input.get("schedule_type", "")).strip()
+        if schedule_type == "once":
+            when = self._format_datetime_text(str(tool_input.get("once_at", "")).strip())
+            if when:
+                return self._t("kernel.approval.scheduler.timing.once", when=when)
+        if schedule_type == "interval":
+            seconds = self._safe_int(tool_input.get("interval_seconds"))
+            if seconds and seconds > 0:
+                return self._t(
+                    "kernel.approval.scheduler.timing.interval",
+                    interval=self._format_interval(seconds),
+                )
+        if schedule_type == "cron":
+            cron_expr = str(tool_input.get("cron_expr", "")).strip()
+            if cron_expr:
+                next_run = self._next_cron_run_text(cron_expr)
+                if next_run:
+                    return self._t(
+                        "kernel.approval.scheduler.timing.cron_with_next",
+                        cron_expr=cron_expr,
+                        next_run=next_run,
+                    )
+                return self._t("kernel.approval.scheduler.timing.cron", cron_expr=cron_expr)
+        return self._t("kernel.approval.scheduler.timing.unknown")
+
+    def _next_cron_run_text(self, cron_expr: str) -> str | None:
+        try:
+            from croniter import croniter
+
+            now = datetime.datetime.now().astimezone()
+            next_run = croniter(cron_expr, now).get_next(datetime.datetime)
+        except Exception:
+            return None
+        return self._format_datetime_value(next_run)
+
+    def _format_datetime_text(self, value: str) -> str:
+        if not value:
+            return ""
+        normalized = value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.datetime.fromisoformat(normalized)
+        except ValueError:
+            return value
+        return self._format_datetime_value(parsed)
+
+    @staticmethod
+    def _format_datetime_value(value: datetime.datetime) -> str:
+        if value.tzinfo is None:
+            return value.strftime("%Y-%m-%d %H:%M")
+        return value.astimezone().strftime("%Y-%m-%d %H:%M")
+
+    def _format_interval(self, seconds: int) -> str:
+        if seconds % 3600 == 0:
+            hours = seconds // 3600
+            return self._t(
+                "kernel.approval.scheduler.interval.hour"
+                if hours == 1
+                else "kernel.approval.scheduler.interval.hours",
+                count=hours,
+            )
+        if seconds % 60 == 0:
+            minutes = seconds // 60
+            return self._t(
+                "kernel.approval.scheduler.interval.minute"
+                if minutes == 1
+                else "kernel.approval.scheduler.interval.minutes",
+                count=minutes,
+            )
+        return self._t(
+            "kernel.approval.scheduler.interval.second"
+            if seconds == 1
+            else "kernel.approval.scheduler.interval.seconds",
+            count=seconds,
+        )
+
+    @staticmethod
+    def _safe_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _summarize_text(value: str, *, limit: int) -> str:
+        compact = " ".join(value.split())
+        if len(compact) <= limit:
+            return compact
+        return f"{compact[: max(0, limit - 3)].rstrip()}..."
