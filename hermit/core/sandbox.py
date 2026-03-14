@@ -82,6 +82,7 @@ class CommandSandbox:
         self.timeout_seconds = soft
         self.cwd = cwd
         self._jobs: dict[str, _ObservedProcess] = {}
+        self._terminal_results: dict[str, tuple[float, dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
     def run(self, command: str | dict[str, Any]) -> CommandResult | dict[str, Any]:
@@ -152,9 +153,13 @@ class CommandSandbox:
         )
 
     def poll(self, job_id: str) -> dict[str, Any]:
+        self._prune_terminal_results()
         with self._lock:
             job = self._jobs.get(job_id)
+            cached_terminal = self._terminal_results.get(job_id)
         if job is None:
+            if cached_terminal is not None:
+                return dict(cached_terminal[1])
             return {
                 "status": "failed",
                 "topic_summary": f"Observed command {job_id} is no longer available.",
@@ -207,9 +212,7 @@ class CommandSandbox:
         if failure_progress is not None:
             self._terminate_job(job)
             stdout, stderr = self._output_text(job)
-            with self._lock:
-                self._jobs.pop(job_id, None)
-            return {
+            payload = {
                 "status": "failed",
                 "topic_summary": failure_progress["summary"],
                 "progress": failure_progress,
@@ -221,11 +224,13 @@ class CommandSandbox:
                 },
                 "is_error": True,
             }
-
-        if ready_progress is not None and job.ready_return:
+            self._store_terminal_result(job_id, payload, now=now)
             with self._lock:
                 self._jobs.pop(job_id, None)
-            return {
+            return payload
+
+        if ready_progress is not None and job.ready_return:
+            payload = {
                 "status": "observing",
                 "topic_summary": ready_progress["summary"],
                 "progress": ready_progress,
@@ -237,18 +242,20 @@ class CommandSandbox:
                 },
                 "is_error": False,
             }
+            self._store_terminal_result(job_id, payload, now=now)
+            with self._lock:
+                self._jobs.pop(job_id, None)
+            return payload
 
         if job.proc.poll() is None:
             if now >= job.deadline.hard_at:
                 self._terminate_job(job, force=True)
                 stdout, stderr = self._output_text(job)
-                with self._lock:
-                    self._jobs.pop(job_id, None)
                 timeout_progress = {
                     "phase": "timeout",
                     "summary": f"{job.display_name} timed out.",
                 }
-                return {
+                payload = {
                     "status": "timeout",
                     "topic_summary": timeout_progress["summary"],
                     "progress": timeout_progress,
@@ -260,6 +267,10 @@ class CommandSandbox:
                     },
                     "is_error": True,
                 }
+                self._store_terminal_result(job_id, payload, now=now)
+                with self._lock:
+                    self._jobs.pop(job_id, None)
+                return payload
             progress = matched_progress
             if progress is None:
                 progress = self._coarse_running_progress(job)
@@ -289,14 +300,12 @@ class CommandSandbox:
             )
         self._join_reader_threads(job)
         stdout, stderr = self._output_text(job)
-        with self._lock:
-            self._jobs.pop(job_id, None)
         status = "completed" if job.proc.returncode == 0 else "failed"
         progress = matched_progress
         topic_summary = f"{job.display_name} finished ({status})."
         if progress and progress.get("summary"):
             topic_summary = str(progress["summary"])
-        return {
+        payload = {
             "status": status,
             "topic_summary": topic_summary,
             "progress": progress,
@@ -308,6 +317,10 @@ class CommandSandbox:
             },
             "is_error": job.proc.returncode != 0,
         }
+        self._store_terminal_result(job_id, payload, now=now)
+        with self._lock:
+            self._jobs.pop(job_id, None)
+        return payload
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
@@ -605,3 +618,27 @@ class CommandSandbox:
             completed_at - job.created_at < _COARSE_OBSERVATION_GRACE_SECONDS
             and now - completed_at < _COARSE_OBSERVATION_GRACE_SECONDS
         )
+
+    def _store_terminal_result(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        *,
+        now: float | None = None,
+    ) -> None:
+        current = time.time() if now is None else now
+        ttl = max(float(self.budget.observation_poll_interval or 0.0) * 2, 1.0)
+        ttl = min(ttl, float(self.budget.observation_window or ttl))
+        with self._lock:
+            self._terminal_results[job_id] = (current + ttl, dict(payload))
+
+    def _prune_terminal_results(self, *, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        with self._lock:
+            expired = [
+                job_id
+                for job_id, (expires_at, _payload) in self._terminal_results.items()
+                if expires_at <= current
+            ]
+            for job_id in expired:
+                self._terminal_results.pop(job_id, None)

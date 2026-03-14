@@ -227,3 +227,7 @@ def test_command_sandbox_coarse_observation_only_extends_completion_once(
     completed = sandbox.poll(ticket["job_id"])
     assert completed["status"] == "completed"
     assert completed["result"]["returncode"] == 0
+
+    repeated = sandbox.poll(ticket["job_id"])
+    assert repeated["status"] == "completed"
+    assert repeated["result"]["returncode"] == 0
