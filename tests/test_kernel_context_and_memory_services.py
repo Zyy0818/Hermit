@@ -478,7 +478,7 @@ def test_context_compiler_builds_pack_artifact_and_prompts(tmp_path: Path) -> No
     assert pack.excluded_reasons["m-rank-6"] == "rank_cutoff"
     assert pack.artifact_uri is not None
     assert pack.artifact_hash is not None
-    assert pack.to_payload()["kind"] == "context.pack/v1"
+    assert pack.to_payload()["kind"] == "context.pack/v3"
     assert pack.retrieval_memory[0]["subject_key"]
     assert isinstance(pack.retrieval_memory[0]["governance_explanation"], list)
     assert "默认工作目录固定到 /repo" in compiler.render_static_prompt(pack)

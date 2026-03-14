@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from types import SimpleNamespace
 
 import pytest
@@ -109,6 +110,7 @@ class _FakeTaskController:
         self.resumed_attempts: list[str] = []
         self.finalized: list[tuple[object, str]] = []
         self.blocked: list[object] = []
+        self.focused: list[tuple[str, str]] = []
 
     def resolve_text_command(self, session_id: str, text: str):
         return self.resolution
@@ -155,6 +157,9 @@ class _FakeTaskController:
 
     def context_for_attempt(self, step_attempt_id: str):
         return SimpleNamespace(task_id="task", step_id="step", step_attempt_id=step_attempt_id)
+
+    def focus_task(self, conversation_id: str, task_id: str) -> None:
+        self.focused.append((conversation_id, task_id))
 
 
 def _make_runner(approval=None):
@@ -208,6 +213,29 @@ def test_runner_handle_and_status_paths() -> None:
         AgentResult(text="[API Error] boom", turns=1, tool_calls=0, execution_status="")
     ) == "failed"
     assert runner._result_status(AgentResult(text="ok", turns=1, tool_calls=0, execution_status="custom")) == "custom"
+
+
+def test_runner_time_context_uses_current_message_time(monkeypatch) -> None:
+    runner, agent, _session_manager, _plugin_manager, _controller = _make_runner()
+
+    frozen_now = dt.datetime(2026, 3, 14, 22, 40, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+
+    class _FrozenDateTime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return frozen_now
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr(runner_module.datetime, "datetime", _FrozenDateTime)
+
+    runner.handle("session", "1分钟后提醒我喝水")
+
+    prompt = agent.run_calls[0]["prompt"]
+    assert "current_time=2026-03-14T22:40:00+08:00" in prompt
+    assert "timezone=UTC+08:00" in prompt
+    assert "relative_time_base=current_time" in prompt
+    assert "session_started_at=" not in prompt
 
 
 def test_runner_uses_clean_task_goal_for_kernel_records() -> None:
@@ -417,3 +445,45 @@ def test_runner_handle_respects_ingress_parent_override() -> None:
     runner.handle("chat-1", "你好")
 
     assert controller.started[-1]["kwargs"]["parent_task_id"] is None
+
+
+def test_runner_handle_returns_pending_disambiguation_without_starting_task() -> None:
+    runner, _agent, _session_manager, _plugin_manager, controller = _make_runner()
+
+    controller.decide_ingress = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
+        mode="start",
+        resolution="pending_disambiguation",
+        candidates=[{"task_id": "task-1"}, {"task_id": "task-2"}],
+    )
+
+    result = runner.handle("chat-1", "这个改一下")
+
+    assert result.execution_status == "pending_disambiguation"
+    assert "切到任务 task-1" in result.text
+    assert controller.started == []
+
+
+def test_runner_dispatch_control_action_can_focus_task() -> None:
+    runner, _agent, _session_manager, _plugin_manager, controller = _make_runner()
+
+    result = runner._dispatch_control_action("chat-1", action="focus_task", target_id="task-2")
+
+    assert result.is_command is True
+    assert "task-2" in result.text
+    assert controller.focused == [("chat-1", "task-2")]
+
+
+def test_runner_dispatch_control_action_mentions_resolved_pending_ingress() -> None:
+    runner, _agent, _session_manager, _plugin_manager, controller = _make_runner()
+
+    def _focus_task(_conversation_id: str, _task_id: str):
+        controller.focused.append((_conversation_id, _task_id))
+        return SimpleNamespace(note_event_seq=12)
+
+    controller.focus_task = _focus_task  # type: ignore[method-assign]
+
+    result = runner._dispatch_control_action("chat-1", action="focus_task", target_id="task-9")
+
+    assert result.is_command is True
+    assert "task-9" in result.text
+    assert "pending message was attached" in result.text

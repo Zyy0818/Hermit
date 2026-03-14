@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from hermit.kernel.artifacts import ArtifactStore
+from hermit.kernel.outcomes import TERMINAL_TASK_STATUSES, build_task_outcome
 from hermit.kernel.store import KernelStore
 from hermit.kernel.store_support import _canonical_json, _sha256_hex
 
-_CONVERSATION_PROJECTION_SCHEMA_VERSION = "conversation-v1"
+_CONVERSATION_PROJECTION_SCHEMA_VERSION = "conversation-v2"
 _SESSION_TIME_RE = re.compile(r"<session_time>.*?</session_time>\s*", re.DOTALL)
 _FEISHU_TAG_RE = re.compile(r"<feishu_[^>]+>.*?</feishu_[^>]+>\s*", re.DOTALL)
 
@@ -44,18 +45,33 @@ class ConversationProjectionService:
         return self.rebuild(conversation_id)
 
     def _build_payload(self, conversation_id: str) -> dict[str, Any]:
-        tasks = list(reversed(self.store.list_tasks(conversation_id=conversation_id, limit=200)))
-        active_task = next((task for task in reversed(tasks) if task.status in {"queued", "running", "blocked"}), None)
-        latest_task = tasks[-1] if tasks else None
+        tasks = self.store.list_tasks(conversation_id=conversation_id, limit=200)
+        conversation = self.store.get_conversation(conversation_id)
+        focus_task_id = self.store.ensure_valid_focus(conversation_id)
+        active_task = self.store.get_task(focus_task_id) if focus_task_id else next(
+            (task for task in tasks if task.status in {"queued", "running", "blocked", "planning_ready"}),
+            None,
+        )
+        latest_task = tasks[0] if tasks else None
         recent_notes: list[str] = []
         recent_decisions: list[str] = []
         latest_artifact_refs: list[str] = []
+        continuation_candidates: list[dict[str, Any]] = []
         open_loops: list[str] = []
+        open_tasks: list[dict[str, Any]] = []
         last_event_seq = 0
 
         for task in tasks:
             if task.status in {"queued", "running", "blocked", "planning_ready"}:
                 open_loops.append(f"{task.title} [{task.status}]")
+                open_tasks.append(
+                    {
+                        "task_id": task.task_id,
+                        "title": str(task.title or ""),
+                        "status": str(task.status or ""),
+                        "is_focus": bool(active_task is not None and task.task_id == active_task.task_id),
+                    }
+                )
             events = self.store.list_events(task_id=task.task_id, limit=500)
             if events:
                 last_event_seq = max(last_event_seq, int(events[-1]["event_seq"]))
@@ -74,6 +90,26 @@ class ConversationProjectionService:
                     summary = " ".join(part for part in [action_type, verdict, reason] if part).strip()
                     if summary:
                         recent_decisions.append(summary[:240])
+            if task.status in TERMINAL_TASK_STATUSES and len(continuation_candidates) < 5:
+                projection = self.store.build_task_projection(task.task_id)
+                step_kinds = {str(step.get("kind") or "") for step in projection.get("steps", {}).values()}
+                if not step_kinds or (step_kinds & {"respond", "plan"}):
+                    outcome = build_task_outcome(
+                        store=self.store,
+                        task_id=task.task_id,
+                        status=str(task.status or ""),
+                        events=events,
+                    )
+                    if outcome is not None:
+                        continuation_candidates.append(
+                            {
+                                "task_id": task.task_id,
+                                "title": str(task.title or ""),
+                                "status": str(outcome.get("status", task.status) or task.status),
+                                "outcome_summary": str(outcome.get("outcome_summary", "") or ""),
+                                "source_artifact_refs": list(outcome.get("source_artifact_refs", []) or []),
+                            }
+                        )
             for artifact in reversed(self.store.list_artifacts(task_id=task.task_id, limit=50)):
                 if artifact.artifact_id in latest_artifact_refs:
                     continue
@@ -96,11 +132,16 @@ class ConversationProjectionService:
         return {
             "conversation_id": conversation_id,
             "summary": " ".join(summary_parts),
+            "focus_task_id": active_task.task_id if active_task is not None else "",
+            "focus_reason": str(getattr(conversation, "focus_reason", "") or ""),
+            "open_tasks": open_tasks[:8],
             "open_loops": open_loops[:8],
             "active_task_id": active_task.task_id if active_task is not None else (latest_task.task_id if latest_task else ""),
             "recent_decisions": recent_decisions[:5],
             "latest_artifact_refs": latest_artifact_refs[:10],
             "recent_notes": recent_notes[:5],
+            "continuation_candidates": continuation_candidates[:5],
+            "pending_ingress_count": self.store.count_pending_ingresses(conversation_id=conversation_id),
             "last_event_seq": last_event_seq,
         }
 
@@ -135,7 +176,7 @@ class ConversationProjectionService:
         artifact = self.store.create_artifact(
             task_id=None,
             step_id=None,
-            kind="conversation.projection/v1",
+            kind="conversation.projection/v2",
             uri=uri,
             content_hash=content_hash,
             producer="conversation_projection",

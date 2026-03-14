@@ -20,6 +20,10 @@ _TASK_CASE_RE = re.compile(
     r"^(?:/task\s+case|task\s+case|查看任务|查看task|看看任务|看看task|显示任务|show\s+task|任务详情|task详情)\s+([a-z0-9_]+)$",
     re.IGNORECASE,
 )
+_TASK_SWITCH_RE = re.compile(
+    r"^(?:切到任务|切换到任务|切到|切换到|focus\s+task|switch\s+task|continue\s+task|继续任务)\s+([a-z0-9_]+)$",
+    re.IGNORECASE,
+)
 _TASK_EVENTS_RE = re.compile(
     r"^(?:/task\s+events|task\s+events|查看事件|查看任务事件|show\s+events)\s+([a-z0-9_]+)$",
     re.IGNORECASE,
@@ -206,6 +210,10 @@ def parse_control_intent(
         return ControlIntent("show_history")
     if lowered in _LOWER_TASK_LIST_TEXTS:
         return ControlIntent("task_list")
+
+    match = _TASK_SWITCH_RE.match(stripped)
+    if match:
+        return ControlIntent("focus_task", match.group(1), "explicit_task_switch")
 
     match = _TASK_CASE_RE.match(stripped)
     if match:

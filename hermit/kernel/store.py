@@ -15,10 +15,11 @@ from hermit.kernel.store_scheduler import KernelSchedulerStoreMixin
 from hermit.kernel.store_support import _canonical_json, _canonical_json_from_raw, _sha256_hex
 from hermit.kernel.store_tasks import KernelTaskStoreMixin
 
-_SCHEMA_VERSION = "4"
+_SCHEMA_VERSION = "5"
 _KNOWN_KERNEL_TABLES = {
     "conversations",
     "conversation_projection_cache",
+    "ingresses",
     "tasks",
     "steps",
     "step_attempts",
@@ -91,7 +92,7 @@ class KernelStore(
             "SELECT value FROM kernel_meta WHERE key = 'schema_version'"
         ).fetchone()
         version = str(row[0]) if row is not None else ""
-        if version not in {"3", _SCHEMA_VERSION}:
+        if version not in {"3", "4", _SCHEMA_VERSION}:
             raise KernelSchemaError(
                 f"Existing kernel database at {self.db_path} has schema_version={version or 'unknown'}, "
                 f"but Hermit requires schema_version={_SCHEMA_VERSION}. "
@@ -111,6 +112,9 @@ class KernelStore(
                     source_channel TEXT NOT NULL,
                     source_ref TEXT,
                     last_task_id TEXT,
+                    focus_task_id TEXT,
+                    focus_reason TEXT,
+                    focus_updated_at REAL,
                     status TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     total_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -126,6 +130,28 @@ class KernelStore(
                     event_head_hash TEXT,
                     payload_json TEXT NOT NULL,
                     built_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS ingresses (
+                    ingress_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    source_channel TEXT NOT NULL,
+                    actor TEXT,
+                    raw_text TEXT NOT NULL,
+                    normalized_text TEXT NOT NULL,
+                    prompt_ref TEXT,
+                    reply_to_ref TEXT,
+                    quoted_message_ref TEXT,
+                    explicit_task_ref TEXT,
+                    referenced_artifact_refs_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    resolution TEXT,
+                    chosen_task_id TEXT,
+                    parent_task_id TEXT,
+                    confidence REAL,
+                    margin REAL,
+                    rationale_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -161,11 +187,13 @@ class KernelStore(
                     attempt INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     context_json TEXT NOT NULL,
+                    queue_priority INTEGER NOT NULL DEFAULT 0,
                     waiting_reason TEXT,
                     approval_id TEXT,
                     decision_id TEXT,
                     permit_id TEXT,
                     state_witness_ref TEXT,
+                    superseded_by_step_attempt_id TEXT,
                     started_at REAL,
                     finished_at REAL
                 );
@@ -369,6 +397,9 @@ class KernelStore(
                     error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ingresses_conversation ON ingresses(conversation_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ingresses_chosen_task ON ingresses(chosen_task_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ingresses_status ON ingresses(status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, event_seq);
                 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at);
                 CREATE INDEX IF NOT EXISTS idx_receipts_task ON receipts(task_id, created_at);
@@ -394,6 +425,9 @@ class KernelStore(
             self._ensure_column("events", "event_hash", "TEXT")
             self._ensure_column("events", "prev_event_hash", "TEXT")
             self._ensure_column("events", "hash_chain_algo", "TEXT")
+            self._ensure_column("conversations", "focus_task_id", "TEXT")
+            self._ensure_column("conversations", "focus_reason", "TEXT")
+            self._ensure_column("conversations", "focus_updated_at", "REAL")
             self._ensure_column("beliefs", "claim_text", "TEXT")
             self._ensure_column("beliefs", "structured_assertion_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("beliefs", "promotion_candidate", "INTEGER NOT NULL DEFAULT 1")
@@ -407,6 +441,11 @@ class KernelStore(
             self._ensure_column("memory_records", "superseded_by_memory_id", "TEXT")
             self._ensure_column("memory_records", "invalidation_reason", "TEXT")
             self._ensure_column("memory_records", "expires_at", "REAL")
+            self._ensure_column("step_attempts", "queue_priority", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("step_attempts", "superseded_by_step_attempt_id", "TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_step_attempts_ready_queue ON step_attempts(status, queue_priority DESC, started_at ASC)"
+            )
             self._migrate_memory_schema_v4()
             self._backfill_event_hash_chain()
             self._conn.execute(

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from hermit.kernel.artifacts import ArtifactStore
+from hermit.kernel.controller import TaskController
 from hermit.kernel.context import TaskExecutionContext
 from hermit.kernel.provider_input import ProviderInputCompiler
 from hermit.kernel.store import KernelStore
@@ -73,8 +75,63 @@ def test_compile_builds_context_pack_and_projection_refs(tmp_path: Path) -> None
 
     pack_artifact = store.get_artifact(compiled.context_pack_ref)
     projection_artifact = store.get_artifact(compiled.session_projection_ref)
-    assert pack_artifact is not None and pack_artifact.kind == "context.pack/v2"
-    assert projection_artifact is not None and projection_artifact.kind == "conversation.projection/v1"
+    assert pack_artifact is not None and pack_artifact.kind == "context.pack/v3"
+    assert projection_artifact is not None and projection_artifact.kind == "conversation.projection/v2"
+
+
+def test_compile_carries_forward_terminal_outcome_into_context_pack(tmp_path: Path) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    compiler = ProviderInputCompiler(store, artifacts)
+    controller = TaskController(store)
+
+    previous = controller.start_task(
+        conversation_id="oc_weather",
+        goal="查询北京天气",
+        source_channel="feishu",
+        kind="respond",
+    )
+    controller.finalize_result(
+        previous,
+        status="succeeded",
+        result_preview="北京今天天气不错：晴到多云，0～12℃。",
+        result_text="北京今天天气不错：晴到多云，0～12℃，微风到西南风，无明显降水。",
+    )
+    decision = controller.decide_ingress(
+        conversation_id="oc_weather",
+        source_channel="feishu",
+        raw_text="你说一下你刚才查的北京天气是怎么样的",
+        prompt="你说一下你刚才查的北京天气是怎么样的",
+    )
+    assert decision.continuation_anchor is not None
+
+    followup = controller.start_task(
+        conversation_id="oc_weather",
+        goal="你说一下你刚才查的北京天气是怎么样的",
+        source_channel="feishu",
+        kind="respond",
+        parent_task_id=decision.parent_task_id,
+        ingress_metadata={"continuation_anchor": dict(decision.continuation_anchor)},
+    )
+    followup.ingress_metadata = {}
+
+    compiled = compiler.compile(
+        task_context=followup,
+        final_prompt="你说一下你刚才查的北京天气是怎么样的",
+        raw_text="你说一下你刚才查的北京天气是怎么样的",
+    )
+
+    assert "carry_forward={" in compiled.messages[0]["content"]
+    assert "北京今天天气不错" in compiled.messages[0]["content"]
+
+    pack_artifact = store.get_artifact(compiled.context_pack_ref or "")
+    assert pack_artifact is not None
+    payload = json.loads(Path(pack_artifact.uri).read_text(encoding="utf-8"))
+    assert payload["carry_forward"]["anchor_task_id"] == previous.task_id
+    assert payload["carry_forward"]["outcome_summary"].startswith("北京今天天气不错")
+    assert payload["working_state"]["recent_results"] == []
+    projection = store.build_task_projection(followup.task_id)
+    assert projection["task"]["continuation_anchor"]["anchor_task_id"] == previous.task_id
 
 
 def test_normalize_ingress_uses_user_text_not_injected_memory(tmp_path: Path) -> None:

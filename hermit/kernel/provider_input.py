@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import asdict
 from typing import Any
 
@@ -141,17 +142,15 @@ class ProviderInputCompiler:
         task = self.store.get_task(task_context.task_id)
         step = self.store.get_step(task_context.step_id)
         notes = self._recent_notes(task_context.task_id)
+        carry_forward = self._carry_forward(task_context, task_projection)
+        recent_result_summary = _trim(str(task_projection.get("topic", {}).get("summary", "") or ""), 200)
 
         pack = self.context_compiler.compile(
             context=task_context,
             working_state=WorkingStateSnapshot(
                 goal_summary=_trim(raw_text or final_prompt, 400),
                 open_loops=[_trim(item, 200) for item in projection_payload.get("open_loops", [])[:8]],
-                recent_results=[
-                    _trim(str(task_projection.get("topic", {}).get("summary", "") or ""), 200),
-                ]
-                if task_projection.get("topic")
-                else [],
+                recent_results=[recent_result_summary] if recent_result_summary else [],
                 planning_mode=bool(planning_state.planning_mode),
                 candidate_plan_refs=list(planning_state.candidate_plan_refs),
                 selected_plan_ref=str(planning_state.selected_plan_ref or ""),
@@ -177,6 +176,7 @@ class ProviderInputCompiler:
             },
             policy_summary={"policy_profile": task_context.policy_profile},
             planning_state=asdict(planning_state),
+            carry_forward=carry_forward,
             recent_notes=notes,
             relevant_artifact_refs=self._relevant_artifact_refs(task_context, normalized["ingress_artifact_refs"]),
             ingress_artifact_refs=list(normalized["ingress_artifact_refs"]),
@@ -216,6 +216,16 @@ class ProviderInputCompiler:
             if len(items) >= 5:
                 break
         return items
+
+    @staticmethod
+    def _carry_forward(task_context: TaskExecutionContext, task_projection: dict[str, Any]) -> dict[str, Any] | None:
+        ingress_anchor = dict(task_context.ingress_metadata.get("continuation_anchor", {}) or {})
+        if ingress_anchor:
+            return ingress_anchor
+        projection_anchor = dict(
+            task_projection.get("projection", {}).get("task", {}).get("continuation_anchor", {}) or {}
+        )
+        return projection_anchor or None
 
     def _relevant_artifact_refs(self, task_context: TaskExecutionContext, ingress_artifact_refs: list[str]) -> list[str]:
         refs: list[str] = []
@@ -263,7 +273,7 @@ class ProviderInputCompiler:
         artifact = self.store.create_artifact(
             task_id=task_context.task_id,
             step_id=task_context.step_id,
-            kind="context.pack/v2",
+            kind="context.pack/v3",
             uri=str(pack.artifact_uri),
             content_hash=str(pack.artifact_hash or pack.pack_hash),
             producer="provider_input",
@@ -278,7 +288,7 @@ class ProviderInputCompiler:
             task_id=task_context.task_id,
             step_id=task_context.step_id,
             actor="kernel",
-            payload={"artifact_ref": artifact.artifact_id, "pack_hash": pack.pack_hash, "kind": "context.pack/v2"},
+            payload={"artifact_ref": artifact.artifact_id, "pack_hash": pack.pack_hash, "kind": "context.pack/v3"},
         )
         return artifact.artifact_id
 
@@ -287,6 +297,7 @@ class ProviderInputCompiler:
         if attempt is None:
             return
         context = dict(attempt.context or {})
+        was_dirty = bool(context.get("input_dirty"))
         ingress = dict(context.get("ingress_metadata", {}) or {})
         ingress.update(
             {
@@ -297,7 +308,26 @@ class ProviderInputCompiler:
             }
         )
         context["ingress_metadata"] = ingress
+        context["phase"] = "planning"
+        if was_dirty:
+            context["input_dirty"] = False
+            context["last_recompiled_at"] = time.time()
+            context["last_compiled_ingress_id"] = str(context.get("latest_bound_ingress_id", "") or "")
         self.store.update_step_attempt(step_attempt_id, context=context)
+        if was_dirty:
+            self.store.append_event(
+                event_type="step_attempt.recompiled",
+                entity_type="step_attempt",
+                entity_id=step_attempt_id,
+                task_id=attempt.task_id,
+                step_id=attempt.step_id,
+                actor="kernel",
+                payload={
+                    "step_attempt_id": step_attempt_id,
+                    "latest_bound_ingress_id": context.get("latest_bound_ingress_id"),
+                    "latest_note_event_seq": context.get("latest_note_event_seq"),
+                },
+            )
 
     def _render_message(
         self,
@@ -318,6 +348,7 @@ class ProviderInputCompiler:
             f"step={context_pack.get('step_summary', {})}",
             f"policy={context_pack.get('policy_summary', {})}",
             f"working_state={context_pack.get('working_state', {})}",
+            f"carry_forward={context_pack.get('carry_forward')}",
             f"selected_beliefs={context_pack.get('selected_beliefs', [])}",
             f"retrieval_memory={context_pack.get('retrieval_memory', [])}",
             f"relevant_artifact_refs={context_pack.get('relevant_artifact_refs', [])}",

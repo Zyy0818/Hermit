@@ -52,11 +52,12 @@ class ContextPack:
     excluded_memory_ids: list[str]
     excluded_reasons: dict[str, str]
     pack_hash: str
-    kind: str = "context.pack/v1"
+    kind: str = "context.pack/v3"
     task_summary: dict[str, Any] = field(default_factory=dict)
     step_summary: dict[str, Any] = field(default_factory=dict)
     policy_summary: dict[str, Any] = field(default_factory=dict)
     planning_state: dict[str, Any] = field(default_factory=dict)
+    carry_forward: dict[str, Any] | None = None
     recent_notes: list[dict[str, Any]] = field(default_factory=list)
     relevant_artifact_refs: list[str] = field(default_factory=list)
     ingress_artifact_refs: list[str] = field(default_factory=list)
@@ -75,6 +76,7 @@ class ContextPack:
             "step_summary": self.step_summary,
             "policy_summary": self.policy_summary,
             "planning_state": self.planning_state,
+            "carry_forward": self.carry_forward,
             "recent_notes": self.recent_notes,
             "relevant_artifact_refs": self.relevant_artifact_refs,
             "ingress_artifact_refs": self.ingress_artifact_refs,
@@ -109,6 +111,7 @@ class ContextCompiler:
         step_summary: dict[str, Any] | None = None,
         policy_summary: dict[str, Any] | None = None,
         planning_state: dict[str, Any] | None = None,
+        carry_forward: dict[str, Any] | None = None,
         recent_notes: list[dict[str, Any]] | None = None,
         relevant_artifact_refs: list[str] | None = None,
         ingress_artifact_refs: list[str] | None = None,
@@ -177,7 +180,7 @@ class ContextCompiler:
             )
 
         payload = {
-            "kind": "context.pack/v1",
+            "kind": "context.pack/v3",
             "static_memory": static_memory,
             "retrieval_memory": retrieval_memory,
             "selected_beliefs": selected_beliefs,
@@ -186,6 +189,7 @@ class ContextCompiler:
             "step_summary": dict(step_summary or {}),
             "policy_summary": dict(policy_summary or {}),
             "planning_state": dict(planning_state or {}),
+            "carry_forward": dict(carry_forward or {}) or None,
             "recent_notes": list(recent_notes or []),
             "relevant_artifact_refs": list(relevant_artifact_refs or []),
             "ingress_artifact_refs": list(ingress_artifact_refs or []),
@@ -200,7 +204,7 @@ class ContextCompiler:
         if self.artifact_store is not None:
             artifact_uri, artifact_hash = self.artifact_store.store_json({**payload, "pack_hash": pack_hash})
         return ContextPack(
-            kind="context.pack/v1",
+            kind="context.pack/v3",
             static_memory=static_memory,
             retrieval_memory=retrieval_memory,
             selected_beliefs=selected_beliefs,
@@ -209,6 +213,7 @@ class ContextCompiler:
             step_summary=dict(step_summary or {}),
             policy_summary=dict(policy_summary or {}),
             planning_state=dict(planning_state or {}),
+            carry_forward=dict(carry_forward or {}) or None,
             recent_notes=list(recent_notes or []),
             relevant_artifact_refs=list(relevant_artifact_refs or []),
             ingress_artifact_refs=list(ingress_artifact_refs or []),

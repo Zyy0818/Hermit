@@ -42,11 +42,13 @@ class StepAttemptRecord:
     attempt: int
     status: str
     context: dict[str, Any] = field(default_factory=dict)
+    queue_priority: int = 0
     waiting_reason: str | None = None
     approval_id: str | None = None
     decision_id: str | None = None
     permit_id: str | None = None
     state_witness_ref: str | None = None
+    superseded_by_step_attempt_id: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
 
@@ -249,12 +251,39 @@ class ConversationRecord:
     source_channel: str
     source_ref: str | None = None
     last_task_id: str | None = None
+    focus_task_id: str | None = None
+    focus_reason: str | None = None
+    focus_updated_at: float | None = None
     status: str = "open"
     metadata: dict[str, Any] = field(default_factory=dict)
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cache_read_tokens: int = 0
     total_cache_creation_tokens: int = 0
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+@dataclass
+class IngressRecord:
+    ingress_id: str
+    conversation_id: str
+    source_channel: str
+    actor: str | None = None
+    raw_text: str = ""
+    normalized_text: str = ""
+    prompt_ref: str | None = None
+    reply_to_ref: str | None = None
+    quoted_message_ref: str | None = None
+    explicit_task_ref: str | None = None
+    referenced_artifact_refs: list[str] = field(default_factory=list)
+    status: str = "received"
+    resolution: str = "none"
+    chosen_task_id: str | None = None
+    parent_task_id: str | None = None
+    confidence: float | None = None
+    margin: float | None = None
+    rationale: dict[str, Any] = field(default_factory=dict)
     created_at: float = 0.0
     updated_at: float = 0.0
 

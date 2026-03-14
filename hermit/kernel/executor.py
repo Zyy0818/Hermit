@@ -227,6 +227,37 @@ class ToolExecutor:
         self.progress_summary_keepalive_seconds = max(float(progress_summary_keepalive_seconds or 0.0), 0.0)
         self.tool_output_limit = tool_output_limit
 
+    def _set_attempt_phase(
+        self,
+        attempt_ctx: TaskExecutionContext,
+        phase: str,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        attempt = self.store.get_step_attempt(attempt_ctx.step_attempt_id)
+        if attempt is None:
+            return
+        context = dict(attempt.context or {})
+        previous = str(context.get("phase", "") or "")
+        if previous == phase:
+            return
+        context["phase"] = phase
+        self.store.update_step_attempt(attempt_ctx.step_attempt_id, context=context)
+        self.store.append_event(
+            event_type="step_attempt.phase_changed",
+            entity_type="step_attempt",
+            entity_id=attempt_ctx.step_attempt_id,
+            task_id=attempt_ctx.task_id,
+            step_id=attempt_ctx.step_id,
+            actor="kernel",
+            payload={
+                "step_attempt_id": attempt_ctx.step_attempt_id,
+                "previous_phase": previous,
+                "phase": phase,
+                "reason": reason,
+            },
+        )
+
     def execute(
         self,
         attempt_ctx: TaskExecutionContext,
@@ -244,6 +275,7 @@ class ToolExecutor:
             action_request.context["path_grant_ref"] = matched_grant.grant_id
             action_request.context["path_grant_prefix"] = matched_grant.path_prefix
         action_ref = self._record_action_request(action_request, attempt_ctx)
+        self._set_attempt_phase(attempt_ctx, "policy_pending", reason="policy_evaluation_started")
         policy = self.policy_engine.evaluate(action_request)
         policy_ref = self._record_policy_evaluation(action_request, policy, attempt_ctx)
         action_type = tool.action_class or self.policy_engine.infer_action_class(tool)
@@ -273,6 +305,7 @@ class ToolExecutor:
             )
 
         if policy.verdict == "deny":
+            self._set_attempt_phase(attempt_ctx, "settling", reason="policy_denied")
             decision_id = self.decision_service.record(
                 task_id=attempt_ctx.task_id,
                 step_id=attempt_ctx.step_id,
@@ -325,6 +358,7 @@ class ToolExecutor:
         if policy.obligations.require_approval and matched_approval is None:
             if witness_ref is None and _needs_witness(action_type):
                 witness_ref = self._capture_state_witness(action_request, attempt_ctx)
+            self._set_attempt_phase(attempt_ctx, "awaiting_approval", reason="approval_required")
             decision_id = self.decision_service.record(
                 task_id=attempt_ctx.task_id,
                 step_id=attempt_ctx.step_id,
@@ -408,6 +442,7 @@ class ToolExecutor:
                     policy_ref=policy_ref,
                 )
         if governed:
+            self._set_attempt_phase(attempt_ctx, "authorized_pre_exec", reason="execution_authorized")
             decision_id = self.decision_service.record(
                 task_id=attempt_ctx.task_id,
                 step_id=attempt_ctx.step_id,
@@ -479,6 +514,7 @@ class ToolExecutor:
         )
 
         try:
+            self._set_attempt_phase(attempt_ctx, "executing", reason="tool_handler_invoked")
             raw_result = tool.handler(tool_input)
         except Exception as exc:
             if governed and permit_id is not None:
@@ -526,6 +562,7 @@ class ToolExecutor:
         model_content = _format_model_content(raw_result, self.tool_output_limit)
         receipt_id = None
         if governed:
+            self._set_attempt_phase(attempt_ctx, "settling", reason="receipt_pending")
             self.store.update_step_attempt(
                 attempt_ctx.step_attempt_id,
                 status="receipt_pending",
@@ -610,6 +647,7 @@ class ToolExecutor:
             context["workspace_root"] = attempt_ctx.workspace_root
         context["note_cursor_event_seq"] = note_cursor_event_seq
         context[_RUNTIME_SNAPSHOT_KEY] = envelope
+        context["phase"] = suspend_kind
         self.store.update_step_attempt(
             attempt_ctx.step_attempt_id,
             status=suspend_kind,
@@ -885,6 +923,7 @@ class ToolExecutor:
                 "rollback_plan": rollback_plan,
             },
         )
+        self._set_attempt_phase(attempt_ctx, "observing", reason="observation_submitted")
         self.store.update_step_attempt(
             attempt_ctx.step_attempt_id,
             status="observing",
@@ -1019,6 +1058,7 @@ class ToolExecutor:
             if model_content_override is not None
             else _format_model_content(raw_result, self.tool_output_limit)
         )
+        self._set_attempt_phase(attempt_ctx, "settling", reason="observation_finalized")
         if policy.requires_receipt:
             if permit_ref and result_code == "succeeded":
                 self.permit_service.consume(permit_ref)
@@ -1922,6 +1962,7 @@ class ToolExecutor:
         self.store.update_step_attempt(
             current.step_attempt_id,
             status="superseded",
+            superseded_by_step_attempt_id=None,
             finished_at=now,
         )
         self.store.update_step(attempt_ctx.step_id, status="awaiting_approval")
@@ -1931,7 +1972,25 @@ class ToolExecutor:
             step_id=current.step_id,
             attempt=current.attempt + 1,
             status="running",
-            context=dict(current.context),
+            context={**dict(current.context), "phase": "policy_pending", "reentered_via": "witness_drift"},
+            queue_priority=current.queue_priority,
+        )
+        self.store.update_step_attempt(
+            current.step_attempt_id,
+            superseded_by_step_attempt_id=successor.step_attempt_id,
+        )
+        self.store.append_event(
+            event_type="step_attempt.superseded",
+            entity_type="step_attempt",
+            entity_id=current.step_attempt_id,
+            task_id=current.task_id,
+            step_id=current.step_id,
+            actor="kernel",
+            payload={
+                "step_attempt_id": current.step_attempt_id,
+                "superseded_by_step_attempt_id": successor.step_attempt_id,
+                "reason": "witness_drift_reenter_policy",
+            },
         )
         successor_ctx = replace(attempt_ctx, step_attempt_id=successor.step_attempt_id, created_at=time.time())
         return self.execute(successor_ctx, tool_name, tool_input)

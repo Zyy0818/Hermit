@@ -444,6 +444,27 @@ class FeishuAdapter:
         value = mappings.get(task_id, {})
         return dict(value) if isinstance(value, dict) else {}
 
+    def _task_id_for_message_reference(self, conversation_id: str, message_id: str | None) -> str | None:
+        normalized = str(message_id or "").strip()
+        if not normalized or self._runner is None:
+            return None
+        store = getattr(getattr(self._runner, "task_controller", None), "store", None)
+        if store is None:
+            return None
+        conversation = store.get_conversation(conversation_id)
+        if conversation is None:
+            return None
+        metadata = dict(conversation.metadata or {})
+        mappings = dict(metadata.get("feishu_task_topics", {}) or {})
+        for task_id, payload in mappings.items():
+            mapping = dict(payload) if isinstance(payload, dict) else {}
+            if normalized in {
+                str(mapping.get("root_message_id", "") or "").strip(),
+                str(mapping.get("reply_to_message_id", "") or "").strip(),
+            }:
+                return str(task_id or "").strip() or None
+        return None
+
     def _unbind_task_topic(self, conversation_id: str, task_id: str) -> None:
         if self._runner is None:
             return
@@ -739,6 +760,16 @@ class FeishuAdapter:
                     "content": getattr(event.message, "content", ""),
                     "message_type": getattr(event.message, "message_type", "text"),
                     "chat_type": getattr(event.message, "chat_type", "p2p"),
+                    "reply_to_message_id": (
+                        getattr(event.message, "reply_to_message_id", "")
+                        or getattr(event.message, "parent_id", "")
+                        or getattr(event.message, "reply_in_thread_from_message_id", "")
+                    ),
+                    "quoted_message_id": (
+                        getattr(event.message, "quoted_message_id", "")
+                        or getattr(event.message, "root_id", "")
+                        or getattr(event.message, "upper_message_id", "")
+                    ),
                 },
                 "sender": {
                     "sender_id": {
@@ -1273,13 +1304,27 @@ class FeishuAdapter:
 
         task_controller = getattr(self._runner, "task_controller", None)
         ingress = None
+        reply_to_task_id = (
+            self._task_id_for_message_reference(session_id, getattr(msg, "reply_to_message_id", ""))
+            or self._task_id_for_message_reference(session_id, getattr(msg, "quoted_message_id", ""))
+        )
         if task_controller is not None and callable(getattr(task_controller, "decide_ingress", None)):
             ingress = task_controller.decide_ingress(
                 conversation_id=session_id,
                 source_channel="feishu",
                 raw_text=raw_text,
                 prompt=dispatch_text,
+                reply_to_task_id=reply_to_task_id,
             )
+            if str(getattr(ingress, "resolution", "") or "") == "pending_disambiguation":
+                text = (
+                    self._runner._pending_disambiguation_text(ingress)
+                    if hasattr(self._runner, "_pending_disambiguation_text")
+                    else "我没法确认你要继续哪个任务，请先切换任务。"
+                )
+                if self._client and msg.message_id:
+                    smart_reply(self._client, msg.message_id, text, locale=self._locale())
+                return
             if ingress.mode == "append_note":
                 if ingress.task_id:
                     self._patch_task_topic(ingress.task_id)
@@ -1299,6 +1344,7 @@ class FeishuAdapter:
                 source_channel="feishu",
                 raw_text=raw_text,
                 prompt=dispatch_text,
+                reply_to_task_id=reply_to_task_id,
             )
 
         if str(getattr(ingress, "intent", "") or "") == "chat_only":
@@ -1323,7 +1369,6 @@ class FeishuAdapter:
             lowered = raw_text.lower()
             if any(token in lowered for token in ("schedule", "提醒", "定时")):
                 add_reaction(self._client, msg.message_id, "Get")
-
         try:
             enqueue_kwargs = {
                 "source_channel": "feishu",
@@ -1332,10 +1377,17 @@ class FeishuAdapter:
                     "feishu_chat_id": msg.chat_id,
                     "feishu_message_id": msg.message_id,
                     "title": raw_text[:80] or self._t("feishu.adapter.topic.default_title"),
+                    "ingress_id": str(getattr(ingress, "ingress_id", "") or ""),
                     "ingress_intent": str(getattr(ingress, "intent", "") or ""),
                     "ingress_reason": str(getattr(ingress, "reason", "") or ""),
+                    "ingress_resolution": str(getattr(ingress, "resolution", "") or ""),
+                    "binding_reason_codes": list(getattr(ingress, "reason_codes", []) or []),
                 },
             }
+            if getattr(ingress, "anchor_task_id", None):
+                enqueue_kwargs["ingress_metadata"]["continuation_anchor"] = dict(
+                    getattr(ingress, "continuation_anchor", {}) or {}
+                )
             if hasattr(ingress, "parent_task_id"):
                 enqueue_kwargs["parent_task_id"] = getattr(ingress, "parent_task_id")
             ctx = self._runner.enqueue_ingress(

@@ -16,6 +16,8 @@ class FeishuMessage:
     message_type: str
     chat_type: str  # "p2p" or "group"
     image_keys: list[str]
+    reply_to_message_id: str = ""
+    quoted_message_id: str = ""
 
 
 _AT_PATTERN = re.compile(r"@_user_\d+\s*")
@@ -144,4 +146,16 @@ def normalize_event(event: dict[str, Any]) -> FeishuMessage:
         message_type=message_type,
         chat_type=chat_type,
         image_keys=image_keys,
+        reply_to_message_id=str(
+            msg.get("reply_to_message_id")
+            or msg.get("parent_id")
+            or msg.get("reply_in_thread_from_message_id")
+            or ""
+        ),
+        quoted_message_id=str(
+            msg.get("quoted_message_id")
+            or msg.get("root_id")
+            or msg.get("upper_message_id")
+            or ""
+        ),
     )

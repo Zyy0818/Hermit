@@ -321,6 +321,103 @@ Recommended fields:
  
 
  
+Clarification:
+
+- `parent_task_id` is for decomposition or derived-task lineage
+- `parent_task_id` `MUST NOT` be used as the conversational carry-forward mechanism for follow-up questions
+
+### 8.1.2 IngressRecord
+
+An `IngressRecord` is the durable record for each inbound free-form message before it changes task state.
+
+Minimum fields:
+
+- `ingress_id`
+- `conversation_id`
+- `source_channel`
+- `raw_text`
+- `normalized_text`
+- `status`
+- `resolution`
+- `created_at`
+- `updated_at`
+
+Recommended fields:
+
+- `actor`
+- `prompt_ref`
+- `reply_to_ref`
+- `quoted_message_ref`
+- `explicit_task_ref`
+- `referenced_artifact_refs`
+- `chosen_task_id`
+- `parent_task_id`
+- `confidence`
+- `margin`
+- `rationale_ref` or embedded rationale payload
+
+Semantics:
+
+- every free-form ingress `MUST` be durably recorded before it mutates task, step, or attempt state
+- ingress binding `MUST` be explainable from candidates and rationale
+- unresolved ambiguity is a legal kernel state; `pending_disambiguation` is not an error
+- adapters and product surfaces `MAY` choose whether to auto-bind, ask, or defer, but the core kernel `MUST NOT` pretend a unique binding exists when it does not
+
+### 8.1.3 Ingress Binding Semantics
+
+Ingress binding is not a binary `continue vs new` heuristic. The kernel `SHOULD` support at least these outcomes:
+
+- `control`
+- `approval`
+- `append_note`
+- `fork_child`
+- `start_new_root`
+- `chat_only`
+- `pending_disambiguation`
+
+Recommended binding priority:
+
+1. explicit task, approval, receipt, or command target
+2. adapter reply target or quoted-message target
+3. pending approval correlation
+4. current focus task
+5. ranked candidate open tasks
+6. `fork_child`
+7. `start_new_root`
+8. `pending_disambiguation`
+
+Related-task semantics:
+
+- `append_note` mutates the current task input
+- `fork_child` creates a new child task related to the bound task without inheriting the full working state
+- `start_new_root` creates a new unrelated root task in the same conversation container
+
+### 8.1.1 Continuation Anchors
+
+Kernel ingress `MUST` distinguish between active-task continuation and terminal-outcome continuation.
+
+Rules:
+
+- a terminal task is any task in `completed`, `failed`, or `cancelled`
+- a terminal task `MUST NOT` be implicitly reopened by a follow-up message
+- when a follow-up refers to a terminal outcome, the kernel `MUST` create a new task
+- that new task `MUST` carry a structured `continuation_anchor` rather than a raw transcript pointer
+
+Minimum continuation anchor fields:
+
+- `anchor_task_id`
+- `anchor_kind`
+- `selection_reason`
+- `outcome_status`
+- `outcome_summary`
+- `source_artifact_refs`
+
+For the v0.1 continuation flow, `anchor_kind` is `completed_outcome`.
+
+Durability requirement:
+
+- the continuation anchor `SHOULD` be written into ingress metadata and into the event-backed task creation payload so projections and context packs can be rebuilt without transcript replay
+
 ### 8.2 Step
  
 A `Step` is the smallest logical recoverable unit within a task.
@@ -454,6 +551,12 @@ Semantics:
 - A retry `MUST` create a new attempt number.
  
 - An attempt is the unit that receives policy results, approvals, grants, and receipts.
+
+- An attempt `MAY` carry execution-phase metadata such as `planning`, `policy_pending`, `awaiting_approval`, `authorized_pre_exec`, `executing`, `observing`, or `settling`.
+
+- Newly bound task input `MUST` first become task input delta and `MUST NOT` hot-patch an executor already in flight.
+
+- If input, approval packet, policy assumptions, or witness assumptions drift past the current checkpoint, the kernel `MUST` re-enter policy or supersede the attempt instead of silently mutating execution state.
  
 
  
@@ -1126,6 +1229,8 @@ Responsibilities:
 - separate working state, belief, and durable memory
  
 - compile minimal context packs
+
+- compile structured carry-forward from continuation anchors when present
  
 - compact and seal evidence-bearing outputs
  
@@ -1259,6 +1364,12 @@ If witness drift, policy drift, or input invalidation occurs, the system `MUST` 
 - re-enter policy evaluation, or
  
 - supersede the attempt with a new attempt
+
+Clarifications:
+
+- a newly bound ingress first becomes task input delta; it is not direct executor mutation
+- the kernel `MUST` absorb new input only at durable boundaries such as pre-policy, post-policy, pre-exec, post-observation, or pre-next-step compilation
+- input drift, approval-packet drift, and witness drift `MAY` produce different rationale, but they share the same recovery shape: recompile, re-enter policy, or supersede
  
 
   
@@ -1524,10 +1635,19 @@ Minimum projections:
 - receipt ledger
  
 - session/chat projection
+
+- conversation focus view
  
 
  
 Projection rebuild from the event log `SHOULD` be possible without bespoke repair logic.
+
+Conversation focus view rules:
+
+- one conversation `MAY` have many open tasks
+- one conversation `MUST` have at most one implicit focus task
+- background progress `MUST NOT` automatically steal focus
+- focus changes `SHOULD` be projection-rebuildable from ingress binding, explicit task switch, task lifecycle events, and adapter reply targeting
   
 ## 14. Artifact and Evidence Model
  
@@ -1828,6 +1948,10 @@ Inputs may include:
 - workspace snapshot refs
  
 - prior receipts when relevant
+
+- bound ingress deltas since the last durable boundary
+
+- focus task summary when conversation routing depends on implicit focus
  
 
  
@@ -1864,8 +1988,10 @@ A recommended precedence order is:
 7. durable memory
  
 8. relevant artifacts
+
+9. bound ingress deltas and focus summary
  
-9. session/chat projection only when necessary
+10. session/chat projection only when necessary
  
 
  
@@ -2083,6 +2209,8 @@ Approval requests `SHOULD` contain:
 
  
 Approval packets are artifacts and should be inspectable later.
+
+If a newly bound ingress changes the action summary, risk, target resources, or other policy-relevant inputs, the prior approval packet `MUST NOT` be reused silently. The kernel `MUST` re-enter policy or create a superseding attempt.
  
 ### 16.8 State Witness
  
@@ -2125,6 +2253,8 @@ For the following action classes, witness validation `MUST` run on delayed execu
 
  
 If witness validation fails, the previous authorization `MUST NOT` be treated as sufficient. The kernel `MUST` re-enter policy or create a superseding attempt.
+
+Approval-packet drift, witness drift, and newly bound input are distinct causes, but all three `MUST` resolve through durable re-entry or supersession rather than in-memory mutation of a running executor.
  
 ### 16.9 Policy Override
  
@@ -2750,6 +2880,10 @@ Hermit Kernel Spec v0.1 should be considered materially implemented only when al
 13. Session history is demoted to a projection.
  
 14. The supervision surface can explain what happened, why, with what evidence, and under what authority.
+
+15. Every free-form ingress is durably recorded before task mutation.
+
+16. Conversation focus and ingress binding are projection-rebuildable from durable ingress records plus events.
  
 
   

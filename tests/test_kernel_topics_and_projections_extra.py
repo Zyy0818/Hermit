@@ -199,11 +199,11 @@ def test_projection_service_context_pack_and_rollbacks_are_included(tmp_path: Pa
     artifacts = ArtifactStore(tmp_path / "artifacts")
     controller = TaskController(store)
     ctx = controller.start_task(conversation_id="chat-1", goal="A", source_channel="chat", kind="respond")
-    artifact_uri, artifact_hash = artifacts.store_json({"kind": "context.pack/v1"})
+    artifact_uri, artifact_hash = artifacts.store_json({"kind": "context.pack/v3"})
     store.create_artifact(
         task_id=ctx.task_id,
         step_id=ctx.step_id,
-        kind="context.pack/v1",
+        kind="context.pack/v3",
         uri=artifact_uri,
         content_hash=artifact_hash,
         producer="test",
@@ -236,6 +236,25 @@ def test_projection_service_context_pack_and_rollbacks_are_included(tmp_path: Pa
     assert payload["rollbacks"][0]["receipt_ref"] == receipt.receipt_id
 
 
+def test_projection_service_includes_terminal_outcome_summary(tmp_path: Path) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+    ctx = controller.start_task(conversation_id="chat-1", goal="查询北京天气", source_channel="chat", kind="respond")
+    controller.finalize_result(
+        ctx,
+        status="succeeded",
+        result_preview="北京今天天气不错：晴到多云，0～12℃。",
+        result_text="北京今天天气不错：晴到多云，0～12℃，微风到西南风，无明显降水。",
+    )
+
+    payload = ProjectionService(store).rebuild_task(ctx.task_id)
+
+    assert payload["outcome"] is not None
+    assert payload["outcome"]["status"] == "completed"
+    assert payload["outcome"]["result_text_excerpt"].startswith("北京今天天气不错")
+    assert payload["outcome"]["outcome_summary"].startswith("北京今天天气不错")
+
+
 def test_conversation_projection_strips_internal_tags_from_recent_notes(tmp_path: Path) -> None:
     from hermit.kernel.conversation_projection import ConversationProjectionService
 
@@ -261,6 +280,81 @@ def test_conversation_projection_strips_internal_tags_from_recent_notes(tmp_path
 
     assert payload["recent_notes"] == ["加上和 grok 的对比"]
     assert "<feishu_msg_id>" not in payload["summary"]
+
+
+def test_conversation_projection_exposes_recent_terminal_continuation_candidates(tmp_path: Path) -> None:
+    from hermit.kernel.conversation_projection import ConversationProjectionService
+
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+
+    older = controller.start_task(
+        conversation_id="oc_weather",
+        goal="查询上海天气",
+        source_channel="feishu",
+        kind="respond",
+    )
+    controller.finalize_result(
+        older,
+        status="succeeded",
+        result_preview="上海今天多云。",
+        result_text="上海今天多云，最高 15℃。",
+    )
+    latest = controller.start_task(
+        conversation_id="oc_weather",
+        goal="查询北京天气",
+        source_channel="feishu",
+        kind="respond",
+    )
+    controller.finalize_result(
+        latest,
+        status="succeeded",
+        result_preview="北京今天天气不错。",
+        result_text="北京今天天气不错：晴到多云，0～12℃。",
+    )
+
+    payload = ConversationProjectionService(store).rebuild("oc_weather")
+
+    assert payload["continuation_candidates"][0]["task_id"] == latest.task_id
+    assert payload["continuation_candidates"][0]["outcome_summary"].startswith("北京今天天气不错")
+    assert payload["continuation_candidates"][1]["task_id"] == older.task_id
+
+
+def test_conversation_projection_exposes_focus_open_tasks_and_pending_ingresses(tmp_path: Path) -> None:
+    from hermit.kernel.conversation_projection import ConversationProjectionService
+
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+
+    first = controller.start_task(
+        conversation_id="oc_focus_projection",
+        goal="整理周报",
+        source_channel="feishu",
+        kind="respond",
+    )
+    second = controller.enqueue_task(
+        conversation_id="oc_focus_projection",
+        goal="整理测试计划",
+        source_channel="feishu",
+        kind="respond",
+    )
+    store.set_conversation_focus("oc_focus_projection", task_id=first.task_id, reason="manual_test_focus")
+    store.create_ingress(
+        conversation_id="oc_focus_projection",
+        source_channel="feishu",
+        raw_text="这个改成 Markdown",
+        normalized_text="这个改成 Markdown",
+        actor="user",
+    )
+
+    payload = ConversationProjectionService(store).rebuild("oc_focus_projection")
+
+    assert payload["focus_task_id"] == first.task_id
+    assert payload["focus_reason"] == "manual_test_focus"
+    assert payload["pending_ingress_count"] == 1
+    assert len(payload["open_tasks"]) == 2
+    assert payload["open_tasks"][0]["task_id"] == second.task_id
+    assert any(item["task_id"] == first.task_id and item["is_focus"] for item in payload["open_tasks"])
 
 
 def test_projection_service_key_input_prefers_first_value() -> None:

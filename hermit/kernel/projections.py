@@ -4,12 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from hermit.kernel.outcomes import build_task_outcome
 from hermit.kernel.proofs import ProofService
 from hermit.kernel.planning import PlanningService
 from hermit.kernel.store import KernelStore
 from hermit.kernel.topics import build_task_topic
 
-_PROJECTION_SCHEMA_VERSION = "tail-v5"
+_PROJECTION_SCHEMA_VERSION = "tail-v6"
 
 
 class ProjectionService:
@@ -101,6 +102,12 @@ class ProjectionService:
             "projection": projection,
             "proof": proof,
             "topic": build_task_topic(events),
+            "outcome": build_task_outcome(
+                store=self.store,
+                task_id=task_id,
+                status=str(task.status or ""),
+                events=events,
+            ),
             "beliefs": beliefs,
             "knowledge": knowledge,
             "latest_context_pack_ref": latest_context_pack_ref,

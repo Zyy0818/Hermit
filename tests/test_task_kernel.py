@@ -395,6 +395,68 @@ def test_enqueue_resume_requeues_blocked_attempt_with_resume_mode(tmp_path: Path
     assert attempt.context["ingress_metadata"]["entry_prompt"] == "resume prompt"
 
 
+def test_append_note_marks_open_attempt_input_dirty(tmp_path: Path) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="oc_dirty",
+        goal="整理周报",
+        source_channel="chat",
+        kind="respond",
+    )
+
+    note_seq = controller.append_note(
+        task_id=ctx.task_id,
+        source_channel="chat",
+        raw_text="补充一句结论",
+        prompt="补充一句结论",
+        ingress_id="ingress_test_1",
+    )
+
+    attempt = store.get_step_attempt(ctx.step_attempt_id)
+    assert note_seq > 0
+    assert attempt is not None
+    assert attempt.context["input_dirty"] is True
+    assert attempt.context["latest_bound_ingress_id"] == "ingress_test_1"
+    assert attempt.context["latest_note_event_seq"] == note_seq
+    events = store.list_events(task_id=ctx.task_id, limit=20)
+    assert any(event["event_type"] == "step_attempt.input_dirty" for event in events)
+
+
+def test_enqueue_resume_supersedes_dirty_approval_attempt(tmp_path: Path) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+    ctx = controller.enqueue_task(
+        conversation_id="oc_resume_dirty",
+        goal="发邮件",
+        source_channel="feishu",
+        kind="respond",
+        ingress_metadata={"dispatch_mode": "async", "entry_prompt": "发邮件"},
+    )
+
+    controller.mark_suspended(ctx, waiting_kind="awaiting_approval")
+    controller.append_note(
+        task_id=ctx.task_id,
+        source_channel="feishu",
+        raw_text="不要发了，改成草稿",
+        prompt="不要发了，改成草稿",
+        ingress_id="ingress_dirty_1",
+    )
+    resumed = controller.enqueue_resume(ctx.step_attempt_id)
+
+    original = store.get_step_attempt(ctx.step_attempt_id)
+    successor = store.get_step_attempt(resumed.step_attempt_id)
+    assert resumed.step_attempt_id != ctx.step_attempt_id
+    assert original is not None and original.status == "superseded"
+    assert original.superseded_by_step_attempt_id == resumed.step_attempt_id
+    assert successor is not None and successor.status == "ready"
+    assert successor.context["execution_mode"] == "run"
+    assert successor.context["reentered_via"] == "input_dirty_approval"
+    assert successor.context["supersedes_step_attempt_id"] == ctx.step_attempt_id
+    events = store.list_events(task_id=ctx.task_id, limit=50)
+    assert any(event["event_type"] == "step_attempt.superseded" for event in events)
+
+
 def test_kernel_dispatch_recovery_marks_async_running_attempts_failed(tmp_path: Path) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
@@ -735,6 +797,31 @@ def test_store_task_attempt_queries_and_iter_events(tmp_path: Path) -> None:
     store.update_step_attempt("missing-attempt", status="failed")
     events = list(store.iter_events(task_id=ctx.task_id, batch_size=1))
     assert events
+
+
+def test_store_claim_next_ready_step_attempt_prefers_higher_queue_priority(tmp_path: Path) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+
+    low = controller.enqueue_task(
+        conversation_id="chat-priority",
+        goal="background",
+        source_channel="scheduler",
+        kind="respond",
+    )
+    high = controller.enqueue_task(
+        conversation_id="chat-priority",
+        goal="interactive",
+        source_channel="chat",
+        kind="respond",
+    )
+    store.update_step_attempt(low.step_attempt_id, queue_priority=10)
+    store.update_step_attempt(high.step_attempt_id, queue_priority=100)
+
+    claimed = store.claim_next_ready_step_attempt()
+
+    assert claimed is not None
+    assert claimed.step_attempt_id == high.step_attempt_id
 
 
 def test_task_controller_prefers_latest_pending_approval_for_natural_language(tmp_path: Path) -> None:
@@ -1719,6 +1806,9 @@ def test_executor_requires_new_approval_when_fingerprint_changes(tmp_path: Path)
 
     first = executor.execute(ctx, "write_file", {"path": ".env", "content": "hello\n"})
     assert first.approval_id is not None
+    first_attempt = store.get_step_attempt(ctx.step_attempt_id)
+    assert first_attempt is not None
+    assert first_attempt.context["phase"] == "awaiting_approval"
     approval_service.approve(first.approval_id)
 
     second = executor.execute(ctx, "write_file", {"path": ".env.local", "content": "hello\n"})
@@ -1726,7 +1816,13 @@ def test_executor_requires_new_approval_when_fingerprint_changes(tmp_path: Path)
     assert second.blocked is True
     assert second.approval_id is not None
     assert second.approval_id != first.approval_id
-    assert any(event["event_type"] == "approval.mismatch" for event in store.list_events(task_id=ctx.task_id))
+    events = store.list_events(task_id=ctx.task_id)
+    assert any(event["event_type"] == "approval.mismatch" for event in events)
+    assert any(
+        event["event_type"] == "step_attempt.phase_changed"
+        and event["payload"].get("phase") == "awaiting_approval"
+        for event in events
+    )
 
 
 def test_executor_creates_successor_attempt_when_witness_drifts(tmp_path: Path) -> None:
@@ -1756,7 +1852,9 @@ def test_executor_creates_successor_attempt_when_witness_drifts(tmp_path: Path) 
     assert successor is not None
     assert successor.step_attempt_id != ctx.step_attempt_id
     assert successor.status == "awaiting_approval"
-    assert any(event["event_type"] == "witness.failed" for event in store.list_events(task_id=ctx.task_id))
+    events = store.list_events(task_id=ctx.task_id)
+    assert any(event["event_type"] == "witness.failed" for event in events)
+    assert any(event["event_type"] == "step_attempt.superseded" for event in events)
 
 
 def test_executor_marks_unknown_outcome_and_reconciles_local_write(tmp_path: Path) -> None:

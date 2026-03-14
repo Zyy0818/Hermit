@@ -177,12 +177,19 @@ class AgentRunner:
             messages=list(session.messages),
             runner=self,
         )
-        now = datetime.datetime.now()
-        session_started = datetime.datetime.fromtimestamp(session.created_at)
+        now = datetime.datetime.now().astimezone()
+        offset = now.strftime("%z")
+        offset_label = (
+            f"UTC{offset[:3]}:{offset[3:]}"
+            if offset and len(offset) == 5
+            else "local"
+        )
+        timezone_name = getattr(now.tzinfo, "key", None) or offset_label
         time_ctx = (
             f"<session_time>"
-            f"session_started_at={session_started.strftime('%Y-%m-%d %H:%M:%S')} "
-            f"message_sent_at={now.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"current_time={now.isoformat(timespec='seconds')} "
+            f"timezone={timezone_name} "
+            f"relative_time_base=current_time"
             f"</session_time>\n\n"
         )
         store = getattr(self.task_controller, "store", None)
@@ -276,6 +283,8 @@ class AgentRunner:
             prompt=prompt,
             raw_text=raw_text or prompt,
         )
+        if hasattr(self.task_controller, "update_attempt_phase"):
+            self.task_controller.update_attempt_phase(task_ctx.step_attempt_id, phase="executing")
         result = self.agent.run(
             prompt,
             compiled_messages=compiled_input.messages if compiled_input is not None else None,
@@ -430,6 +439,8 @@ class AgentRunner:
         started_at = time.time()
         try:
             if execution_mode == "resume":
+                if hasattr(self.task_controller, "update_attempt_phase"):
+                    self.task_controller.update_attempt_phase(step_attempt_id, phase="executing")
                 result = self.agent.resume(
                     step_attempt_id=step_attempt_id,
                     task_context=task_ctx,
@@ -442,6 +453,8 @@ class AgentRunner:
                     prompt=str(metadata.get("entry_prompt", "") or ""),
                     raw_text=str(metadata.get("raw_text", "") or str(metadata.get("entry_prompt", "") or "")),
                 )
+                if hasattr(self.task_controller, "update_attempt_phase"):
+                    self.task_controller.update_attempt_phase(step_attempt_id, phase="executing")
                 result = self.agent.run(
                     str(metadata.get("entry_prompt", "") or ""),
                     compiled_messages=compiled_input.messages if compiled_input is not None else None,
@@ -645,6 +658,15 @@ class AgentRunner:
                 raw_text=text,
                 prompt=prompt,
             )
+            if str(getattr(ingress, "resolution", "") or "") == "pending_disambiguation":
+                return AgentResult(
+                    text=self._pending_disambiguation_text(ingress),
+                    turns=0,
+                    tool_calls=0,
+                    messages=list(session.messages),
+                    execution_status="pending_disambiguation",
+                    status_managed_by_kernel=True,
+                )
             if ingress.mode == "append_note":
                 normalized = None
                 try:
@@ -656,13 +678,15 @@ class AgentRunner:
                     )
                 except RuntimeError:
                     normalized = None
-                self.task_controller.append_note(
-                    task_id=ingress.task_id or "",
-                    source_channel=source_channel,
-                    raw_text=text,
-                    prompt=prompt,
-                    normalized_payload=normalized,
-                )
+                if ingress.note_event_seq is None:
+                    self.task_controller.append_note(
+                        task_id=ingress.task_id or "",
+                        source_channel=source_channel,
+                        raw_text=text,
+                        prompt=prompt,
+                        normalized_payload=normalized,
+                        ingress_id=getattr(ingress, "ingress_id", None),
+                    )
                 return AgentResult(
                     text=_t(
                         "kernel.runner.note_appended",
@@ -677,6 +701,19 @@ class AgentRunner:
                     status_managed_by_kernel=True,
                 )
         parent_task_id = getattr(ingress, "parent_task_id", _AUTO_PARENT) if ingress is not None else _AUTO_PARENT
+        ingress_metadata: dict[str, object] = {}
+        if ingress is not None:
+            ingress_metadata.update(
+                {
+                    "ingress_id": str(getattr(ingress, "ingress_id", "") or ""),
+                    "ingress_intent": str(getattr(ingress, "intent", "") or ""),
+                    "ingress_reason": str(getattr(ingress, "reason", "") or ""),
+                    "ingress_resolution": str(getattr(ingress, "resolution", "") or ""),
+                    "binding_reason_codes": list(getattr(ingress, "reason_codes", []) or []),
+                }
+            )
+            if getattr(ingress, "anchor_task_id", None):
+                ingress_metadata["continuation_anchor"] = dict(getattr(ingress, "continuation_anchor", {}) or {})
 
         task_ctx = None
         if self.task_controller is not None:
@@ -689,6 +726,7 @@ class AgentRunner:
                 policy_profile="readonly" if run_opts.get("readonly_only", False) else "default",
                 workspace_root=str(getattr(self.agent, "workspace_root", "") or ""),
                 parent_task_id=parent_task_id,
+                ingress_metadata=ingress_metadata,
             )
             if run_opts.get("planning_mode", False):
                 planning = PlanningService(self.task_controller.store, getattr(self.agent, "artifact_store", None))
@@ -700,6 +738,8 @@ class AgentRunner:
             prompt=prompt,
             raw_text=text,
         ) if task_ctx is not None else None
+        if task_ctx is not None and hasattr(self.task_controller, "update_attempt_phase"):
+            self.task_controller.update_attempt_phase(task_ctx.step_attempt_id, phase="executing")
         result = self.agent.run(
             prompt,
             compiled_messages=compiled_input.messages if compiled_input is not None else None,
@@ -776,6 +816,8 @@ class AgentRunner:
         resume_attempt = getattr(self.task_controller, "resume_attempt", None)
         task_ctx = resume_attempt(step_attempt_id) if callable(resume_attempt) else self.task_controller.context_for_attempt(step_attempt_id)
         session = self.session_manager.get_or_create(task_ctx.conversation_id)
+        if hasattr(self.task_controller, "update_attempt_phase"):
+            self.task_controller.update_attempt_phase(task_ctx.step_attempt_id, phase="executing")
         result = self.agent.resume(
             step_attempt_id=step_attempt_id,
             task_context=task_ctx,
@@ -838,6 +880,23 @@ class AgentRunner:
         if action == "new_session":
             self.reset_session(session_id)
             return DispatchResult(_t("kernel.runner.new_session", runner=self), is_command=True)
+        if action == "focus_task":
+            resolved = self.task_controller.focus_task(session_id, target_id)
+            message = _t(
+                "kernel.runner.focus_task",
+                runner=self,
+                default=f"Focused task switched to {target_id}.",
+                task_id=target_id,
+            )
+            if resolved is not None and getattr(resolved, "note_event_seq", None):
+                message = (
+                    f"{message}\n"
+                    "The pending message was attached to this task and will be applied at the next durable boundary."
+                )
+            return DispatchResult(
+                text=message,
+                is_command=True,
+            )
         if action == "show_history":
             session = self.session_manager.get_or_create(session_id)
             user_turns = sum(1 for m in session.messages if m.get("role") == "user")
@@ -1045,6 +1104,18 @@ class AgentRunner:
             text=_t("kernel.runner.unsupported_control_action", runner=self, action=action),
             is_command=True,
         )
+
+    @staticmethod
+    def _pending_disambiguation_text(ingress: object) -> str:
+        candidates = list(getattr(ingress, "candidates", []) or [])
+        if not candidates:
+            return "I couldn't determine which task to continue. Please switch focus first."
+        lines = ["I couldn't determine which task to continue. Try one of these commands:"]
+        for item in candidates[:3]:
+            task_id = str(dict(item).get("task_id", "") or "").strip()
+            if task_id:
+                lines.append(f"- 切到任务 {task_id}")
+        return "\n".join(lines)
 
     def _resolve_approval(
         self,

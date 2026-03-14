@@ -244,7 +244,7 @@ def _compile_context_pack(
             artifact = store.create_artifact(
                 task_id=task_id or None,
                 step_id=None,
-                kind="context.pack/v1",
+                kind="context.pack/v3",
                 uri=pack.artifact_uri,
                 content_hash=str(pack.artifact_hash or pack.pack_hash),
                 producer="memory_hook",
@@ -259,7 +259,7 @@ def _compile_context_pack(
                     entity_id=task_id,
                     task_id=task_id,
                     actor="kernel",
-                    payload={"artifact_ref": artifact.artifact_id, "pack_hash": pack.pack_hash},
+                    payload={"artifact_ref": artifact.artifact_id, "pack_hash": pack.pack_hash, "kind": "context.pack/v3"},
                 )
         return {
             "pack": pack,
