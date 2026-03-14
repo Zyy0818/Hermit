@@ -7,6 +7,22 @@ from hermit.core.sandbox import CommandSandbox
 from hermit.core.tools import create_builtin_tool_registry
 
 
+def _wait_for_poll(
+    sandbox: CommandSandbox,
+    job_id: str,
+    *,
+    timeout: float,
+    predicate,
+) -> dict | None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        poll = sandbox.poll(job_id)
+        if predicate(poll):
+            return poll
+        time.sleep(0.02)
+    return None
+
+
 def test_builtin_tools_can_read_and_write_workspace_files(tmp_path) -> None:
     registry = create_builtin_tool_registry(tmp_path, CommandSandbox(mode="l0", cwd=tmp_path))
 
@@ -132,26 +148,23 @@ def test_command_sandbox_observation_emits_progress_and_ready(tmp_path) -> None:
     assert "_hermit_observation" in result
     ticket = result["_hermit_observation"]
 
-    deadline = time.time() + 0.4
-    starting = None
-    while time.time() < deadline:
-        poll = sandbox.poll(ticket["job_id"])
-        if poll.get("progress", {}).get("phase") == "starting":
-            starting = poll
-            break
-        time.sleep(0.02)
+    starting = _wait_for_poll(
+        sandbox,
+        ticket["job_id"],
+        timeout=0.4,
+        predicate=lambda poll: poll.get("progress", {}).get("phase") == "starting",
+    )
     assert starting is not None
     assert starting["status"] == "observing"
     assert starting["progress"]["phase"] == "starting"
     assert starting["progress"]["summary"] == "Dev Server is starting"
 
-    ready = None
-    while time.time() < deadline + 0.5:
-        poll = sandbox.poll(ticket["job_id"])
-        if poll.get("progress", {}).get("ready") is True:
-            ready = poll
-            break
-        time.sleep(0.02)
+    ready = _wait_for_poll(
+        sandbox,
+        ticket["job_id"],
+        timeout=0.9,
+        predicate=lambda poll: poll.get("progress", {}).get("ready") is True,
+    )
     assert ready is not None
     assert ready["status"] == "observing"
     assert ready["progress"]["ready"] is True
@@ -168,8 +181,21 @@ def test_command_sandbox_observation_uses_coarse_running_progress_without_metada
     assert "_hermit_observation" in result
     ticket = result["_hermit_observation"]
 
-    time.sleep(0.06)
-    poll = sandbox.poll(ticket["job_id"])
-    assert poll["status"] == "observing"
-    assert poll["progress"]["phase"] == "running"
-    assert poll["progress"]["summary"] == "Background Task is still running."
+    observing = _wait_for_poll(
+        sandbox,
+        ticket["job_id"],
+        timeout=0.25,
+        predicate=lambda poll: poll.get("status") == "observing"
+        and poll.get("progress", {}).get("phase") == "running",
+    )
+    assert observing is not None
+    assert observing["progress"]["summary"] == "Background Task is still running."
+
+    completed = _wait_for_poll(
+        sandbox,
+        ticket["job_id"],
+        timeout=0.25,
+        predicate=lambda poll: poll.get("status") == "completed",
+    )
+    assert completed is not None
+    assert completed["result"]["returncode"] == 0

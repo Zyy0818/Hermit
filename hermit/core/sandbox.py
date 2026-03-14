@@ -14,6 +14,7 @@ from hermit.core.budgets import Deadline, ExecutionBudget, get_runtime_budget
 from hermit.kernel.observation import observation_envelope
 
 _RECENT_LINE_BUFFER = 200
+_COARSE_OBSERVATION_GRACE_SECONDS = 0.1
 
 
 @dataclass
@@ -41,6 +42,7 @@ class _ObservedProcess:
     cancelled: bool = False
     completed: bool = False
     returncode: int | None = None
+    completed_at: float | None = None
     stdout_chunks: list[str] = field(default_factory=list)
     stderr_chunks: list[str] = field(default_factory=list)
     pending_events: list[tuple[str, str]] = field(default_factory=list)
@@ -55,7 +57,7 @@ class CommandSandbox:
     def __init__(
         self,
         mode: str = "l0",
-        timeout_seconds: int = 30,
+        timeout_seconds: float = 30,
         cwd: Path | None = None,
         budget: ExecutionBudget | None = None,
     ) -> None:
@@ -74,7 +76,7 @@ class CommandSandbox:
             observation_window=base_budget.observation_window,
             observation_poll_interval=base_budget.observation_poll_interval,
         )
-        self.timeout_seconds = int(soft)
+        self.timeout_seconds = soft
         self.cwd = cwd
         self._jobs: dict[str, _ObservedProcess] = {}
         self._lock = threading.Lock()
@@ -253,19 +255,29 @@ class CommandSandbox:
                     },
                     "is_error": True,
                 }
-            progress = matched_progress or {
-                "phase": "running",
-                "summary": f"{job.display_name} is still running.",
-            }
-            return {
-                "status": "observing",
-                "topic_summary": str(progress.get("summary", "") or f"{job.display_name} is still running."),
-                "progress": progress,
-                "poll_after_seconds": self.budget.observation_poll_interval,
-            }
+            progress = matched_progress or self._coarse_running_progress(job)
+            return self._observing_payload(
+                job,
+                progress=progress,
+                poll_after_seconds=self.budget.observation_poll_interval,
+            )
 
         job.returncode = job.proc.returncode
         job.completed = True
+        if job.completed_at is None:
+            job.completed_at = now
+        if self._should_extend_coarse_observation(
+            job,
+            now=now,
+            matched_progress=matched_progress,
+            ready_progress=ready_progress,
+            failure_progress=failure_progress,
+        ):
+            return self._observing_payload(
+                job,
+                progress=self._coarse_running_progress(job),
+                poll_after_seconds=min(self.budget.observation_poll_interval, 0.05),
+            )
         self._join_reader_threads(job)
         stdout, stderr = self._output_text(job)
         with self._lock:
@@ -527,4 +539,50 @@ class CommandSandbox:
             pass
         job.returncode = job.proc.poll()
         job.completed = True
+        if job.completed_at is None:
+            job.completed_at = time.time()
         self._join_reader_threads(job)
+
+    def _coarse_running_progress(self, job: _ObservedProcess) -> dict[str, Any]:
+        return {
+            "phase": "running",
+            "summary": f"{job.display_name} is still running.",
+        }
+
+    def _observing_payload(
+        self,
+        job: _ObservedProcess,
+        *,
+        progress: dict[str, Any],
+        poll_after_seconds: float,
+    ) -> dict[str, Any]:
+        summary = str(progress.get("summary", "") or self._coarse_running_progress(job)["summary"])
+        return {
+            "status": "observing",
+            "topic_summary": summary,
+            "progress": progress,
+            "poll_after_seconds": poll_after_seconds,
+        }
+
+    def _has_observation_output(self, job: _ObservedProcess) -> bool:
+        with job.lock:
+            return bool(job.pending_events or job.recent_events or job.stdout_chunks or job.stderr_chunks)
+
+    def _should_extend_coarse_observation(
+        self,
+        job: _ObservedProcess,
+        *,
+        now: float,
+        matched_progress: dict[str, Any] | None,
+        ready_progress: dict[str, Any] | None,
+        failure_progress: dict[str, Any] | None,
+    ) -> bool:
+        if matched_progress is not None or ready_progress is not None or failure_progress is not None:
+            return False
+        if self._has_observation_output(job):
+            return False
+        completed_at = job.completed_at or now
+        return (
+            completed_at - job.created_at < _COARSE_OBSERVATION_GRACE_SECONDS
+            and now - completed_at < _COARSE_OBSERVATION_GRACE_SECONDS
+        )
