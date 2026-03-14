@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from hermit.builtin.feishu.adapter import get_active_adapter
 from hermit.builtin.feishu._client import build_lark_client
 from hermit.builtin.feishu.reaction import add_reaction, resolve_emoji_type
 from hermit.builtin.feishu.tools import register_tools
@@ -54,9 +55,26 @@ def _on_dispatch_result(
         _log.exception("Failed to send dispatch result to Feishu chat_id=%s", chat_id)
 
 
+def _on_post_run(
+    *,
+    result: Any = None,
+    session_id: str = "",
+    runner: Any = None,
+    **_: Any,
+) -> None:
+    adapter = get_active_adapter()
+    if adapter is None:
+        return
+    try:
+        adapter._handle_post_run_result(result, session_id=session_id, runner=runner)
+    except Exception:
+        _log.exception("Failed to deliver Feishu post-run result for session_id=%s", session_id)
+
+
 def register(ctx: PluginContext) -> None:
     ctx.add_tool(_build_react_tool(ctx.settings))
     register_tools(ctx)
+    ctx.add_hook(HookEvent.POST_RUN, _on_post_run, priority=40)
     ctx.add_hook(HookEvent.DISPATCH_RESULT, _on_dispatch_result, priority=50)
 
 

@@ -205,6 +205,64 @@ def test_feishu_adapter_maybe_send_completion_result_message_respects_existing_r
     assert send_attempts == [("oc_chat", "整理完成。")]
 
 
+def test_feishu_adapter_deliver_terminal_result_without_card_requires_successful_reply(
+    monkeypatch, tmp_path
+) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="oc_chat:user_1",
+        goal="回复用户",
+        source_channel="feishu",
+        kind="respond",
+        ingress_metadata={"dispatch_mode": "async"},
+    )
+    controller.finalize_result(
+        ctx,
+        status="succeeded",
+        result_preview="已完成。",
+        result_text="已完成。",
+    )
+    store.update_conversation_metadata(
+        "oc_chat:user_1",
+        {
+            "feishu_task_topics": {
+                ctx.task_id: {
+                    "chat_id": "oc_chat",
+                    "reply_to_message_id": "om_origin",
+                    "completion_reply_sent": False,
+                }
+            }
+        },
+    )
+
+    adapter = FeishuAdapter()
+    adapter._client = object()
+    adapter._runner = SimpleNamespace(task_controller=SimpleNamespace(store=store))
+
+    monkeypatch.setattr(
+        "hermit.builtin.feishu.adapter.smart_reply",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "hermit.builtin.feishu.adapter.smart_send_message",
+        lambda *_args, **_kwargs: "",
+    )
+
+    assert adapter._deliver_terminal_result_without_card(
+        ctx.task_id,
+        mapping={
+            "chat_id": "oc_chat",
+            "reply_to_message_id": "om_origin",
+            "completion_reply_sent": False,
+        },
+    ) is False
+
+    conversation = store.get_conversation("oc_chat:user_1")
+    mapping = dict(dict(conversation.metadata or {})["feishu_task_topics"][ctx.task_id])
+    assert mapping["completion_reply_sent"] is False
+
+
 def test_feishu_adapter_present_task_result_patches_existing_card_for_blocked_approval(monkeypatch) -> None:
     adapter = FeishuAdapter()
     adapter._client = object()
@@ -876,6 +934,107 @@ def test_feishu_adapter_approval_action_patches_error_when_resolution_fails(monk
     adapter._handle_approval_action("approval-1", "approve_once", "om_card_1")
 
     assert patched_cards[-1]["header"]["title"]["content"] == "处理失败"
+
+
+def test_feishu_adapter_refresh_keeps_terminal_mapping_when_delivery_fails(monkeypatch, tmp_path) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="oc_chat:user_1",
+        goal="快速完成",
+        source_channel="feishu",
+        kind="respond",
+        ingress_metadata={"dispatch_mode": "async"},
+    )
+    controller.finalize_result(
+        ctx,
+        status="succeeded",
+        result_preview="快速完成。",
+        result_text="快速完成。",
+    )
+    store.update_conversation_metadata(
+        "oc_chat:user_1",
+        {
+            "feishu_task_topics": {
+                ctx.task_id: {
+                    "chat_id": "oc_chat",
+                    "reply_to_message_id": "om_origin",
+                    "completion_reply_sent": False,
+                    "card_mode": "topic",
+                }
+            }
+        },
+    )
+
+    adapter = FeishuAdapter()
+    adapter._client = object()
+    adapter._runner = SimpleNamespace(task_controller=SimpleNamespace(store=store))
+    monkeypatch.setattr(adapter, "_schedule_topic_refresh", lambda: None)
+    monkeypatch.setattr(adapter, "_deliver_terminal_result_without_card", lambda *_args, **_kwargs: False)
+
+    adapter._refresh_task_topics()
+
+    conversation = store.get_conversation("oc_chat:user_1")
+    assert conversation is not None
+    assert dict(conversation.metadata or {}).get("feishu_task_topics", {}) == {
+        ctx.task_id: {
+            "chat_id": "oc_chat",
+            "reply_to_message_id": "om_origin",
+            "completion_reply_sent": False,
+            "card_mode": "topic",
+        }
+    }
+
+
+def test_feishu_adapter_handle_post_run_result_delivers_async_terminal_reply(monkeypatch, tmp_path) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="oc_chat:user_1",
+        goal="异步任务",
+        source_channel="feishu",
+        kind="respond",
+        ingress_metadata={"dispatch_mode": "async"},
+    )
+    controller.finalize_result(
+        ctx,
+        status="succeeded",
+        result_preview="异步完成。",
+        result_text="异步完成。",
+    )
+    store.update_conversation_metadata(
+        "oc_chat:user_1",
+        {
+            "feishu_task_topics": {
+                ctx.task_id: {
+                    "chat_id": "oc_chat",
+                    "reply_to_message_id": "om_origin",
+                    "completion_reply_sent": False,
+                }
+            }
+        },
+    )
+
+    replies: list[tuple[str, str]] = []
+    adapter = FeishuAdapter()
+    adapter._client = object()
+    adapter._runner = SimpleNamespace(task_controller=SimpleNamespace(store=store))
+
+    monkeypatch.setattr(
+        "hermit.builtin.feishu.adapter.smart_reply",
+        lambda _client, message_id, text, **kwargs: replies.append((message_id, text)) or True,
+    )
+
+    assert adapter._handle_post_run_result(
+        SimpleNamespace(task_id=ctx.task_id),
+        session_id="oc_chat:user_1",
+        runner=adapter._runner,
+    ) is True
+    assert replies == [("om_origin", "异步完成。")]
+
+    conversation = store.get_conversation("oc_chat:user_1")
+    mapping = dict(dict(conversation.metadata or {})["feishu_task_topics"][ctx.task_id])
+    assert mapping["completion_reply_sent"] is True
 
 
 def test_feishu_adapter_card_action_response_normalizes_level_and_embeds_card() -> None:
