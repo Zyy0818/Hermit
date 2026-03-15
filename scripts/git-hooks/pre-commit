@@ -35,7 +35,7 @@ if [[ ${#staged_python_files[@]} -gt 0 ]]; then
   echo "pre-commit: auto-fixing staged Python files with ruff"
   uv run ruff check --fix --force-exclude "${staged_python_files[@]}"
   uv run ruff format --force-exclude "${staged_python_files[@]}"
-  git add -- "${staged_python_files[@]}"
+  git add -u -- "${staged_python_files[@]}"
 fi
 
 first_run_failed=0
@@ -43,7 +43,7 @@ if ! uv run pre-commit run --hook-stage pre-commit; then
   first_run_failed=1
 fi
 
-git add -- "${staged_files[@]}"
+git add -u -- "${staged_files[@]}"
 
 if [[ $first_run_failed -ne 0 ]]; then
   echo "pre-commit: re-running checks after auto-fix and restage"

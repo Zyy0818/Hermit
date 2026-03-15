@@ -15,17 +15,12 @@ def infer_action_class(tool: ToolSpec) -> str:
         return tool.action_class
     if tool.readonly:
         return "read_local"
-    lowered = tool.name.lower()
-    if lowered in {"bash", "codex_exec"} or "command" in lowered or "exec" in lowered:
-        return "execute_command"
-    if lowered.startswith(("feishu_", "github_", "webhook_")):
-        return "credentialed_api_call"
-    if any(token in lowered for token in ("write", "delete", "create", "update", "send", "patch")):
-        return "write_local"
-    return "write_local"
+    return "unknown"
 
 
-def normalize_scope_hints(scope_hint: str | list[str] | None, *, workspace_root: str = "") -> list[str]:
+def normalize_scope_hints(
+    scope_hint: str | list[str] | None, *, workspace_root: str = ""
+) -> list[str]:
     hints = scope_hint if isinstance(scope_hint, list) else ([scope_hint] if scope_hint else [])
     scopes: list[str] = []
     workspace = Path(workspace_root).resolve() if workspace_root else None
@@ -81,10 +76,14 @@ def build_action_request(
         tool_name=tool.name,
         tool_input=tool_input,
         action_class=action_class,
-        resource_scopes=normalize_scope_hints(tool.resource_scope_hint, workspace_root=workspace_root),
+        resource_scopes=normalize_scope_hints(
+            tool.resource_scope_hint, workspace_root=workspace_root
+        ),
         risk_hint=tool.risk_hint or contract.default_risk_band,
         idempotent=bool(tool.idempotent),
-        requires_receipt=bool(tool.requires_receipt) if tool.requires_receipt is not None else not tool.readonly,
+        requires_receipt=bool(tool.requires_receipt)
+        if tool.requires_receipt is not None
+        else contract.receipt_required,
         supports_preview=bool(tool.supports_preview),
         context={
             "cwd": workspace_root,

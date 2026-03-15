@@ -1,0 +1,20 @@
+{
+  "Home": "docs/wiki-home.md",
+  "Getting-Started": "docs/getting-started.md",
+  "Why-Hermit": "docs/why-hermit.md",
+  "Architecture": "docs/architecture.md",
+  "Governance": "docs/governance.md",
+  "Context-Model": "docs/context-model.md",
+  "Memory-Model": "docs/memory-model.md",
+  "Receipts-and-Proofs": "docs/receipts-and-proofs.md",
+  "Roadmap": "docs/roadmap.md",
+  "Use-Cases": "docs/use-cases.md",
+  "Task-Lifecycle": "docs/task-lifecycle.md",
+  "Operator-Guide": "docs/operator-guide.md",
+  "Status-and-Compatibility": "docs/status-and-compatibility.md",
+  "FAQ": "docs/faq.md",
+  "CLI-and-Operations": "docs/cli-and-operations.md",
+  "Configuration": "docs/configuration.md",
+  "Providers-and-Profiles": "docs/providers-and-profiles.md",
+  "OpenClaw-Comparison": "docs/openclaw-comparison.md"
+}

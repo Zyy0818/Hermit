@@ -1,176 +1,141 @@
 # Hermit Configuration
 
-This document explains the current configuration sources, precedence rules, key variables, and state directories in the implementation as it exists today.
+This document explains how Hermit is configured today: where settings come from, how profiles work, and where local-first state is stored.
 
-Related documents:
-
-- [`architecture.md`](./architecture.md)
-- [`providers-and-profiles.md`](./providers-and-profiles.md)
-- [`cli-and-operations.md`](./cli-and-operations.md)
+This is a current-implementation document.
 
 ## Configuration Sources
 
-Hermit currently has four configuration sources:
+Hermit currently reads configuration from four places:
 
 1. code defaults
-2. profiles in `~/.hermit/config.toml`
+2. `~/.hermit/config.toml` profiles
 3. `.env` in the current working directory
-4. `~/.hermit/.env` and shell environment variables
+4. `~/.hermit/.env` plus shell environment variables
 
-Two implementation details matter here:
+Two practical details matter:
 
-- `hermit/main.py` manually loads `~/.hermit/.env` first and writes it into `os.environ`
-- an existing variable in the shell is not overwritten by `~/.hermit/.env`
+- `~/.hermit/.env` is loaded into the process early
+- values already present in the shell are not overwritten by that file
 
-So, in practice, the approximate runtime precedence is:
+Approximate effective precedence:
 
-`defaults < config.toml profile < current-directory .env < ~/.hermit/.env < shell environment variables`
-
-If you want a single named configuration, prefer `config.toml` profiles. If you only need a temporary local override, use shell environment variables.
+`defaults < profile values < cwd .env < ~/.hermit/.env < shell environment`
 
 ## Key Paths
 
-By default `HERMIT_BASE_DIR=~/.hermit`, and related paths are derived from it:
+By default, `HERMIT_BASE_DIR=~/.hermit`.
 
-| Path | Description |
+Common paths:
+
+| Path | Purpose |
 | --- | --- |
-| `~/.hermit/.env` | long-lived local environment variables |
-| `~/.hermit/config.toml` | provider profiles and plugin variables |
-| `~/.hermit/context.md` | default context file |
-| `~/.hermit/memory/memories.md` | main long-term memory file |
-| `~/.hermit/memory/session_state.json` | memory runtime state |
-| `~/.hermit/sessions/` | active sessions |
-| `~/.hermit/sessions/archive/` | archived sessions |
-| `~/.hermit/schedules/jobs.json` | scheduled job definitions |
-| `~/.hermit/schedules/history.json` | scheduled job history |
-| `~/.hermit/plugins/` | installed external plugins |
+| `~/.hermit/.env` | long-lived local environment |
+| `~/.hermit/config.toml` | profiles and plugin variables |
+| `~/.hermit/kernel/state.db` | kernel ledger database |
+| `~/.hermit/memory/` | memory mirror and state |
+| `~/.hermit/sessions/` | session files |
+| `~/.hermit/schedules/` | scheduler state |
+| `~/.hermit/plugins/` | installed plugins |
 | `~/.hermit/skills/` | custom skills |
-| `~/.hermit/rules/` | rule text |
-| `~/.hermit/hooks/` | reserved hooks directory |
+| `~/.hermit/rules/` | local rules |
+
+This split matters because Hermit is not only prompt-and-transcript state. It also persists kernel records locally.
 
 ## Multi-Environment Isolation
 
-If the same machine is used for development, testing, and real user service, do not share a single `HERMIT_BASE_DIR`.
+Do not share one base directory across live, dev, and test environments.
 
-Recommended layout:
+Suggested layout:
 
-| Environment | `HERMIT_BASE_DIR` |
+| Environment | Base dir |
 | --- | --- |
-| live user service | `~/.hermit` |
-| development | `~/.hermit-dev` |
-| testing | `~/.hermit-test` |
+| live | `~/.hermit` |
+| dev | `~/.hermit-dev` |
+| test | `~/.hermit-test` |
 
-At minimum, isolate these:
-
-- `.env`
-- `config.toml`
-- `memory/`
-- `sessions/`
-- `logs/`
-- `schedules/`
-- `plugins/`
-- `serve-*.pid`
-
-Otherwise, common cross-environment interference includes:
-
-- a personality / context change in dev affecting live user replies
-- a plugin disabled in test also becoming disabled in prod
-- logs, pid files, schedules, and sessions all mixed together
-
-Prefer using the repository scripts directly:
+Prefer the environment helpers:
 
 ```bash
+scripts/hermit-env.sh dev chat
 scripts/hermit-env.sh dev serve --adapter feishu
-scripts/hermit-env.sh test chat
 scripts/hermit-env.sh prod config show
 ```
 
-If you use `autostart`, non-default base directories also get their own label automatically:
+This avoids mixing:
 
-- `com.hermit.serve.feishu`
-- `com.hermit.serve.hermit-dev.feishu`
-- `com.hermit.serve.hermit-test.feishu`
+- credentials
+- sessions
+- schedules
+- logs
+- kernel state
 
-## Core Configuration Fields
+## Core Runtime Fields
 
-### General Runtime
+Important current fields include:
 
-| Config | Default | Description |
+| Config | Default | Purpose |
 | --- | --- | --- |
-| `HERMIT_BASE_DIR` | `~/.hermit` | state directory root |
-| `HERMIT_MODEL` | `claude-3-7-sonnet-latest` | default model name |
+| `HERMIT_BASE_DIR` | `~/.hermit` | state root |
+| `HERMIT_MODEL` | provider-dependent default | active model |
 | `HERMIT_MAX_TOKENS` | `2048` | max output per request |
-| `HERMIT_MAX_TURNS` | `100` | max turns in a single tool loop |
-| `HERMIT_TOOL_OUTPUT_LIMIT` | `4000` | tool result truncation limit in characters |
-| `HERMIT_THINKING_BUDGET` | `0` | thinking budget, where `0` means disabled |
-| `HERMIT_IMAGE_MODEL` | empty | image analysis model; if empty, higher-level fallback is used |
-| `HERMIT_IMAGE_CONTEXT_LIMIT` | `3` | max number of image context items injected |
-| `HERMIT_PREVENT_SLEEP` | `true` | call `caffeinate -i` on macOS |
-| `HERMIT_LOG_LEVEL` | `INFO` | log level |
+| `HERMIT_MAX_TURNS` | `100` | max tool-loop turns |
+| `HERMIT_TOOL_OUTPUT_LIMIT` | `4000` | tool output truncation |
+| `HERMIT_LOG_LEVEL` | `INFO` | runtime log level |
 | `HERMIT_SANDBOX_MODE` | `l0` | command sandbox mode |
-| `HERMIT_COMMAND_TIMEOUT_SECONDS` | `30` | timeout for the `bash` tool |
+| `HERMIT_COMMAND_TIMEOUT_SECONDS` | `30` | bash timeout |
 | `HERMIT_SESSION_IDLE_TIMEOUT_SECONDS` | `1800` | session idle timeout |
-| `HERMIT_LOCALE` | inferred from system environment | localization language for CLI / companion |
 
-### Claude Provider
+## Provider Fields
 
-| Config | Description |
-| --- | --- |
-| `HERMIT_PROVIDER=claude` | default provider |
-| `ANTHROPIC_API_KEY` / `HERMIT_CLAUDE_API_KEY` | direct Anthropic API access |
-| `HERMIT_CLAUDE_AUTH_TOKEN` / `HERMIT_AUTH_TOKEN` | bearer token for a Claude-compatible gateway |
-| `HERMIT_CLAUDE_BASE_URL` / `HERMIT_BASE_URL` | Claude-compatible gateway URL |
-| `HERMIT_CLAUDE_HEADERS` / `HERMIT_CUSTOM_HEADERS` | extra request headers in `Key: Value, Key2: Value2` format |
+Hermit currently supports:
 
-### Codex / OpenAI Provider
+- `claude`
+- `codex`
+- `codex-oauth`
 
-| Config | Description |
-| --- | --- |
-| `HERMIT_PROVIDER=codex` | OpenAI Responses API mode |
-| `HERMIT_OPENAI_API_KEY` / `OPENAI_API_KEY` | OpenAI API key |
-| `HERMIT_OPENAI_BASE_URL` | OpenAI-compatible base URL |
-| `HERMIT_OPENAI_HEADERS` | extra request headers |
-| `HERMIT_PROVIDER=codex-oauth` | OAuth mode based on `~/.codex/auth.json` |
-| `HERMIT_CODEX_COMMAND` | defaults to `codex`; kept for related workflows |
+Typical examples:
 
-### Feishu / Scheduler / Webhook
-
-| Config | Default | Description |
-| --- | --- | --- |
-| `HERMIT_FEISHU_APP_ID` / `FEISHU_APP_ID` | empty | Feishu App ID |
-| `HERMIT_FEISHU_APP_SECRET` / `FEISHU_APP_SECRET` | empty | Feishu App Secret |
-| `HERMIT_FEISHU_THREAD_PROGRESS` | `true` | enable thread progress cards |
-| `HERMIT_SCHEDULER_ENABLED` | `true` | scheduler master switch |
-| `HERMIT_SCHEDULER_CATCH_UP` | `true` | run missed jobs when the service starts |
-| `HERMIT_SCHEDULER_FEISHU_CHAT_ID` | empty | default scheduler / reload notification target |
-| `HERMIT_WEBHOOK_ENABLED` | `true` | enable webhook server in serve mode |
-| `HERMIT_WEBHOOK_HOST` | `0.0.0.0` | webhook bind address |
-| `HERMIT_WEBHOOK_PORT` | `8321` | webhook bind port |
-
-## `.env.example`
-
-The repository root [`.env.example`](../.env.example) currently covers only the most common Claude / Feishu setup.
-
-If you use `codex` or `codex-oauth`, add:
+```bash
+HERMIT_PROVIDER=claude
+ANTHROPIC_API_KEY=...
+```
 
 ```bash
 HERMIT_PROVIDER=codex
-HERMIT_OPENAI_API_KEY=sk-...
+OPENAI_API_KEY=...
 HERMIT_MODEL=gpt-5.4
 ```
 
-Or define a profile in `config.toml`.
-
-If you want the builtin GitHub MCP plugin, the common environment variables are:
-
 ```bash
-GITHUB_PERSONAL_ACCESS_TOKEN=ghp_...
-GITHUB_MCP_URL=https://api.githubcopilot.com/mcp/
+HERMIT_PROVIDER=codex-oauth
+HERMIT_MODEL=gpt-5.4
 ```
+
+Provider-specific details are documented in [providers-and-profiles.md](./providers-and-profiles.md).
+
+## Feishu, Scheduler, And Webhook
+
+Important service-related fields include:
+
+| Config | Purpose |
+| --- | --- |
+| `HERMIT_FEISHU_APP_ID` | Feishu adapter ID |
+| `HERMIT_FEISHU_APP_SECRET` | Feishu adapter secret |
+| `HERMIT_FEISHU_THREAD_PROGRESS` | thread progress behavior |
+| `HERMIT_SCHEDULER_ENABLED` | scheduler master switch |
+| `HERMIT_SCHEDULER_CATCH_UP` | catch-up behavior on startup |
+| `HERMIT_WEBHOOK_ENABLED` | webhook server master switch |
+| `HERMIT_WEBHOOK_HOST` | webhook bind host |
+| `HERMIT_WEBHOOK_PORT` | webhook bind port |
 
 ## `config.toml` Profiles
 
-Hermit supports defining profiles in `~/.hermit/config.toml`.
+Profiles live in:
+
+```text
+~/.hermit/config.toml
+```
 
 Example:
 
@@ -189,16 +154,21 @@ claude_base_url = "https://example.internal/claude"
 claude_headers = "X-Biz-Id: workbench"
 ```
 
-Fields that a profile can override are listed in `PROFILE_FIELDS` inside [`hermit/provider/profiles.py`](../hermit/provider/profiles.py), including:
+At runtime, the active profile is selected from:
 
-- provider / model
-- token and base URL
-- sandbox / timeout
-- Feishu / scheduler / webhook related fields
+1. `HERMIT_PROFILE` if set
+2. otherwise `default_profile`
+
+Useful inspection commands:
+
+```bash
+hermit profiles list
+hermit profiles resolve --name codex-local
+```
 
 ## Plugin Variables
 
-Besides profiles, `config.toml` also supports plugin variables:
+`config.toml` also carries plugin variables:
 
 ```toml
 [plugins.github.variables]
@@ -206,52 +176,21 @@ github_pat = "ghp_xxx"
 github_mcp_url = "https://api.githubcopilot.com/mcp/"
 ```
 
-These variables are injected when a plugin loads and can be referenced by templates in `plugin.toml`.
-
-Common uses:
-
-- GitHub MCP tokens
-- custom MCP URLs
-- plugin-specific private configuration
+These are used during plugin loading and template rendering.
 
 ## Useful Inspection Commands
 
-Show the fully resolved config:
-
 ```bash
 hermit config show
-```
-
-Show profiles:
-
-```bash
 hermit profiles list
 hermit profiles resolve --name codex-local
-```
-
-Show the auth source currently used by the active provider:
-
-```bash
 hermit auth status
 ```
 
-## Context Injected into the System Prompt at Startup
+If Hermit behaves unexpectedly, these are usually the best first commands to run.
 
-[`hermit/context.py`](../hermit/context.py) writes these values into the base system prompt:
+## Related Docs
 
-- current working directory
-- `hermit_base_dir`
-- `memory_file`
-- `session_state_file`
-- `context_file`
-- `skills_dir`
-- `rules_dir`
-- `hooks_dir`
-- `plugins_dir`
-- `image_memory_dir`
-- `default_model`
-- `max_tokens`
-- `max_turns`
-- `sandbox_mode`
-
-After that, `PluginManager.build_system_prompt()` appends:
+- [providers-and-profiles.md](./providers-and-profiles.md)
+- [cli-and-operations.md](./cli-and-operations.md)
+- [status-and-compatibility.md](./status-and-compatibility.md)

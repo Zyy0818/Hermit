@@ -109,20 +109,26 @@ def _format_model_content(value: Any, limit: int) -> Any:
         return _truncate_middle(serialized, limit)
     if isinstance(serialized, dict) and serialized.get("type") in _BLOCK_TYPES:
         return [serialized]
-    if isinstance(serialized, list) and all(isinstance(item, dict) and item.get("type") in _BLOCK_TYPES for item in serialized):
+    if isinstance(serialized, list) and all(
+        isinstance(item, dict) and item.get("type") in _BLOCK_TYPES for item in serialized
+    ):
         return serialized
     text = json.dumps(serialized, ensure_ascii=True, indent=2, sort_keys=True)
     return _truncate_middle(text, limit)
 
 
-def _progress_signature(value: dict[str, Any] | None) -> tuple[str, str, str | None, int | None, bool] | None:
+def _progress_signature(
+    value: dict[str, Any] | None,
+) -> tuple[str, str, str | None, int | None, bool] | None:
     progress = normalize_observation_progress(value)
     if progress is None:
         return None
     return progress.signature()
 
 
-def _progress_summary_signature(value: dict[str, Any] | None) -> tuple[str, str | None, str | None, int | None] | None:
+def _progress_summary_signature(
+    value: dict[str, Any] | None,
+) -> tuple[str, str | None, str | None, int | None] | None:
     summary = normalize_progress_summary(value)
     if summary is None:
         return None
@@ -223,7 +229,9 @@ class ToolExecutor:
         self.permit_service = permit_service or ExecutionPermitService(store)
         self.reconcile_service = reconcile_service or ReconcileService()
         self.progress_summarizer = progress_summarizer
-        self.progress_summary_keepalive_seconds = max(float(progress_summary_keepalive_seconds or 0.0), 0.0)
+        self.progress_summary_keepalive_seconds = max(
+            float(progress_summary_keepalive_seconds or 0.0), 0.0
+        )
         self.tool_output_limit = tool_output_limit
 
     def _set_attempt_phase(
@@ -266,7 +274,9 @@ class ToolExecutor:
         request_overrides: dict[str, Any] | None = None,
     ) -> ToolExecutionResult:
         tool = self.registry.get(tool_name)
-        action_request = self.policy_engine.build_action_request(tool, tool_input, attempt_ctx=attempt_ctx)
+        action_request = self.policy_engine.build_action_request(
+            tool, tool_input, attempt_ctx=attempt_ctx
+        )
         if request_overrides:
             action_request = self._apply_request_overrides(action_request, request_overrides)
         matched_grant = self._matching_path_grant(action_request)
@@ -365,7 +375,9 @@ class ToolExecutor:
                 decision_type="policy_gate",
                 verdict="require_approval",
                 reason=policy.reason or "Approval required before execution.",
-                evidence_refs=[ref for ref in [action_ref, policy_ref, preview_artifact, witness_ref] if ref],
+                evidence_refs=[
+                    ref for ref in [action_ref, policy_ref, preview_artifact, witness_ref] if ref
+                ],
                 policy_ref=policy_ref,
                 action_type=action_type,
             )
@@ -377,7 +389,9 @@ class ToolExecutor:
                 policy_ref=policy_ref,
                 state_witness_ref=witness_ref,
             )
-            requested_action["display_copy"] = self.approval_copy.build_canonical_copy(requested_action)
+            requested_action["display_copy"] = self.approval_copy.build_canonical_copy(
+                requested_action
+            )
             approval_id = self.approval_service.request(
                 task_id=attempt_ctx.task_id,
                 step_id=attempt_ctx.step_id,
@@ -441,15 +455,21 @@ class ToolExecutor:
                     policy_ref=policy_ref,
                 )
         if governed:
-            self._set_attempt_phase(attempt_ctx, "authorized_pre_exec", reason="execution_authorized")
+            self._set_attempt_phase(
+                attempt_ctx, "authorized_pre_exec", reason="execution_authorized"
+            )
             decision_id = self.decision_service.record(
                 task_id=attempt_ctx.task_id,
                 step_id=attempt_ctx.step_id,
                 step_attempt_id=attempt_ctx.step_attempt_id,
                 decision_type="execution_authorization",
                 verdict="allow",
-                reason=self._authorization_reason(policy=policy, approval_mode=approval_mode, grant_id=grant_id),
-                evidence_refs=[ref for ref in [action_ref, policy_ref, preview_artifact, witness_ref] if ref],
+                reason=self._authorization_reason(
+                    policy=policy, approval_mode=approval_mode, grant_id=grant_id
+                ),
+                evidence_refs=[
+                    ref for ref in [action_ref, policy_ref, preview_artifact, witness_ref] if ref
+                ],
                 policy_ref=policy_ref,
                 approval_ref=matched_approval.approval_id if matched_approval is not None else None,
                 action_type=action_type,
@@ -495,7 +515,9 @@ class ToolExecutor:
                     decision_id=decision_id,
                     permit_id=permit_id,
                     grant_ref=grant_id,
-                    approval_ref=matched_approval.approval_id if matched_approval is not None else None,
+                    approval_ref=matched_approval.approval_id
+                    if matched_approval is not None
+                    else None,
                     witness_ref=witness_ref,
                     error=exc,
                     idempotency_key=action_request.idempotency_key,
@@ -528,7 +550,9 @@ class ToolExecutor:
                     decision_id=decision_id,
                     permit_id=permit_id,
                     grant_ref=grant_id,
-                    approval_ref=matched_approval.approval_id if matched_approval is not None else None,
+                    approval_ref=matched_approval.approval_id
+                    if matched_approval is not None
+                    else None,
                     witness_ref=witness_ref,
                     exc=exc,
                     idempotency_key=action_request.idempotency_key,
@@ -825,7 +849,9 @@ class ToolExecutor:
             return 0
         return int(attempt.context.get("note_cursor_event_seq", 0) or 0)
 
-    def consume_appended_notes(self, attempt_ctx: TaskExecutionContext) -> tuple[list[dict[str, Any]], int]:
+    def consume_appended_notes(
+        self, attempt_ctx: TaskExecutionContext
+    ) -> tuple[list[dict[str, Any]], int]:
         cursor = self.current_note_cursor(attempt_ctx.step_attempt_id)
         events = self.store.list_events(
             task_id=attempt_ctx.task_id,
@@ -845,10 +871,7 @@ class ToolExecutor:
             messages.append(
                 {
                     "role": "user",
-                    "content": (
-                        "[Task Note Appended]\n"
-                        f"{prompt}"
-                    ),
+                    "content": (f"[Task Note Appended]\n{prompt}"),
                 }
             )
         attempt = self.store.get_step_attempt(attempt_ctx.step_attempt_id)
@@ -857,7 +880,9 @@ class ToolExecutor:
         self.store.update_step_attempt(attempt_ctx.step_attempt_id, context=context)
         return messages, latest
 
-    def _store_pending_execution(self, attempt_ctx: TaskExecutionContext, payload: dict[str, Any]) -> None:
+    def _store_pending_execution(
+        self, attempt_ctx: TaskExecutionContext, payload: dict[str, Any]
+    ) -> None:
         attempt = self.store.get_step_attempt(attempt_ctx.step_attempt_id)
         context = dict(attempt.context) if attempt is not None else {}
         context[_PENDING_EXECUTION_KEY] = payload
@@ -1051,7 +1076,11 @@ class ToolExecutor:
         approval_mode = str(pending.get("approval_mode", "") or "")
         rollback_plan = dict(pending.get("rollback_plan", {}) or {})
 
-        result_code = terminal_status if terminal_status in {"failed", "timeout", "cancelled"} else "succeeded"
+        result_code = (
+            terminal_status
+            if terminal_status in {"failed", "timeout", "cancelled"}
+            else "succeeded"
+        )
         model_content = (
             model_content_override
             if model_content_override is not None
@@ -1076,7 +1105,9 @@ class ToolExecutor:
                 witness_ref=witness_ref,
                 result_code=result_code,
                 idempotency_key=str(pending.get("idempotency_key", "") or "") or None,
-                result_summary=summary if result_code != "succeeded" else self._successful_result_summary(
+                result_summary=summary
+                if result_code != "succeeded"
+                else self._successful_result_summary(
                     tool_name=tool_name,
                     approval_mode=approval_mode,
                     grant_id=grant_ref,
@@ -1222,7 +1253,9 @@ class ToolExecutor:
             },
         )
 
-    def poll_observation(self, step_attempt_id: str, *, now: float | None = None) -> ObservationPollResult | None:
+    def poll_observation(
+        self, step_attempt_id: str, *, now: float | None = None
+    ) -> ObservationPollResult | None:
         payload = self.load_suspended_state(step_attempt_id)
         if str(payload.get("suspend_kind", "")) != "observing":
             return None
@@ -1237,7 +1270,9 @@ class ToolExecutor:
         status_payload = self._poll_ticket(ticket)
         status = str(status_payload.get("status", "observing") or "observing")
         progress = normalize_observation_progress(status_payload.get("progress"))
-        summary = str(status_payload.get("topic_summary", ticket.topic_summary) or ticket.topic_summary)
+        summary = str(
+            status_payload.get("topic_summary", ticket.topic_summary) or ticket.topic_summary
+        )
         if progress is not None and progress.summary:
             summary = progress.summary
         task_attempt = self.store.get_step_attempt(step_attempt_id)
@@ -1297,7 +1332,12 @@ class ToolExecutor:
             now=current,
         )
 
-        if status == "observing" and ticket.ready_return and progress is not None and progress.ready:
+        if (
+            status == "observing"
+            and ticket.ready_return
+            and progress is not None
+            and progress.ready
+        ):
             attempt_ctx = self._attempt_context_from_snapshot(step_attempt_id)
             ready_result = status_payload.get("result")
             if ready_result is None:
@@ -1324,7 +1364,8 @@ class ToolExecutor:
 
         if status == "observing":
             ticket.poll_after_seconds = float(
-                status_payload.get("poll_after_seconds", ticket.poll_after_seconds) or ticket.poll_after_seconds
+                status_payload.get("poll_after_seconds", ticket.poll_after_seconds)
+                or ticket.poll_after_seconds
             )
             ticket.schedule_next_poll(now=current)
             payload["observation"] = ticket.to_dict()
@@ -1372,7 +1413,9 @@ class ToolExecutor:
         context = dict(attempt.context) if attempt is not None else {}
         context[_RUNTIME_SNAPSHOT_KEY] = envelope
         if "note_cursor_event_seq" in snapshot_payload:
-            context["note_cursor_event_seq"] = int(snapshot_payload.get("note_cursor_event_seq", 0) or 0)
+            context["note_cursor_event_seq"] = int(
+                snapshot_payload.get("note_cursor_event_seq", 0) or 0
+            )
         self.store.update_step_attempt(step_attempt_id, context=context)
 
     def _apply_request_overrides(
@@ -1542,7 +1585,11 @@ class ToolExecutor:
                 "kernel.executor.preview.write",
                 default=f"# Write Preview\n\nPath: `{path}`\n\n```diff\n{diff or '(new file or no textual diff)'}\n```",
                 path=path,
-                diff=diff or _t("kernel.executor.preview.write.empty_diff", default="(new file or no textual diff)"),
+                diff=diff
+                or _t(
+                    "kernel.executor.preview.write.empty_diff",
+                    default="(new file or no textual diff)",
+                ),
             )
         if tool.name == "bash":
             command = str(tool_input.get("command", ""))
@@ -1567,7 +1614,10 @@ class ToolExecutor:
             event_type="witness.captured",
             entity_type="step_attempt",
             entity_id=attempt_ctx.step_attempt_id,
-            payload_summary={"tool_name": action_request.tool_name, "action_class": action_request.action_class},
+            payload_summary={
+                "tool_name": action_request.tool_name,
+                "action_class": action_request.action_class,
+            },
         )
         return witness_ref
 
@@ -1690,7 +1740,9 @@ class ToolExecutor:
         fingerprint = build_action_fingerprint(fingerprint_payload)
         packet.setdefault("fingerprint", fingerprint)
         if preview_artifact is not None:
-            packet["artifact_ids"] = list(dict.fromkeys(list(packet.get("artifact_ids", [])) + [preview_artifact]))
+            packet["artifact_ids"] = list(
+                dict.fromkeys(list(packet.get("artifact_ids", [])) + [preview_artifact])
+            )
         return {
             "tool_name": action_request.tool_name,
             "tool_input": action_request.tool_input,
@@ -1971,7 +2023,17 @@ class ToolExecutor:
             step_id=current.step_id,
             attempt=current.attempt + 1,
             status="running",
-            context={**dict(current.context), "phase": "policy_pending", "reentered_via": "witness_drift"},
+            context={
+                **dict(current.context),
+                "phase": "policy_pending",
+                "reentered_via": "witness_drift",
+                "recompile_required": True,
+                "reentry_required": True,
+                "reentry_boundary": "policy_recompile",
+                "reentry_reason": "witness_drift",
+                "reentry_requested_at": now,
+                "supersedes_step_attempt_id": current.step_attempt_id,
+            },
             queue_priority=current.queue_priority,
         )
         self.store.update_step_attempt(
@@ -1991,7 +2053,9 @@ class ToolExecutor:
                 "reason": "witness_drift_reenter_policy",
             },
         )
-        successor_ctx = replace(attempt_ctx, step_attempt_id=successor.step_attempt_id, created_at=time.time())
+        successor_ctx = replace(
+            attempt_ctx, step_attempt_id=successor.step_attempt_id, created_at=time.time()
+        )
         return self.execute(successor_ctx, tool_name, tool_input)
 
     def _handle_uncertain_outcome(
@@ -2020,11 +2084,11 @@ class ToolExecutor:
             observables=dict(action_request.derived),
             witness=self._load_witness_payload(witness_ref),
         )
-        result_code = outcome.result_code if outcome.result_code != "still_unknown" else "unknown_outcome"
-        task_status = "needs_attention" if result_code == "unknown_outcome" else "reconciling"
-        summary = (
-            f"{outcome.summary} Original error: {type(exc).__name__}: {exc}"
+        result_code = (
+            outcome.result_code if outcome.result_code != "still_unknown" else "unknown_outcome"
         )
+        task_status = "needs_attention" if result_code == "unknown_outcome" else "reconciling"
+        summary = f"{outcome.summary} Original error: {type(exc).__name__}: {exc}"
         self.store.append_event(
             event_type="outcome.uncertain",
             entity_type="step_attempt",
@@ -2201,7 +2265,9 @@ class ToolExecutor:
         rollback_strategy: str | None = None,
         rollback_artifact_refs: list[str] | None = None,
     ) -> str:
-        input_uri, input_hash = self.artifact_store.store_json({"tool": tool_name, "input": tool_input})
+        input_uri, input_hash = self.artifact_store.store_json(
+            {"tool": tool_name, "input": tool_input}
+        )
         input_artifact = self.store.create_artifact(
             task_id=attempt_ctx.task_id,
             step_id=attempt_ctx.step_id,

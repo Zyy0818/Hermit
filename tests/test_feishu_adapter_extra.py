@@ -36,7 +36,9 @@ def test_feishu_adapter_task_helpers_read_terminal_result_and_notes() -> None:
     assert adapter._task_terminal_result_text("task-1") == "最终结果"
 
 
-def test_feishu_adapter_build_pending_approval_card_uses_copy_and_detail_suffix(monkeypatch) -> None:
+def test_feishu_adapter_build_pending_approval_card_uses_copy_and_detail_suffix(
+    monkeypatch,
+) -> None:
     captured: dict[str, Any] = {}
 
     adapter = FeishuAdapter(settings=SimpleNamespace(locale="zh-CN"))
@@ -59,15 +61,17 @@ def test_feishu_adapter_build_pending_approval_card_uses_copy_and_detail_suffix(
 
     monkeypatch.setattr(
         "hermit.builtin.feishu.adapter.build_approval_card",
-        lambda text, approval_id, steps, **kwargs: captured.update(
-            {
-                "text": text,
-                "approval_id": approval_id,
-                "steps": steps,
-                **kwargs,
-            }
-        )
-        or {"ok": True},
+        lambda text, approval_id, steps, **kwargs: (
+            captured.update(
+                {
+                    "text": text,
+                    "approval_id": approval_id,
+                    "steps": steps,
+                    **kwargs,
+                }
+            )
+            or {"ok": True}
+        ),
     )
 
     card, resolved = adapter._build_pending_approval_card(
@@ -132,7 +136,9 @@ def test_feishu_adapter_maybe_send_completion_result_message_uses_terminal_fallb
 
     monkeypatch.setattr(
         "hermit.builtin.feishu.adapter.smart_send_message",
-        lambda _client, chat_id, text, **kwargs: sent_messages.append((chat_id, text)) or "om_result",
+        lambda _client, chat_id, text, **kwargs: (
+            sent_messages.append((chat_id, text)) or "om_result"
+        ),
     )
 
     assert adapter._maybe_send_completion_result_message(ctx.task_id) is True
@@ -249,26 +255,33 @@ def test_feishu_adapter_deliver_terminal_result_without_card_requires_successful
         lambda *_args, **_kwargs: "",
     )
 
-    assert adapter._deliver_terminal_result_without_card(
-        ctx.task_id,
-        mapping={
-            "chat_id": "oc_chat",
-            "reply_to_message_id": "om_origin",
-            "completion_reply_sent": False,
-        },
-    ) is False
+    assert (
+        adapter._deliver_terminal_result_without_card(
+            ctx.task_id,
+            mapping={
+                "chat_id": "oc_chat",
+                "reply_to_message_id": "om_origin",
+                "completion_reply_sent": False,
+            },
+        )
+        is False
+    )
 
     conversation = store.get_conversation("oc_chat:user_1")
     mapping = dict(dict(conversation.metadata or {})["feishu_task_topics"][ctx.task_id])
     assert mapping["completion_reply_sent"] is False
 
 
-def test_feishu_adapter_present_task_result_patches_existing_card_for_blocked_approval(monkeypatch) -> None:
+def test_feishu_adapter_present_task_result_patches_existing_card_for_blocked_approval(
+    monkeypatch,
+) -> None:
     adapter = FeishuAdapter()
     adapter._client = object()
 
     patched: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(adapter, "_build_pending_approval_card", lambda *args, **kwargs: ({"approval": True}, None))
+    monkeypatch.setattr(
+        adapter, "_build_pending_approval_card", lambda *args, **kwargs: ({"approval": True}, None)
+    )
     monkeypatch.setattr(
         "hermit.builtin.feishu.adapter.patch_card",
         lambda _client, message_id, card: patched.append((message_id, card)),
@@ -280,7 +293,9 @@ def test_feishu_adapter_present_task_result_patches_existing_card_for_blocked_ap
         chat_id="oc_1",
         result=SimpleNamespace(
             text="等待审批",
-            agent_result=SimpleNamespace(blocked=True, suspended=False, approval_id="approval-1", task_id="task-1"),
+            agent_result=SimpleNamespace(
+                blocked=True, suspended=False, approval_id="approval-1", task_id="task-1"
+            ),
         ),
         steps=[],
     )
@@ -289,12 +304,16 @@ def test_feishu_adapter_present_task_result_patches_existing_card_for_blocked_ap
     assert patched == [("om_card", {"approval": True})]
 
 
-def test_feishu_adapter_present_task_result_replies_with_approval_card_when_blocked_without_existing_card(monkeypatch) -> None:
+def test_feishu_adapter_present_task_result_replies_with_approval_card_when_blocked_without_existing_card(
+    monkeypatch,
+) -> None:
     adapter = FeishuAdapter()
     adapter._client = object()
 
     replied: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(adapter, "_build_pending_approval_card", lambda *args, **kwargs: ({"approval": True}, None))
+    monkeypatch.setattr(
+        adapter, "_build_pending_approval_card", lambda *args, **kwargs: ({"approval": True}, None)
+    )
     monkeypatch.setattr(
         "hermit.builtin.feishu.adapter.reply_card_return_id",
         lambda _client, message_id, card: replied.append((message_id, card)) or "om_blocked",
@@ -306,7 +325,9 @@ def test_feishu_adapter_present_task_result_replies_with_approval_card_when_bloc
         chat_id="oc_1",
         result=SimpleNamespace(
             text="等待审批",
-            agent_result=SimpleNamespace(blocked=True, suspended=False, approval_id="approval-1", task_id="task-1"),
+            agent_result=SimpleNamespace(
+                blocked=True, suspended=False, approval_id="approval-1", task_id="task-1"
+            ),
         ),
         steps=[],
     )
@@ -338,7 +359,9 @@ def test_feishu_adapter_present_task_result_updates_existing_progress_card(monke
         chat_id="oc_1",
         result=SimpleNamespace(
             text="整理完成",
-            agent_result=SimpleNamespace(blocked=False, suspended=False, approval_id="", task_id="task-1"),
+            agent_result=SimpleNamespace(
+                blocked=False, suspended=False, approval_id="", task_id="task-1"
+            ),
         ),
         steps=[step],
     )
@@ -347,7 +370,9 @@ def test_feishu_adapter_present_task_result_updates_existing_progress_card(monke
     assert patched == [("om_card", {"text": "整理完成", "step_count": 1})]
 
 
-def test_feishu_adapter_present_task_result_replies_with_result_even_when_notes_exist(monkeypatch) -> None:
+def test_feishu_adapter_present_task_result_replies_with_result_even_when_notes_exist(
+    monkeypatch,
+) -> None:
     adapter = FeishuAdapter(settings=SimpleNamespace(locale="zh-CN"))
     adapter._client = object()
     adapter._task_has_appended_notes = lambda task_id: True  # type: ignore[method-assign]
@@ -365,7 +390,9 @@ def test_feishu_adapter_present_task_result_replies_with_result_even_when_notes_
         chat_id="oc_1",
         result=SimpleNamespace(
             text="文件已写到桌面",
-            agent_result=SimpleNamespace(blocked=False, suspended=False, approval_id="", task_id="task-1"),
+            agent_result=SimpleNamespace(
+                blocked=False, suspended=False, approval_id="", task_id="task-1"
+            ),
         ),
         steps=[],
     )
@@ -396,7 +423,9 @@ def test_feishu_adapter_present_task_result_uses_reply_or_chat_fallback(monkeypa
         chat_id="oc_1",
         result=SimpleNamespace(
             text="这是直接回复",
-            agent_result=SimpleNamespace(blocked=False, suspended=False, approval_id="", task_id="task-1"),
+            agent_result=SimpleNamespace(
+                blocked=False, suspended=False, approval_id="", task_id="task-1"
+            ),
         ),
         steps=[],
     )
@@ -406,7 +435,9 @@ def test_feishu_adapter_present_task_result_uses_reply_or_chat_fallback(monkeypa
         chat_id="oc_1",
         result=SimpleNamespace(
             text="这是群聊发送",
-            agent_result=SimpleNamespace(blocked=False, suspended=False, approval_id="", task_id="task-1"),
+            agent_result=SimpleNamespace(
+                blocked=False, suspended=False, approval_id="", task_id="task-1"
+            ),
         ),
         steps=[],
     )
@@ -424,7 +455,9 @@ def test_feishu_adapter_present_task_result_returns_early_without_client_or_text
         chat_id="oc_1",
         result=SimpleNamespace(
             text="整理完成",
-            agent_result=SimpleNamespace(blocked=False, suspended=False, approval_id="", task_id="task-1"),
+            agent_result=SimpleNamespace(
+                blocked=False, suspended=False, approval_id="", task_id="task-1"
+            ),
         ),
         steps=[],
     ) == ("om_card", False, "task-1")
@@ -436,7 +469,9 @@ def test_feishu_adapter_present_task_result_returns_early_without_client_or_text
         chat_id="oc_1",
         result=SimpleNamespace(
             text="",
-            agent_result=SimpleNamespace(blocked=False, suspended=False, approval_id="", task_id="task-1"),
+            agent_result=SimpleNamespace(
+                blocked=False, suspended=False, approval_id="", task_id="task-1"
+            ),
         ),
         steps=[],
     ) == ("om_card", False, "task-1")
@@ -569,9 +604,15 @@ def test_feishu_adapter_reissues_only_feishu_oc_approval_cards(monkeypatch) -> N
         SimpleNamespace(approval_id="approval-ok", task_id="task-ok"),
     ]
     tasks = {
-        "task-skip-source": SimpleNamespace(task_id="task-skip-source", source_channel="cli", conversation_id="oc_cli:user"),
-        "task-skip-chat": SimpleNamespace(task_id="task-skip-chat", source_channel="feishu", conversation_id="group:user"),
-        "task-ok": SimpleNamespace(task_id="task-ok", source_channel="feishu", conversation_id="oc_chat:user"),
+        "task-skip-source": SimpleNamespace(
+            task_id="task-skip-source", source_channel="cli", conversation_id="oc_cli:user"
+        ),
+        "task-skip-chat": SimpleNamespace(
+            task_id="task-skip-chat", source_channel="feishu", conversation_id="group:user"
+        ),
+        "task-ok": SimpleNamespace(
+            task_id="task-ok", source_channel="feishu", conversation_id="oc_chat:user"
+        ),
     }
 
     sent_cards: list[tuple[str, dict[str, Any]]] = []
@@ -588,13 +629,21 @@ def test_feishu_adapter_reissues_only_feishu_oc_approval_cards(monkeypatch) -> N
         )
     )
 
-    monkeypatch.setattr(adapter, "_chat_id_from_conversation_id", lambda conversation_id: conversation_id.split(":")[0])
-    monkeypatch.setattr(adapter, "_build_pending_approval_card", lambda *args, **kwargs: ({"approval": True}, None))
+    monkeypatch.setattr(
+        adapter,
+        "_chat_id_from_conversation_id",
+        lambda conversation_id: conversation_id.split(":")[0],
+    )
+    monkeypatch.setattr(
+        adapter, "_build_pending_approval_card", lambda *args, **kwargs: ({"approval": True}, None)
+    )
     monkeypatch.setattr(
         "hermit.builtin.feishu.adapter.send_card",
         lambda _client, chat_id, card: sent_cards.append((chat_id, card)) or "om_card",
     )
-    monkeypatch.setattr(adapter, "_bind_task_topic", lambda *args, **kwargs: bound.append((args, kwargs)))
+    monkeypatch.setattr(
+        adapter, "_bind_task_topic", lambda *args, **kwargs: bound.append((args, kwargs))
+    )
 
     adapter._reissue_pending_approval_cards()
 
@@ -614,9 +663,14 @@ def test_feishu_adapter_reissues_only_feishu_oc_approval_cards(monkeypatch) -> N
 
 def test_feishu_adapter_ingest_image_record_handles_missing_kernel_and_tool_errors() -> None:
     adapter = FeishuAdapter()
-    adapter._runner = SimpleNamespace(task_controller=None, agent=SimpleNamespace(tool_executor=None))
+    adapter._runner = SimpleNamespace(
+        task_controller=None, agent=SimpleNamespace(tool_executor=None)
+    )
 
-    assert adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_1") is None
+    assert (
+        adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_1")
+        is None
+    )
 
     finalized: list[str] = []
 
@@ -635,11 +689,16 @@ def test_feishu_adapter_ingest_image_record_handles_missing_kernel_and_tool_erro
         task_controller=controller,
         agent=SimpleNamespace(
             workspace_root="/Users/beta/work/Hermit",
-            tool_executor=SimpleNamespace(execute=lambda *args, **kwargs: (_ for _ in ()).throw(KeyError("missing"))),
+            tool_executor=SimpleNamespace(
+                execute=lambda *args, **kwargs: (_ for _ in ()).throw(KeyError("missing"))
+            ),
         ),
     )
 
-    assert adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_1") is None
+    assert (
+        adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_1")
+        is None
+    )
     assert finalized == ["failed"]
 
 
@@ -650,7 +709,9 @@ def test_feishu_adapter_ingest_image_record_auto_denies_blocked_results() -> Non
     class FakeTaskController:
         def __init__(self) -> None:
             self.store = SimpleNamespace(
-                resolve_approval=lambda approval_id, **kwargs: resolved.append((approval_id, kwargs))
+                resolve_approval=lambda approval_id, **kwargs: resolved.append(
+                    (approval_id, kwargs)
+                )
             )
 
         def start_task(self, **kwargs: Any) -> Any:
@@ -676,14 +737,21 @@ def test_feishu_adapter_ingest_image_record_auto_denies_blocked_results() -> Non
         ),
     )
 
-    assert adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_1") is None
+    assert (
+        adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_1")
+        is None
+    )
     assert resolved == [
         (
             "approval-1",
             {
                 "status": "denied",
                 "resolved_by": "feishu_adapter",
-                "resolution": {"reason": "adapter ingress does not support interactive approval"},
+                "resolution": {
+                    "status": "denied",
+                    "mode": "denied",
+                    "reason": "adapter ingress does not support interactive approval",
+                },
             },
         )
     ]
@@ -725,7 +793,9 @@ def test_feishu_adapter_ingest_image_record_auto_denies_blocked_results() -> Non
         ),
     ],
 )
-def test_feishu_adapter_ingest_image_record_handles_invalid_and_degraded_results(result: Any, expected_status: str | None) -> None:
+def test_feishu_adapter_ingest_image_record_handles_invalid_and_degraded_results(
+    result: Any, expected_status: str | None
+) -> None:
     finalized: list[str] = []
 
     class FakeTaskController:
@@ -747,7 +817,10 @@ def test_feishu_adapter_ingest_image_record_handles_invalid_and_degraded_results
         ),
     )
 
-    assert adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_1") is None
+    assert (
+        adapter._ingest_image_record(session_id="oc_1", message_id="om_1", image_key="img_1")
+        is None
+    )
     assert finalized == ([expected_status] if expected_status is not None else [])
 
 
@@ -756,7 +829,9 @@ def test_feishu_adapter_ingest_image_records_filters_out_failed_items(monkeypatc
     monkeypatch.setattr(
         adapter,
         "_ingest_image_record",
-        lambda **kwargs: {"image_id": kwargs["image_key"]} if kwargs["image_key"] == "img_ok" else None,
+        lambda **kwargs: (
+            {"image_id": kwargs["image_key"]} if kwargs["image_key"] == "img_ok" else None
+        ),
     )
 
     records = adapter._ingest_image_records(
@@ -767,7 +842,9 @@ def test_feishu_adapter_ingest_image_records_filters_out_failed_items(monkeypatc
     assert records == [{"image_id": "img_ok"}]
 
 
-def test_feishu_adapter_completion_message_requires_feishu_terminal_task_with_notes(monkeypatch) -> None:
+def test_feishu_adapter_completion_message_requires_feishu_terminal_task_with_notes(
+    monkeypatch,
+) -> None:
     adapter = FeishuAdapter()
     adapter._client = object()
     adapter._task_has_appended_notes = lambda task_id: False  # type: ignore[method-assign]
@@ -792,7 +869,9 @@ def test_feishu_adapter_completion_message_requires_feishu_terminal_task_with_no
     assert adapter._maybe_send_completion_result_message("task-1") is False
 
 
-def test_feishu_adapter_process_message_reports_dispatch_failure_without_progress_card(monkeypatch) -> None:
+def test_feishu_adapter_process_message_reports_dispatch_failure_without_progress_card(
+    monkeypatch,
+) -> None:
     sent_replies: list[tuple[str, str]] = []
     patched_cards: list[tuple[str, dict[str, Any]]] = []
 
@@ -846,7 +925,9 @@ def test_feishu_adapter_process_message_note_appended_refreshes_topic(monkeypatc
     )
 
     monkeypatch.setattr("hermit.builtin.feishu.adapter.send_ack", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(adapter, "_patch_task_topic", lambda task_id: patched_topics.append(task_id) or True)
+    monkeypatch.setattr(
+        adapter, "_patch_task_topic", lambda task_id: patched_topics.append(task_id) or True
+    )
     monkeypatch.setattr(
         "hermit.builtin.feishu.adapter.send_done",
         lambda _client, message_id, _settings: done_calls.append(message_id),
@@ -873,7 +954,11 @@ def test_feishu_adapter_approval_action_patches_error_when_approval_missing(monk
 
     adapter = FeishuAdapter(settings=SimpleNamespace(locale="zh-CN"))
     adapter._client = object()
-    adapter._runner = SimpleNamespace(task_controller=SimpleNamespace(store=SimpleNamespace(get_approval=lambda approval_id: None)))
+    adapter._runner = SimpleNamespace(
+        task_controller=SimpleNamespace(
+            store=SimpleNamespace(get_approval=lambda approval_id: None)
+        )
+    )
 
     monkeypatch.setattr(
         "hermit.builtin.feishu.adapter.patch_card",
@@ -894,7 +979,9 @@ def test_feishu_adapter_approval_action_patches_error_when_task_missing(monkeypa
     adapter._runner = SimpleNamespace(
         task_controller=SimpleNamespace(
             store=SimpleNamespace(
-                get_approval=lambda approval_id: SimpleNamespace(approval_id=approval_id, task_id="task-1"),
+                get_approval=lambda approval_id: SimpleNamespace(
+                    approval_id=approval_id, task_id="task-1"
+                ),
                 get_task=lambda task_id: None,
             )
         )
@@ -919,8 +1006,12 @@ def test_feishu_adapter_approval_action_patches_error_when_resolution_fails(monk
     adapter._runner = SimpleNamespace(
         task_controller=SimpleNamespace(
             store=SimpleNamespace(
-                get_approval=lambda approval_id: SimpleNamespace(approval_id=approval_id, task_id="task-1", requested_action={}),
-                get_task=lambda task_id: SimpleNamespace(task_id=task_id, conversation_id="oc_1", source_channel="feishu"),
+                get_approval=lambda approval_id: SimpleNamespace(
+                    approval_id=approval_id, task_id="task-1", requested_action={}
+                ),
+                get_task=lambda task_id: SimpleNamespace(
+                    task_id=task_id, conversation_id="oc_1", source_channel="feishu"
+                ),
             )
         ),
         _resolve_approval=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
@@ -936,7 +1027,9 @@ def test_feishu_adapter_approval_action_patches_error_when_resolution_fails(monk
     assert patched_cards[-1]["header"]["title"]["content"] == "处理失败"
 
 
-def test_feishu_adapter_refresh_keeps_terminal_mapping_when_delivery_fails(monkeypatch, tmp_path) -> None:
+def test_feishu_adapter_refresh_keeps_terminal_mapping_when_delivery_fails(
+    monkeypatch, tmp_path
+) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
     ctx = controller.start_task(
@@ -970,7 +1063,9 @@ def test_feishu_adapter_refresh_keeps_terminal_mapping_when_delivery_fails(monke
     adapter._client = object()
     adapter._runner = SimpleNamespace(task_controller=SimpleNamespace(store=store))
     monkeypatch.setattr(adapter, "_schedule_topic_refresh", lambda: None)
-    monkeypatch.setattr(adapter, "_deliver_terminal_result_without_card", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        adapter, "_deliver_terminal_result_without_card", lambda *_args, **_kwargs: False
+    )
 
     adapter._refresh_task_topics()
 
@@ -986,7 +1081,9 @@ def test_feishu_adapter_refresh_keeps_terminal_mapping_when_delivery_fails(monke
     }
 
 
-def test_feishu_adapter_handle_post_run_result_delivers_async_terminal_reply(monkeypatch, tmp_path) -> None:
+def test_feishu_adapter_handle_post_run_result_delivers_async_terminal_reply(
+    monkeypatch, tmp_path
+) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
     ctx = controller.start_task(
@@ -1025,11 +1122,14 @@ def test_feishu_adapter_handle_post_run_result_delivers_async_terminal_reply(mon
         lambda _client, message_id, text, **kwargs: replies.append((message_id, text)) or True,
     )
 
-    assert adapter._handle_post_run_result(
-        SimpleNamespace(task_id=ctx.task_id),
-        session_id="oc_chat:user_1",
-        runner=adapter._runner,
-    ) is True
+    assert (
+        adapter._handle_post_run_result(
+            SimpleNamespace(task_id=ctx.task_id),
+            session_id="oc_chat:user_1",
+            runner=adapter._runner,
+        )
+        is True
+    )
     assert replies == [("om_origin", "异步完成。")]
 
     conversation = store.get_conversation("oc_chat:user_1")

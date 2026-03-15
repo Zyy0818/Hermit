@@ -176,10 +176,12 @@ def test_memory_engine_append_entries_only_adds_new_items(tmp_path) -> None:
         }
     )
 
-    updated = engine.append_entries([
-        MemoryEntry(category="用户偏好", content="统一使用中文"),
-        MemoryEntry(category="项目约定", content="默认在仓库根目录执行命令"),
-    ])
+    updated = engine.append_entries(
+        [
+            MemoryEntry(category="用户偏好", content="统一使用中文"),
+            MemoryEntry(category="项目约定", content="默认在仓库根目录执行命令"),
+        ]
+    )
 
     assert len(updated["用户偏好"]) == 1
     assert [entry.content for entry in updated["项目约定"]] == ["默认在仓库根目录执行命令"]
@@ -197,9 +199,11 @@ def test_memory_engine_append_entries_supersedes_old_version(tmp_path) -> None:
     )
 
     with patch("hermit.builtin.memory.engine.log.info") as log_mock:
-        updated = engine.append_entries([
-            MemoryEntry(category="环境与工具", content="服务端口改为 8080", confidence=0.8),
-        ])
+        updated = engine.append_entries(
+            [
+                MemoryEntry(category="环境与工具", content="服务端口改为 8080", confidence=0.8),
+            ]
+        )
 
     entries = updated["环境与工具"]
     assert len(entries) == 1
@@ -213,7 +217,10 @@ def test_memory_engine_uses_merge_function_when_threshold_exceeded(tmp_path) -> 
     engine = MemoryEngine(path)
     engine.save(
         {
-            "其他": [MemoryEntry(category="其他", content=f"entry-{index}", score=5) for index in range(9)]
+            "其他": [
+                MemoryEntry(category="其他", content=f"entry-{index}", score=5)
+                for index in range(9)
+            ]
         }
     )
 
@@ -221,7 +228,9 @@ def test_memory_engine_uses_merge_function_when_threshold_exceeded(tmp_path) -> 
         new_entries=[],
         session_index=1,
         merge_threshold=8,
-        merge_fn=lambda category, entries: [MemoryEntry(category=category, content="merged", score=6)],
+        merge_fn=lambda category, entries: [
+            MemoryEntry(category=category, content="merged", score=6)
+        ],
     )
 
     assert [entry.content for entry in merged["其他"]] == ["merged"]
@@ -262,7 +271,9 @@ def test_memory_engine_retrieve_prefers_query_relevant_entries(tmp_path) -> None
     engine.save(
         {
             "项目约定": [
-                MemoryEntry(category="项目约定", content="默认工作目录固定到 /repo", score=8, locked=True),
+                MemoryEntry(
+                    category="项目约定", content="默认工作目录固定到 /repo", score=8, locked=True
+                ),
                 MemoryEntry(category="项目约定", content="部署走 Render", score=5),
             ],
             "环境与工具": [
@@ -288,8 +299,15 @@ def test_memory_engine_retrieval_prompt_respects_budget(tmp_path) -> None:
     engine.save(
         {
             "项目约定": [
-                MemoryEntry(category="项目约定", content="默认工作目录固定到 /repo", score=8, locked=True),
-                MemoryEntry(category="项目约定", content="统一在 /repo 根目录执行所有命令", score=7, locked=True),
+                MemoryEntry(
+                    category="项目约定", content="默认工作目录固定到 /repo", score=8, locked=True
+                ),
+                MemoryEntry(
+                    category="项目约定",
+                    content="统一在 /repo 根目录执行所有命令",
+                    score=7,
+                    locked=True,
+                ),
             ],
             "环境与工具": [
                 MemoryEntry(category="环境与工具", content="服务端口改为 8080", score=6),
@@ -309,11 +327,17 @@ def test_memory_engine_retrieval_prompt_can_break_on_heading_budget(tmp_path) ->
     path = tmp_path / "memories.md"
     engine = MemoryEngine(path)
     categories = {
-        "项目约定": [MemoryEntry(category="项目约定", content="默认工作目录固定到 /repo", score=8, locked=True)]
+        "项目约定": [
+            MemoryEntry(
+                category="项目约定", content="默认工作目录固定到 /repo", score=8, locked=True
+            )
+        ]
     }
 
     with patch("hermit.builtin.memory.engine.log.info") as log_mock:
-        prompt = engine.retrieval_prompt("处理 /repo", categories=categories, limit=5, char_budget=30)
+        prompt = engine.retrieval_prompt(
+            "处理 /repo", categories=categories, limit=5, char_budget=30
+        )
 
     assert "## 项目约定" not in prompt
     assert log_mock.call_count == 2
@@ -332,13 +356,19 @@ def test_memory_engine_retrieve_returns_empty_for_non_informative_query(tmp_path
 def test_format_transcript_handles_mixed_content() -> None:
     messages = [
         {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": [
-            {"type": "text", "text": "Let me search."},
-            {"type": "tool_use", "name": "web_search", "input": {"query": "test"}},
-        ]},
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "x", "content": "result data"},
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me search."},
+                {"type": "tool_use", "name": "web_search", "input": {"query": "test"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "x", "content": "result data"},
+            ],
+        },
         {"role": "assistant", "content": [{"type": "text", "text": "Here you go."}]},
     ]
     result = _format_transcript(messages)
@@ -382,20 +412,27 @@ def test_bump_session_index_initializes_and_increments(tmp_path) -> None:
 
 
 def test_should_checkpoint_on_explicit_memory_signal() -> None:
-    should_checkpoint, reason = _should_checkpoint([
-        {"role": "user", "content": "记住：以后统一用中文回复"},
-        {"role": "assistant", "content": [{"type": "text", "text": "收到"}]},
-    ])
+    should_checkpoint, reason = _should_checkpoint(
+        [
+            {"role": "user", "content": "记住：以后统一用中文回复"},
+            {"role": "assistant", "content": [{"type": "text", "text": "收到"}]},
+        ]
+    )
     assert should_checkpoint is True
     assert reason == "explicit_memory_signal"
 
 
 def test_should_checkpoint_on_batched_conversation() -> None:
-    should_checkpoint, reason = _should_checkpoint([
-        {"role": "user", "content": "我们把默认工作目录固定到 /repo"},
-        {"role": "assistant", "content": [{"type": "text", "text": "好的，我会按这个约定执行。"}]},
-        {"role": "user", "content": "另外部署走 render，环境变量放 .env，不写进文档。"},
-    ])
+    should_checkpoint, reason = _should_checkpoint(
+        [
+            {"role": "user", "content": "我们把默认工作目录固定到 /repo"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "好的，我会按这个约定执行。"}],
+            },
+            {"role": "user", "content": "另外部署走 render，环境变量放 .env，不写进文档。"},
+        ]
+    )
     assert should_checkpoint is True
     assert reason in {"decision_signal", "conversation_batch"}
 
@@ -412,13 +449,15 @@ def test_infer_confidence_prefers_hard_constraints() -> None:
     assert _infer_confidence("简短备注") == 0.55
 
 
-def test_inject_relevant_memory_only_when_query_matches(tmp_path) -> None:
+def test_inject_relevant_memory_fails_closed_without_kernel_context(tmp_path) -> None:
     path = tmp_path / "memories.md"
     engine = MemoryEngine(path)
     engine.save(
         {
             "项目约定": [
-                MemoryEntry(category="项目约定", content="默认工作目录固定到 /repo", score=8, locked=True),
+                MemoryEntry(
+                    category="项目约定", content="默认工作目录固定到 /repo", score=8, locked=True
+                ),
             ]
         }
     )
@@ -426,7 +465,7 @@ def test_inject_relevant_memory_only_when_query_matches(tmp_path) -> None:
     enriched = _inject_relevant_memory(engine, "请检查 /repo 的配置")
     plain = _inject_relevant_memory(engine, "帮我写一首诗")
 
-    assert "<relevant_memory>" in enriched
+    assert enriched == "请检查 /repo 的配置"
     assert plain == "帮我写一首诗"
 
 
@@ -457,14 +496,19 @@ def test_memory_engine_looks_like_override_covers_path_and_directional_terms() -
 
 def test_memory_engine_shares_topic_handles_empty_and_substring() -> None:
     assert MemoryEngine._shares_topic("", "abc") is False
-    assert MemoryEngine._shares_topic("默认工作目录固定到 /repo", "工作目录固定到 /repo 根目录") is True
+    assert (
+        MemoryEngine._shares_topic("默认工作目录固定到 /repo", "工作目录固定到 /repo 根目录")
+        is True
+    )
 
 
 def test_group_entries_groups_by_category() -> None:
-    grouped = group_entries([
-        MemoryEntry(category="项目约定", content="A"),
-        MemoryEntry(category="环境与工具", content="B"),
-    ])
+    grouped = group_entries(
+        [
+            MemoryEntry(category="项目约定", content="A"),
+            MemoryEntry(category="环境与工具", content="B"),
+        ]
+    )
 
     assert sorted(grouped) == ["环境与工具", "项目约定"]
 

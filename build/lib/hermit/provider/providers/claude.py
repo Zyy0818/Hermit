@@ -13,7 +13,11 @@ from hermit.provider.contracts import (
     UsageMetrics,
 )
 from hermit.provider.images import prepare_messages_for_provider
-from hermit.provider.messages import append_internal_tool_context, normalize_block, split_internal_tool_context
+from hermit.provider.messages import (
+    append_internal_tool_context,
+    normalize_block,
+    split_internal_tool_context,
+)
 
 _CACHE_CONTROL_EPHEMERAL: Dict[str, str] = {"type": "ephemeral"}
 
@@ -142,7 +146,9 @@ class ClaudeProvider(Provider):
     def _payload(self, request: ProviderRequest, *, stream: bool = False) -> Dict[str, Any]:
         prepared_messages = prepare_messages_for_provider(request.messages)
         prepared_messages, internal_contexts = split_internal_tool_context(prepared_messages)
-        system_prompt = request.system_prompt if request.system_prompt is not None else self.system_prompt
+        system_prompt = (
+            request.system_prompt if request.system_prompt is not None else self.system_prompt
+        )
         system_prompt = append_internal_tool_context(system_prompt, internal_contexts)
         system_payload, cached_messages = _inject_cache_control(
             list(prepared_messages[:-1]),
@@ -228,6 +234,7 @@ class ClaudeProvider(Provider):
                 if current_block:
                     if "_partial_json" in current_block:
                         import json
+
                         try:
                             current_block["input"] = json.loads(current_block.pop("_partial_json"))
                         except Exception:
@@ -282,6 +289,7 @@ def build_claude_provider(
     else:
         budget = get_runtime_budget()
     import httpx
+
     kwargs["timeout"] = httpx.Timeout(
         budget.provider_read_timeout,
         connect=budget.provider_connect_timeout,

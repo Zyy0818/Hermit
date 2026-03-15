@@ -206,13 +206,29 @@ def test_runner_handle_and_status_paths() -> None:
     assert agent.run_calls[0]["disable_tools"] is True
     assert session_manager.saved >= 1
 
-    assert runner._result_status(
-        AgentResult(text="[Execution Requires Attention] check", turns=1, tool_calls=0, execution_status="")
-    ) == "needs_attention"
-    assert runner._result_status(
-        AgentResult(text="[API Error] boom", turns=1, tool_calls=0, execution_status="")
-    ) == "failed"
-    assert runner._result_status(AgentResult(text="ok", turns=1, tool_calls=0, execution_status="custom")) == "custom"
+    assert (
+        runner._result_status(
+            AgentResult(
+                text="[Execution Requires Attention] check",
+                turns=1,
+                tool_calls=0,
+                execution_status="",
+            )
+        )
+        == "needs_attention"
+    )
+    assert (
+        runner._result_status(
+            AgentResult(text="[API Error] boom", turns=1, tool_calls=0, execution_status="")
+        )
+        == "failed"
+    )
+    assert (
+        runner._result_status(
+            AgentResult(text="ok", turns=1, tool_calls=0, execution_status="custom")
+        )
+        == "custom"
+    )
 
 
 def test_runner_time_context_uses_current_message_time(monkeypatch) -> None:
@@ -257,7 +273,9 @@ def test_runner_resolve_approval_handles_missing_deny_and_approve_paths() -> Non
     approval = SimpleNamespace(approval_id="approval-1", step_attempt_id="attempt-1")
     runner, agent, session_manager, plugin_manager, controller = _make_runner(approval)
 
-    denied = runner._resolve_approval("session", action="deny", approval_id="approval-1", reason="nope")
+    denied = runner._resolve_approval(
+        "session", action="deny", approval_id="approval-1", reason="nope"
+    )
     assert denied.is_command is True
     assert "This approval was denied" in denied.text
     assert controller.store.resolved[0]["resolution"]["reason"] == "nope"
@@ -269,7 +287,9 @@ def test_runner_resolve_approval_handles_missing_deny_and_approve_paths() -> Non
         messages=[{"role": "assistant", "content": [{"type": "text", "text": "approved"}]}],
         execution_status="failed",
     )
-    approved = runner._resolve_approval("session", action="approve_always_directory", approval_id="approval-1")
+    approved = runner._resolve_approval(
+        "session", action="approve_always_directory", approval_id="approval-1"
+    )
     assert approved.text == "approved"
     assert controller.store.resolved[-1]["resolution"]["mode"] == "always_directory"
     assert controller.finalized[-1][1] == "failed"
@@ -322,7 +342,9 @@ def test_runner_enqueue_approval_resume_queues_resume_without_inline_resume() ->
     approval = SimpleNamespace(approval_id="approval-1", step_attempt_id="attempt-1")
     runner, agent, session_manager, _plugin_manager, controller = _make_runner(approval)
 
-    result = runner.enqueue_approval_resume("session", action="approve_once", approval_id="approval-1")
+    result = runner.enqueue_approval_resume(
+        "session", action="approve_once", approval_id="approval-1"
+    )
 
     assert result.is_command is True
     assert "queued" in result.text.lower()
@@ -339,7 +361,9 @@ def test_runner_add_command_and_register_command_decorator() -> None:
     def _extra(runner: AgentRunner, session_id: str, text: str) -> DispatchResult:
         return DispatchResult("extra", is_command=True)
 
-    runner.add_command("/plugin", lambda *_args: DispatchResult("plugin", is_command=True), "Plugin command")
+    runner.add_command(
+        "/plugin", lambda *_args: DispatchResult("plugin", is_command=True), "Plugin command"
+    )
 
     assert runner.dispatch("session", "/plugin").text == "plugin"
     fresh_runner, *_ = _make_runner()
@@ -440,15 +464,18 @@ def test_runner_resume_attempt_handles_terminal_and_blocked_paths() -> None:
 def test_runner_handle_respects_ingress_parent_override() -> None:
     runner, _agent, _session_manager, _plugin_manager, controller = _make_runner()
 
-    controller.decide_ingress = lambda **_kwargs: SimpleNamespace(mode="start", intent="chat_only", parent_task_id=None)  # type: ignore[method-assign]
+    controller.decide_ingress = lambda **_kwargs: SimpleNamespace(
+        mode="start", intent="chat_only", parent_task_id=None
+    )  # type: ignore[method-assign]
 
     runner.handle("chat-1", "你好")
 
     assert controller.started[-1]["kwargs"]["parent_task_id"] is None
 
 
-def test_runner_handle_returns_pending_disambiguation_without_starting_task() -> None:
+def test_runner_handle_returns_pending_disambiguation_without_starting_task(monkeypatch) -> None:
     runner, _agent, _session_manager, _plugin_manager, controller = _make_runner()
+    monkeypatch.setenv("HERMIT_LOCALE", "zh-CN")
 
     controller.decide_ingress = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
         mode="start",

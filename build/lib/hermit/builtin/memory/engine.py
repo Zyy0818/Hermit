@@ -10,11 +10,23 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 import structlog
 
 from hermit.builtin.memory.types import DEFAULT_CATEGORIES, MemoryEntry
+from hermit.kernel.memory_text import (
+    is_duplicate,
+    looks_like_override,
+    normalize_topic,
+    shares_topic,
+    topic_tokens,
+)
+from hermit.kernel.memory_text import (
+    summary_prompt as render_summary_prompt,
+)
 from hermit.storage import FileGuard, atomic_write
 
 log = structlog.get_logger()
 
-ENTRY_RE = re.compile(r"^- \[(\d{4}-\d{2}-\d{2})\] \[s:(\d+)(🔒?)\] (.+?)(?:\s+<!--memory:(.+?)-->)?$")
+ENTRY_RE = re.compile(
+    r"^- \[(\d{4}-\d{2}-\d{2})\] \[s:(\d+)(🔒?)\] (.+?)(?:\s+<!--memory:(.+?)-->)?$"
+)
 HEADING_RE = re.compile(r"^## (.+)$")
 MergeFn = Callable[[str, List[MemoryEntry]], List[MemoryEntry]]
 
@@ -46,9 +58,7 @@ class MemoryEngine:
                         score=int(score),
                         locked=bool(locked),
                         created_at=date.fromisoformat(created_at),
-                        updated_at=date.fromisoformat(
-                            str(meta.get("updated_at", created_at))
-                        ),
+                        updated_at=date.fromisoformat(str(meta.get("updated_at", created_at))),
                         confidence=float(meta.get("confidence", 0.5)),
                         supersedes=list(meta.get("supersedes", [])),
                         scope_kind=str(meta.get("scope_kind", "")),
@@ -146,17 +156,10 @@ class MemoryEngine:
             return filtered
 
     @staticmethod
-    def summary_prompt(categories: Dict[str, List[MemoryEntry]], limit_per_category: int = 10) -> str:
-        if not any(entries for entries in categories.values()):
-            return ""
-        lines = ["以下是跨会话记忆，请优先遵循其中的长期约定："]
-        for category, entries in categories.items():
-            if not entries:
-                continue
-            lines.append(f"\n## {category}")
-            for entry in entries[:limit_per_category]:
-                lines.append(entry.render())
-        return "\n".join(lines).strip()
+    def summary_prompt(
+        categories: Dict[str, List[MemoryEntry]], limit_per_category: int = 10
+    ) -> str:
+        return render_summary_prompt(categories, limit_per_category=limit_per_category)
 
     def retrieval_prompt(
         self,
@@ -168,7 +171,9 @@ class MemoryEngine:
     ) -> str:
         ranked = self.retrieve(query, categories=categories, limit=limit)
         if not ranked:
-            log.info("memory_retrieval_injected", query_chars=len(query), injected=0, budget=char_budget)
+            log.info(
+                "memory_retrieval_injected", query_chars=len(query), injected=0, budget=char_budget
+            )
             return ""
 
         lines = ["以下是与当前任务最相关的跨会话记忆，只在相关时优先遵循："]
@@ -271,17 +276,7 @@ class MemoryEngine:
 
     @staticmethod
     def _is_duplicate(entries: List[MemoryEntry], content: str) -> bool:
-        normalized = content.strip().lower()
-        for existing in entries:
-            other = existing.content.strip().lower()
-            shorter = min(len(normalized), len(other))
-            longer = max(len(normalized), len(other))
-            overlap_ratio = shorter / longer if longer else 1
-            if normalized == other:
-                return True
-            if overlap_ratio >= 0.6 and (normalized in other or other in normalized):
-                return True
-        return False
+        return is_duplicate(entries, content)
 
     @staticmethod
     def _parse_meta(raw_meta: str | None) -> dict:
@@ -305,7 +300,9 @@ class MemoryEngine:
             existing.score = 0
             if existing.content not in new_entry.supersedes:
                 new_entry.supersedes.append(existing.content)
-            new_entry.updated_at = max(new_entry.updated_at, existing.updated_at, existing.created_at)
+            new_entry.updated_at = max(
+                new_entry.updated_at, existing.updated_at, existing.created_at
+            )
             new_entry.confidence = max(new_entry.confidence, min(0.95, existing.confidence + 0.1))
             log.info(
                 "memory_superseded",
@@ -316,56 +313,19 @@ class MemoryEngine:
 
     @staticmethod
     def _looks_like_override(old_content: str, new_content: str) -> bool:
-        if not MemoryEngine._shares_topic(old_content, new_content):
-            return False
-        old_numbers = set(re.findall(r"\d+(?:\.\d+)?", old_content))
-        new_numbers = set(re.findall(r"\d+(?:\.\d+)?", new_content))
-        if old_numbers != new_numbers and (old_numbers or new_numbers):
-            return True
-        old_paths = set(re.findall(r"/[\w./-]+", old_content))
-        new_paths = set(re.findall(r"/[\w./-]+", new_content))
-        if old_paths != new_paths and (old_paths or new_paths):
-            return True
-        directional_terms = ("改为", "切换到", "统一使用", "默认", "现在", "改成", "采用")
-        return any(term in new_content for term in directional_terms)
+        return looks_like_override(old_content, new_content)
 
     @staticmethod
     def _topic_tokens(content: str) -> Set[str]:
-        raw_tokens = re.findall(r"[\w\-/\.]{2,}|[\u4e00-\u9fff]{2,}", content.lower())
-        stopwords = {
-            "默认", "现在", "以后", "统一", "使用", "需要", "必须", "采用", "改为", "切换到",
-            "the", "and", "for", "with", "from", "that", "this", "use",
-        }
-        return {token for token in raw_tokens if token not in stopwords}
+        return topic_tokens(content)
 
     @staticmethod
     def _normalize_topic(content: str) -> str:
-        text = content.lower()
-        text = re.sub(r"/[\w./-]+", "<path>", text)
-        text = re.sub(r"\d+(?:\.\d+)?", "<num>", text)
-        for word in ("改为", "改成", "切换到", "统一", "默认", "采用", "固定到", "使用", "现在"):
-            text = text.replace(word, "")
-        text = re.sub(r"[^\w\u4e00-\u9fff<>]+", "", text)
-        return text
+        return normalize_topic(content)
 
     @classmethod
     def _shares_topic(cls, left: str, right: str) -> bool:
-        left_norm = cls._normalize_topic(left)
-        right_norm = cls._normalize_topic(right)
-        if not left_norm or not right_norm:
-            return False
-        if left_norm == right_norm:
-            return True
-        if left_norm in right_norm or right_norm in left_norm:
-            return True
-        left_paths = set(re.findall(r"/[\w./-]+", left))
-        right_paths = set(re.findall(r"/[\w./-]+", right))
-        if left_paths & right_paths:
-            return True
-        left_bigrams = {left_norm[index:index + 2] for index in range(max(0, len(left_norm) - 1))}
-        right_bigrams = {right_norm[index:index + 2] for index in range(max(0, len(right_norm) - 1))}
-        overlap = left_bigrams & right_bigrams
-        return len(overlap) >= 2
+        return shares_topic(left, right)
 
 
 def group_entries(entries: List[MemoryEntry]) -> Dict[str, List[MemoryEntry]]:

@@ -48,7 +48,9 @@ class _Hooks:
 
 class _PluginManager:
     def __init__(self, base_dir: Path | None = None) -> None:
-        self.settings = SimpleNamespace(base_dir=str(base_dir) if base_dir else "/tmp/hermit", kernel_dispatch_worker_count=2)
+        self.settings = SimpleNamespace(
+            base_dir=str(base_dir) if base_dir else "/tmp/hermit", kernel_dispatch_worker_count=2
+        )
         self.hooks = _Hooks()
         self.started: list[str] = []
         self.post_run: list[str] = []
@@ -135,7 +137,9 @@ class _TaskController:
         self.ensure_calls: list[tuple[str, str]] = []
         self.decisions: list[tuple[str, str, str, str | None]] = []
 
-    def ensure_conversation(self, conversation_id: str, *, source_channel: str | None = None) -> None:
+    def ensure_conversation(
+        self, conversation_id: str, *, source_channel: str | None = None
+    ) -> None:
         self.ensure_calls.append((conversation_id, source_channel or ""))
 
     def source_from_session(self, session_id: str) -> str:
@@ -165,7 +169,9 @@ class _TaskController:
             },
         )
 
-    def finalize_result(self, ctx, *, status: str, result_preview: str | None = None, result_text: str | None = None) -> None:
+    def finalize_result(
+        self, ctx, *, status: str, result_preview: str | None = None, result_text: str | None = None
+    ) -> None:
         self.finalized.append((ctx.step_attempt_id, status, result_preview, result_text))
 
     def mark_suspended(self, ctx, *, waiting_kind: str) -> None:
@@ -174,12 +180,22 @@ class _TaskController:
     def resolve_text_command(self, session_id: str, text: str):
         return None
 
-    def decide_ingress(self, *, conversation_id: str, source_channel: str, raw_text: str, prompt: str, requested_by: str | None = "user"):
+    def decide_ingress(
+        self,
+        *,
+        conversation_id: str,
+        source_channel: str,
+        raw_text: str,
+        prompt: str,
+        requested_by: str | None = "user",
+    ):
         self.decisions.append((conversation_id, source_channel, raw_text, requested_by))
         return SimpleNamespace(mode="start")
 
     def start_task(self, **kwargs):
-        return SimpleNamespace(task_id="task-run", step_id="step-run", step_attempt_id="attempt-run")
+        return SimpleNamespace(
+            task_id="task-run", step_id="step-run", step_attempt_id="attempt-run"
+        )
 
 
 def _make_runner(base_dir: Path | None = None):
@@ -234,6 +250,19 @@ def test_runner_start_stop_background_services_and_wake(monkeypatch) -> None:
     assert dispatch_calls == [("init", 2), ("start", None), ("wake", None), ("stop", None)]
 
 
+def test_pending_disambiguation_text_uses_locale(monkeypatch) -> None:
+    runner, _agent, _session_manager, pm, _controller, _store = _make_runner()
+    monkeypatch.setenv("HERMIT_LOCALE", "zh-CN")
+    pm.settings.locale = "zh-CN"
+
+    text = runner._pending_disambiguation_text(
+        SimpleNamespace(candidates=[{"task_id": "task-1"}, {"task_id": "task-2"}])
+    )
+
+    assert "我没法确认你要继续哪个任务" in text
+    assert "- 切到任务 task-1" in text
+
+
 def test_runner_enqueue_ingress_sets_async_metadata_and_wakes() -> None:
     runner, agent, _session_manager, _pm, controller, _store = _make_runner()
     wake_calls: list[str] = []
@@ -276,8 +305,12 @@ def test_runner_enqueue_approval_resume_handles_missing_deny_and_grant() -> None
     wake_calls: list[str] = []
     runner.wake_dispatcher = lambda: wake_calls.append("wake")  # type: ignore[method-assign]
 
-    denied = runner.enqueue_approval_resume("oc_1", action="deny", approval_id="approval-1", reason="not-safe")
-    granted = runner.enqueue_approval_resume("oc_1", action="approve_always_directory", approval_id="approval-1")
+    denied = runner.enqueue_approval_resume(
+        "oc_1", action="deny", approval_id="approval-1", reason="not-safe"
+    )
+    granted = runner.enqueue_approval_resume(
+        "oc_1", action="approve_always_directory", approval_id="approval-1"
+    )
 
     assert denied.is_command is True
     assert "denied" in denied.text.lower()
@@ -306,7 +339,9 @@ def test_runner_enqueue_approval_resume_handles_missing_deny_and_grant() -> None
     assert session_manager.saved >= 2
 
 
-def test_runner_process_claimed_attempt_emits_notify_and_scheduler_artifacts(tmp_path: Path) -> None:
+def test_runner_process_claimed_attempt_emits_notify_and_scheduler_artifacts(
+    tmp_path: Path,
+) -> None:
     runner, agent, session_manager, pm, controller, store = _make_runner(tmp_path)
     store.step_attempt = SimpleNamespace(context={"execution_mode": "run"})
 
@@ -428,24 +463,90 @@ def test_runner_dispatch_control_action_covers_kernel_introspection_paths(monkey
     monkeypatch.setattr("hermit.kernel.rollbacks.RollbackService", FakeRollbackService)
     monkeypatch.setattr("hermit.kernel.projections.ProjectionService", FakeProjectionService)
 
-    assert '"task_id": "task-1"' in runner._dispatch_control_action("oc_1", action="task_list", target_id="").text
-    assert '"case": true' in runner._dispatch_control_action("oc_1", action="case", target_id="task-1").text
-    assert '"event_type": "task.completed"' in runner._dispatch_control_action("oc_1", action="task_events", target_id="task-1").text
-    assert '"receipt_id": "receipt-1"' in runner._dispatch_control_action("oc_1", action="task_receipts", target_id="task-1").text
-    assert '"proof": true' in runner._dispatch_control_action("oc_1", action="task_proof", target_id="task-1").text
-    assert '"exported": true' in runner._dispatch_control_action("oc_1", action="task_proof_export", target_id="task-1").text
-    assert '"rollback": "task-1"' in runner._dispatch_control_action("oc_1", action="rollback", target_id="task-1").text
-    assert '"rebuilt": true' in runner._dispatch_control_action("oc_1", action="projection_rebuild", target_id="task-1").text
-    assert '"rebuilt_all": true' in runner._dispatch_control_action("oc_1", action="projection_rebuild_all", target_id="").text
-    assert '"grant_id": "grant-1"' in runner._dispatch_control_action("oc_1", action="grant_list", target_id="").text
-    assert "Revoked grant" in runner._dispatch_control_action("oc_1", action="grant_revoke", target_id="grant-1").text
-    assert '"id": "job-1"' in runner._dispatch_control_action("oc_1", action="schedule_list", target_id="").text
-    assert '"success": true' in runner._dispatch_control_action("oc_1", action="schedule_history", target_id="job-1").text
-    assert "Enabled" in runner._dispatch_control_action("oc_1", action="schedule_enable", target_id="job-1").text
-    assert "Disabled" in runner._dispatch_control_action("oc_1", action="schedule_disable", target_id="job-1").text
-    assert "Removed" in runner._dispatch_control_action("oc_1", action="schedule_remove", target_id="job-1").text
-    assert "not found" in runner._dispatch_control_action("oc_1", action="grant_revoke", target_id="missing").text.lower()
-    assert "Unsupported control action" in runner._dispatch_control_action("oc_1", action="mystery", target_id="").text
+    assert (
+        '"task_id": "task-1"'
+        in runner._dispatch_control_action("oc_1", action="task_list", target_id="").text
+    )
+    assert (
+        '"case": true'
+        in runner._dispatch_control_action("oc_1", action="case", target_id="task-1").text
+    )
+    assert (
+        '"event_type": "task.completed"'
+        in runner._dispatch_control_action("oc_1", action="task_events", target_id="task-1").text
+    )
+    assert (
+        '"receipt_id": "receipt-1"'
+        in runner._dispatch_control_action("oc_1", action="task_receipts", target_id="task-1").text
+    )
+    assert (
+        '"proof": true'
+        in runner._dispatch_control_action("oc_1", action="task_proof", target_id="task-1").text
+    )
+    assert (
+        '"exported": true'
+        in runner._dispatch_control_action(
+            "oc_1", action="task_proof_export", target_id="task-1"
+        ).text
+    )
+    assert (
+        '"rollback": "task-1"'
+        in runner._dispatch_control_action("oc_1", action="rollback", target_id="task-1").text
+    )
+    assert (
+        '"rebuilt": true'
+        in runner._dispatch_control_action(
+            "oc_1", action="projection_rebuild", target_id="task-1"
+        ).text
+    )
+    assert (
+        '"rebuilt_all": true'
+        in runner._dispatch_control_action(
+            "oc_1", action="projection_rebuild_all", target_id=""
+        ).text
+    )
+    assert (
+        '"grant_id": "grant-1"'
+        in runner._dispatch_control_action("oc_1", action="grant_list", target_id="").text
+    )
+    assert (
+        "Revoked grant"
+        in runner._dispatch_control_action("oc_1", action="grant_revoke", target_id="grant-1").text
+    )
+    assert (
+        '"id": "job-1"'
+        in runner._dispatch_control_action("oc_1", action="schedule_list", target_id="").text
+    )
+    assert (
+        '"success": true'
+        in runner._dispatch_control_action(
+            "oc_1", action="schedule_history", target_id="job-1"
+        ).text
+    )
+    assert (
+        "Enabled"
+        in runner._dispatch_control_action("oc_1", action="schedule_enable", target_id="job-1").text
+    )
+    assert (
+        "Disabled"
+        in runner._dispatch_control_action(
+            "oc_1", action="schedule_disable", target_id="job-1"
+        ).text
+    )
+    assert (
+        "Removed"
+        in runner._dispatch_control_action("oc_1", action="schedule_remove", target_id="job-1").text
+    )
+    assert (
+        "not found"
+        in runner._dispatch_control_action(
+            "oc_1", action="grant_revoke", target_id="missing"
+        ).text.lower()
+    )
+    assert (
+        "Unsupported control action"
+        in runner._dispatch_control_action("oc_1", action="mystery", target_id="").text
+    )
 
     runner.agent.kernel_store = None  # type: ignore[attr-defined]
     unavailable = runner._dispatch_control_action("oc_1", action="task_list", target_id="")
@@ -459,7 +560,10 @@ def test_runner_dispatch_control_action_covers_kernel_introspection_paths(monkey
 
     assert help_result.is_command is True and "/help" in help_result.text
     assert history_result.is_command is True and "user turns" in history_result.text
-    assert new_session_result.is_command is True and "Started a new session." in new_session_result.text
+    assert (
+        new_session_result.is_command is True
+        and "Started a new session." in new_session_result.text
+    )
 
 
 def test_runner_close_session_and_resume_attempt_cover_finalize_and_blocked_fallback() -> None:
@@ -499,7 +603,9 @@ def test_runner_close_session_and_resume_attempt_cover_finalize_and_blocked_fall
 
     fallback_store = _Store()
     fallback_controller = FallbackController(fallback_store)
-    fallback_runner = AgentRunner(_Agent(), _SessionManager(), _PluginManager(), task_controller=fallback_controller)  # type: ignore[arg-type]
+    fallback_runner = AgentRunner(
+        _Agent(), _SessionManager(), _PluginManager(), task_controller=fallback_controller
+    )  # type: ignore[arg-type]
     fallback_runner.agent.resume_result = AgentResult(
         text="wait",
         turns=1,
@@ -531,7 +637,12 @@ def test_runner_async_helpers_return_early_without_notify_or_schedule(tmp_path: 
 
 def test_runner_helper_functions_and_constructor_guard() -> None:
     assert _strip_internal_markup("") == ""
-    assert _strip_internal_markup("<session_time>x</session_time>\n<feishu_msg_id>om_1</feishu_msg_id>\nHello") == "Hello"
+    assert (
+        _strip_internal_markup(
+            "<session_time>x</session_time>\n<feishu_msg_id>om_1</feishu_msg_id>\nHello"
+        )
+        == "Hello"
+    )
     assert _result_preview("") == ""
     assert _result_preview("word " * 100, limit=12).endswith("…")
 
@@ -547,7 +658,9 @@ def test_runner_handle_marks_blocked_without_mark_suspended_and_respects_kernel_
         def source_from_session(self, session_id: str) -> str:
             return "chat"
 
-        def ensure_conversation(self, conversation_id: str, *, source_channel: str | None = None) -> None:
+        def ensure_conversation(
+            self, conversation_id: str, *, source_channel: str | None = None
+        ) -> None:
             return None
 
         def resolve_text_command(self, session_id: str, text: str):
@@ -565,7 +678,9 @@ def test_runner_handle_marks_blocked_without_mark_suspended_and_respects_kernel_
     controller = BlockOnlyController()
     runner = AgentRunner(_Agent(), _SessionManager(), _PluginManager(), task_controller=controller)  # type: ignore[arg-type]
 
-    runner.agent.run_result = AgentResult(text="blocked", turns=1, tool_calls=0, messages=[], blocked=True)
+    runner.agent.run_result = AgentResult(
+        text="blocked", turns=1, tool_calls=0, messages=[], blocked=True
+    )
     blocked = runner.handle("chat-1", "Need approval")
     assert blocked.blocked is True
     assert controller.blocked == ["attempt-1"]
@@ -614,7 +729,9 @@ def test_runner_prepare_prompt_context_sanitizes_session_and_command_mapping(mon
     monkeypatch.setattr(
         runner,
         "_dispatch_control_action",
-        lambda session_id, action, target_id, **kwargs: dispatched.append((action, target_id)) or DispatchResult("ok", is_command=True),
+        lambda session_id, action, target_id, **kwargs: (
+            dispatched.append((action, target_id)) or DispatchResult("ok", is_command=True)
+        ),
     )
     runner.dispatch("oc_1", "/task rollback receipt-1")
     assert dispatched == [("rollback", "receipt-1")]

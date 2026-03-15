@@ -1,10 +1,12 @@
-# CLI and Operations Reference
+# CLI And Operations
 
-This document covers the CLI commands that currently exist, the common startup paths, and the operational conventions around long-running processes.
+This document covers the CLI commands that currently exist, the long-running service path, and the operator-facing commands that matter most in day-to-day use.
+
+This is a current-implementation document. It does not describe target-only kernel behavior as if it were already fully shipped.
 
 ## Top-Level Commands
 
-Commands currently shown by `uv run hermit --help`:
+Commands currently exposed by the CLI include:
 
 - `setup`
 - `init`
@@ -20,241 +22,214 @@ Commands currently shown by `uv run hermit --help`:
 - `config`
 - `profiles`
 - `auth`
+- `task`
+- `memory`
 
-## Basic Commands
+## Basic Interactive Commands
 
 ### `hermit setup`
 
-Interactive first-run setup wizard:
+Interactive first-run setup:
 
 - writes `~/.hermit/.env`
-- optionally configures Feishu
-- initializes the workspace automatically
+- can configure Feishu credentials
+- initializes the local workspace
 
 ### `hermit init`
 
-Initializes the workspace directories and the default context file.
+Initializes local state directories and baseline workspace files.
 
 ### `hermit startup-prompt`
 
-Prints the final startup system prompt, useful for debugging:
+Prints the assembled startup prompt for debugging. Useful when you want to inspect:
 
 - base context
 - rules
-- skills catalog
-- hook-injected content
+- skills
+- hook-injected fragments
 
 ### `hermit run "..."`
 
-Runs a single task without entering an interactive session.
+Runs a one-shot task without entering an interactive session.
 
 ### `hermit chat`
 
 Starts an interactive multi-turn session.
 
-Optional parameters:
-
-- `--session-id`
-- `--debug`
-
-## Slash Commands Available in `chat` / `serve`
-
-Core commands:
+Slash commands available in `chat` include:
 
 - `/new`
 - `/history`
 - `/help`
-- `/quit` (CLI only)
-
-Additional builtin plugin commands:
-
+- `/quit`
 - `/compact`
 - `/plan`
 - `/usage`
 
-Note: these slash commands are system-level commands handled by `AgentRunner`; they do not go through the LLM.
-
-## `serve` and `reload`
+## Service Lifecycle
 
 ### `hermit serve --adapter feishu`
 
-Long-running mode. The main builtin adapter at the moment is `feishu`.
+Starts the long-running service using the `feishu` adapter.
 
-Startup flow for `serve`:
+Current startup flow:
 
-1. read configuration
-2. run environment self-checks
+1. load configuration
+2. run preflight checks
 3. discover plugins
-4. build the runtime
+4. build runtime and kernel services
 5. start the adapter
-6. activate `SERVE_START` hooks such as scheduler / webhook
+6. activate service hooks such as scheduler and webhook support
 
 ### `hermit reload --adapter feishu`
 
-Sends `SIGHUP` to the running service and triggers a graceful reload:
+Triggers a graceful reload for the running adapter process.
 
-1. stop the current adapter
-2. reload configuration
-3. rediscover plugins
-4. rebuild tools and the system prompt
-5. restart the adapter
+Use this when you want to rebuild configuration, plugins, and tools without treating the change as a full source-code hot reload.
 
-This is better than a full process restart when you want to keep the same PID or let an external process manager continue owning the process.
+## Config, Profiles, And Auth
 
-## Pre-Start Environment Checks
+Useful inspection commands:
 
-Before `serve` actually starts, it prints a round of preflight checks.
+```bash
+hermit config show
+hermit profiles list
+hermit profiles resolve --name codex-local
+hermit auth status
+```
 
-For the `feishu` adapter, it checks:
+These are the best first checks when the runtime is behaving differently than expected.
 
-- profile source
-- provider and model
-- whether LLM auth is available
-- Feishu App ID / Secret source
-- whether Feishu progress cards are enabled
-- whether default Feishu notifications for the scheduler are configured
+## Task Kernel Commands
 
-If a critical item is missing, `serve` exits immediately instead of half-starting and failing later.
+Hermit's most distinctive operator-facing surface lives under `task`.
 
-## `config` / `profiles` / `auth`
+Useful commands:
 
-### `hermit config show`
+```bash
+hermit task list
+hermit task show <task_id>
+hermit task events <task_id>
+hermit task receipts --task-id <task_id>
+hermit task case <task_id>
+hermit task explain <task_id>
+hermit task proof <task_id>
+hermit task proof-export <task_id>
+hermit task approve <approval_id>
+hermit task approve-always-directory <approval_id>
+hermit task deny <approval_id> --reason "not safe"
+hermit task resume <approval_id>
+hermit task rollback <receipt_id>
+hermit task projections-rebuild --all
+```
 
-Outputs the fully resolved configuration snapshot.
+Path-grant commands:
 
-Best used to confirm:
+```bash
+hermit task grant list
+hermit task grant revoke <grant_id>
+```
 
-- the currently selected profile
-- the effective provider / model
-- whether webhook / scheduler are enabled
-- whether auth is available
+These commands are part of what makes Hermit feel like a governed kernel rather than only a conversational shell.
 
-### `hermit profiles list`
+## Memory Commands
 
-Lists all profiles in `~/.hermit/config.toml`.
+Memory-related operator commands:
 
-### `hermit profiles resolve --name <profile>`
+```bash
+hermit memory inspect <memory_id>
+hermit memory inspect --claim-text "Use uv for local Python workflows"
+hermit memory list --status active
+hermit memory status
+hermit memory rebuild
+```
 
-Shows the resolved values for a specific profile.
+Use these when you want to inspect evidence-bound memory behavior rather than generic conversation memory.
 
-### `hermit auth status`
+## Plugin Commands
 
-Shows which auth source the current provider will use.
+Plugin management:
 
-## `plugin` Subcommands
+```bash
+hermit plugin list
+hermit plugin install <git-url>
+hermit plugin info <name>
+hermit plugin remove <name>
+```
 
-### `hermit plugin list`
+Hermit's plugin model is still a major extension surface, even as the kernel becomes more central.
 
-Lists builtin and installed plugins.
+## Scheduler Commands
 
-### `hermit plugin install <git-url>`
+List schedules:
 
-Installs a plugin into `~/.hermit/plugins/<name>` using `git clone --depth 1`.
+```bash
+hermit schedule list
+```
 
-### `hermit plugin remove <name>`
-
-Deletes an installed plugin directory.
-
-### `hermit plugin info <name>`
-
-Prints the core information from a plugin manifest.
-
-## `schedule` Subcommands
-
-### `hermit schedule list`
-
-Lists all registered jobs and their next run time.
-
-### `hermit schedule add`
-
-Three mutually exclusive scheduling modes:
-
-- `--cron`
-- `--once`
-- `--interval`
-
-Examples:
+Create a schedule:
 
 ```bash
 hermit schedule add \
   --name "daily-summary" \
-  --prompt "总结今天的 issue 更新" \
+  --prompt "Summarize the latest project changes" \
   --cron "0 18 * * 1-5"
 ```
 
-```bash
-hermit schedule add \
-  --name "one-shot" \
-  --prompt "明天下午提醒我检查部署" \
-  --once "2026-03-15T14:00"
-```
+Other schedule commands:
 
 ```bash
-hermit schedule add \
-  --name "polling" \
-  --prompt "检查 webhook 错误日志" \
-  --interval 300
+hermit schedule remove <id>
+hermit schedule enable <id>
+hermit schedule disable <id>
+hermit schedule history --job-id <id>
 ```
 
-Notes:
+Scheduled work is stored in the kernel-backed schedule state and later picked up by `hermit serve`.
 
-- the minimum `interval` is `60`
-- after adding a job, it only becomes active the next time `hermit serve` starts
+## Autostart Commands
 
-### Other Commands
+macOS launchd support:
 
-- `hermit schedule remove <id>`
-- `hermit schedule enable <id>`
-- `hermit schedule disable <id>`
-- `hermit schedule history --job-id ... --limit 20`
+```bash
+hermit autostart enable --adapter feishu
+hermit autostart disable --adapter feishu
+hermit autostart status
+```
 
-## `autostart` Subcommands
+Like `serve` and `reload`, these commands currently use `--adapter`.
 
-Currently only for macOS `launchd`:
+## Sessions
 
-- `hermit autostart enable --adapter feishu`
-- `hermit autostart disable --adapter feishu`
-- `hermit autostart status`
+List known session files:
 
-Implementation details:
+```bash
+hermit sessions
+```
 
-- each adapter gets its own LaunchAgent plist
-- different adapters do not overwrite one another
+Session persistence is still present in the broader runtime, even as task semantics become more central.
 
-## `sessions`
+## Docker
 
-`hermit sessions` lists the currently known session filenames.
-
-Session persistence paths:
-
-- active: `~/.hermit/sessions/*.json`
-- archived: `~/.hermit/sessions/archive/*.json`
-
-## Docker / Compose
-
-The service command in the current Compose setup is:
+The service entrypoint in containerized setups should match the actual CLI:
 
 ```bash
 hermit serve --adapter feishu
 ```
 
-Do not write it as:
+## Practical Operator Flow
 
-```bash
-hermit serve feishu
-```
+When something important happened and you want the shortest path to clarity:
 
-Because in the current CLI implementation, `adapter` is an option, not a positional argument.
+1. `hermit task show <task_id>`
+2. `hermit task proof <task_id>`
+3. `hermit task receipts --task-id <task_id>`
+4. `hermit task events <task_id>`
+5. `hermit task rollback <receipt_id>` if recovery is supported and appropriate
 
-## Menu Bar Companion
+## Related Docs
 
-Related menu bar companion commands:
-
-- `hermit-menubar --adapter feishu`
-- `hermit-menubar-install-app --adapter feishu --open`
-
-It is not a replacement for `serve`; it is the control layer on macOS.
-
-## Testing and Troubleshooting
-
-Run tests:
+- [operator-guide.md](./operator-guide.md)
+- [configuration.md](./configuration.md)
+- [providers-and-profiles.md](./providers-and-profiles.md)
+- [status-and-compatibility.md](./status-and-compatibility.md)

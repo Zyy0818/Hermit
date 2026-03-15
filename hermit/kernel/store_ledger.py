@@ -75,7 +75,9 @@ class KernelLedgerStoreMixin:
             row = self._row("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,))
         return self._artifact_from_row(row) if row is not None else None
 
-    def list_artifacts(self, *, task_id: str | None = None, limit: int = 200) -> list[ArtifactRecord]:
+    def list_artifacts(
+        self, *, task_id: str | None = None, limit: int = 200
+    ) -> list[ArtifactRecord]:
         if task_id:
             query = "SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at ASC LIMIT ?"
             params: tuple[Any, ...] = (task_id, limit)
@@ -160,7 +162,9 @@ class KernelLedgerStoreMixin:
             row = self._row("SELECT * FROM decisions WHERE decision_id = ?", (decision_id,))
         return self._decision_from_row(row) if row is not None else None
 
-    def list_decisions(self, *, task_id: str | None = None, limit: int = 50) -> list[DecisionRecord]:
+    def list_decisions(
+        self, *, task_id: str | None = None, limit: int = 50
+    ) -> list[DecisionRecord]:
         if task_id:
             query = "SELECT * FROM decisions WHERE task_id = ? ORDER BY created_at DESC LIMIT ?"
             params: tuple[Any, ...] = (task_id, limit)
@@ -293,9 +297,13 @@ class KernelLedgerStoreMixin:
                 },
             )
 
-    def list_execution_permits(self, *, task_id: str | None = None, limit: int = 50) -> list[ExecutionPermitRecord]:
+    def list_execution_permits(
+        self, *, task_id: str | None = None, limit: int = 50
+    ) -> list[ExecutionPermitRecord]:
         if task_id:
-            query = "SELECT * FROM execution_permits WHERE task_id = ? ORDER BY issued_at DESC LIMIT ?"
+            query = (
+                "SELECT * FROM execution_permits WHERE task_id = ? ORDER BY issued_at DESC LIMIT ?"
+            )
             params: tuple[Any, ...] = (task_id, limit)
         else:
             query = "SELECT * FROM execution_permits ORDER BY issued_at DESC LIMIT ?"
@@ -313,7 +321,9 @@ class KernelLedgerStoreMixin:
     def update_capability_grant(self, permit_id: str, **kwargs: Any) -> None:
         self.update_execution_permit(permit_id, **kwargs)
 
-    def list_capability_grants(self, *, task_id: str | None = None, limit: int = 50) -> list[ExecutionPermitRecord]:
+    def list_capability_grants(
+        self, *, task_id: str | None = None, limit: int = 50
+    ) -> list[ExecutionPermitRecord]:
         return self.list_execution_permits(task_id=task_id, limit=limit)
 
     def create_path_grant(
@@ -592,7 +602,9 @@ class KernelLedgerStoreMixin:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         with self._lock:
-            rows = self._rows(f"SELECT * FROM beliefs {where} ORDER BY updated_at DESC LIMIT ?", params)
+            rows = self._rows(
+                f"SELECT * FROM beliefs {where} ORDER BY updated_at DESC LIMIT ?", params
+            )
         return [self._belief_from_row(row) for row in rows]
 
     def update_belief(
@@ -616,7 +628,9 @@ class KernelLedgerStoreMixin:
         next_supersedes = belief.supersedes if supersedes is _UNSET else list(supersedes)
         next_invalidated_at = belief.invalidated_at if invalidated_at is _UNSET else invalidated_at
         next_promotion_candidate = (
-            belief.promotion_candidate if promotion_candidate is _UNSET else bool(promotion_candidate)
+            belief.promotion_candidate
+            if promotion_candidate is _UNSET
+            else bool(promotion_candidate)
         )
         with self._lock, self._conn:
             self._conn.execute(
@@ -709,7 +723,9 @@ class KernelLedgerStoreMixin:
             if expires_at is None:
                 expires_at = classification.expires_at
         normalized_status = "invalidated" if status == "superseded" else status
-        normalized_reason = invalidation_reason or ("superseded" if status == "superseded" else None)
+        normalized_reason = invalidation_reason or (
+            "superseded" if status == "superseded" else None
+        )
         with self._lock, self._conn:
             self._conn.execute(
                 """
@@ -818,7 +834,9 @@ class KernelLedgerStoreMixin:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         with self._lock:
-            rows = self._rows(f"SELECT * FROM memory_records {where} ORDER BY updated_at DESC LIMIT ?", params)
+            rows = self._rows(
+                f"SELECT * FROM memory_records {where} ORDER BY updated_at DESC LIMIT ?", params
+            )
         return [self._memory_record_from_row(row) for row in rows]
 
     def update_memory_record(
@@ -841,15 +859,17 @@ class KernelLedgerStoreMixin:
         next_status = "invalidated" if requested_status == "superseded" else requested_status
         next_supersedes = record.supersedes if supersedes is _UNSET else list(supersedes)
         next_supersedes_memory_ids = (
-            record.supersedes_memory_ids if supersedes_memory_ids is _UNSET else list(supersedes_memory_ids)
+            record.supersedes_memory_ids
+            if supersedes_memory_ids is _UNSET
+            else list(supersedes_memory_ids)
         )
         next_superseded_by_memory_id = (
-            record.superseded_by_memory_id if superseded_by_memory_id is _UNSET else superseded_by_memory_id
+            record.superseded_by_memory_id
+            if superseded_by_memory_id is _UNSET
+            else superseded_by_memory_id
         )
         next_invalidation_reason = (
-            record.invalidation_reason
-            if invalidation_reason is _UNSET
-            else invalidation_reason
+            record.invalidation_reason if invalidation_reason is _UNSET else invalidation_reason
         )
         if requested_status == "superseded" and next_invalidation_reason is None:
             next_invalidation_reason = "superseded"
@@ -1094,7 +1114,9 @@ class KernelLedgerStoreMixin:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         with self._lock:
-            rows = self._rows(f"SELECT * FROM approvals {where} ORDER BY requested_at DESC LIMIT ?", params)
+            rows = self._rows(
+                f"SELECT * FROM approvals {where} ORDER BY requested_at DESC LIMIT ?", params
+            )
         return [self._approval_from_row(row) for row in rows]
 
     def get_latest_pending_approval(self, conversation_id: str) -> ApprovalRecord | None:
@@ -1200,7 +1222,7 @@ class KernelLedgerStoreMixin:
         witness_ref: str | None = None,
         idempotency_key: str | None = None,
         receipt_bundle_ref: str | None = None,
-        proof_mode: str = "none",
+        proof_mode: str = "hash_only",
         signature: str | None = None,
         rollback_supported: bool = False,
         rollback_strategy: str | None = None,
@@ -1329,7 +1351,9 @@ class KernelLedgerStoreMixin:
         receipt = self.get_receipt(receipt_id)
         if receipt is None:
             return
-        updated_bundle_ref = receipt.receipt_bundle_ref if receipt_bundle_ref is _UNSET else receipt_bundle_ref
+        updated_bundle_ref = (
+            receipt.receipt_bundle_ref if receipt_bundle_ref is _UNSET else receipt_bundle_ref
+        )
         updated_proof_mode = receipt.proof_mode if proof_mode is _UNSET else proof_mode
         updated_signature = receipt.signature if signature is _UNSET else signature
         with self._lock, self._conn:
@@ -1369,9 +1393,15 @@ class KernelLedgerStoreMixin:
         receipt = self.get_receipt(receipt_id)
         if receipt is None:
             return
-        updated_supported = receipt.rollback_supported if rollback_supported is _UNSET else bool(rollback_supported)
-        updated_strategy = receipt.rollback_strategy if rollback_strategy is _UNSET else rollback_strategy
-        updated_status = receipt.rollback_status if rollback_status is _UNSET else str(rollback_status)
+        updated_supported = (
+            receipt.rollback_supported if rollback_supported is _UNSET else bool(rollback_supported)
+        )
+        updated_strategy = (
+            receipt.rollback_strategy if rollback_strategy is _UNSET else rollback_strategy
+        )
+        updated_status = (
+            receipt.rollback_status if rollback_status is _UNSET else str(rollback_status)
+        )
         updated_ref = receipt.rollback_ref if rollback_ref is _UNSET else rollback_ref
         updated_artifact_refs = (
             receipt.rollback_artifact_refs

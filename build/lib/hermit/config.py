@@ -141,9 +141,6 @@ class Settings(BaseSettings):
     feishu_app_id: Optional[str] = None
     feishu_app_secret: Optional[str] = None
     feishu_thread_progress: bool = True
-    feishu_reaction_enabled: bool = True
-    feishu_reaction_ack: str = "EYES"
-    feishu_reaction_done: str = ""
     scheduler_enabled: bool = True
     scheduler_catch_up: bool = True
     scheduler_feishu_chat_id: Optional[str] = None
@@ -172,7 +169,9 @@ class Settings(BaseSettings):
         env_file = Path(env_file_raw).expanduser() if env_file_raw else base_dir / ".env"
         env_file_values = _read_env_file_values(env_file)
         profile_name = values.get("profile") or os.environ.get("HERMIT_PROFILE")
-        resolved_profile = resolve_profile(base_dir, str(profile_name) if profile_name is not None else None)
+        resolved_profile = resolve_profile(
+            base_dir, str(profile_name) if profile_name is not None else None
+        )
         if resolved_profile.name and "profile" not in values:
             values["profile"] = resolved_profile.name
         for key, value in resolved_profile.values.items():
@@ -187,64 +186,194 @@ class Settings(BaseSettings):
             values["claude_headers"] = values["custom_headers"]
         if not values.get("provider"):
             values["provider"] = os.environ.get("HERMIT_PROVIDER", "claude")
-        _set_if_present(values, "claude_api_key", env_file_values.get("HERMIT_CLAUDE_API_KEY") or env_file_values.get("ANTHROPIC_API_KEY"))
-        _set_if_present(values, "claude_auth_token", env_file_values.get("HERMIT_CLAUDE_AUTH_TOKEN") or env_file_values.get("HERMIT_AUTH_TOKEN"))
-        _set_if_present(values, "claude_base_url", env_file_values.get("HERMIT_CLAUDE_BASE_URL") or env_file_values.get("HERMIT_BASE_URL"))
-        _set_if_present(values, "claude_headers", env_file_values.get("HERMIT_CLAUDE_HEADERS") or env_file_values.get("HERMIT_CUSTOM_HEADERS"))
-        _set_if_present(values, "openai_api_key", env_file_values.get("HERMIT_OPENAI_API_KEY") or env_file_values.get("OPENAI_API_KEY"))
+        _set_if_present(
+            values,
+            "claude_api_key",
+            env_file_values.get("HERMIT_CLAUDE_API_KEY")
+            or env_file_values.get("ANTHROPIC_API_KEY"),
+        )
+        _set_if_present(
+            values,
+            "claude_auth_token",
+            env_file_values.get("HERMIT_CLAUDE_AUTH_TOKEN")
+            or env_file_values.get("HERMIT_AUTH_TOKEN"),
+        )
+        _set_if_present(
+            values,
+            "claude_base_url",
+            env_file_values.get("HERMIT_CLAUDE_BASE_URL") or env_file_values.get("HERMIT_BASE_URL"),
+        )
+        _set_if_present(
+            values,
+            "claude_headers",
+            env_file_values.get("HERMIT_CLAUDE_HEADERS")
+            or env_file_values.get("HERMIT_CUSTOM_HEADERS"),
+        )
+        _set_if_present(
+            values,
+            "openai_api_key",
+            env_file_values.get("HERMIT_OPENAI_API_KEY") or env_file_values.get("OPENAI_API_KEY"),
+        )
         _set_if_present(values, "openai_base_url", env_file_values.get("HERMIT_OPENAI_BASE_URL"))
         _set_if_present(values, "openai_headers", env_file_values.get("HERMIT_OPENAI_HEADERS"))
         _set_if_present(values, "locale", env_file_values.get("HERMIT_LOCALE"))
-        _set_if_present(values, "feishu_app_id", env_file_values.get("HERMIT_FEISHU_APP_ID") or env_file_values.get("FEISHU_APP_ID"))
-        _set_if_present(values, "feishu_app_secret", env_file_values.get("HERMIT_FEISHU_APP_SECRET") or env_file_values.get("FEISHU_APP_SECRET"))
-        _set_if_present(values, "feishu_thread_progress", env_file_values.get("HERMIT_FEISHU_THREAD_PROGRESS"))
-        _set_if_present(values, "feishu_reaction_enabled", env_file_values.get("HERMIT_FEISHU_REACTION_ENABLED"))
-        _set_if_present(values, "feishu_reaction_ack", env_file_values.get("HERMIT_FEISHU_REACTION_ACK"))
-        _set_if_present(values, "feishu_reaction_done", env_file_values.get("HERMIT_FEISHU_REACTION_DONE"))
-        _set_if_present(values, "scheduler_enabled", env_file_values.get("HERMIT_SCHEDULER_ENABLED"))
-        _set_if_present(values, "scheduler_catch_up", env_file_values.get("HERMIT_SCHEDULER_CATCH_UP"))
-        _set_if_present(values, "scheduler_feishu_chat_id", env_file_values.get("HERMIT_SCHEDULER_FEISHU_CHAT_ID"))
-        _set_if_present(values, "kernel_dispatch_worker_count", env_file_values.get("HERMIT_KERNEL_DISPATCH_WORKER_COUNT"))
+        _set_if_present(
+            values,
+            "feishu_app_id",
+            env_file_values.get("HERMIT_FEISHU_APP_ID") or env_file_values.get("FEISHU_APP_ID"),
+        )
+        _set_if_present(
+            values,
+            "feishu_app_secret",
+            env_file_values.get("HERMIT_FEISHU_APP_SECRET")
+            or env_file_values.get("FEISHU_APP_SECRET"),
+        )
+        _set_if_present(
+            values, "feishu_thread_progress", env_file_values.get("HERMIT_FEISHU_THREAD_PROGRESS")
+        )
+        _set_if_present(
+            values, "scheduler_enabled", env_file_values.get("HERMIT_SCHEDULER_ENABLED")
+        )
+        _set_if_present(
+            values, "scheduler_catch_up", env_file_values.get("HERMIT_SCHEDULER_CATCH_UP")
+        )
+        _set_if_present(
+            values,
+            "scheduler_feishu_chat_id",
+            env_file_values.get("HERMIT_SCHEDULER_FEISHU_CHAT_ID"),
+        )
+        _set_if_present(
+            values,
+            "kernel_dispatch_worker_count",
+            env_file_values.get("HERMIT_KERNEL_DISPATCH_WORKER_COUNT"),
+        )
         _set_if_present(values, "webhook_enabled", env_file_values.get("HERMIT_WEBHOOK_ENABLED"))
         _set_if_present(values, "webhook_host", env_file_values.get("HERMIT_WEBHOOK_HOST"))
         _set_if_present(values, "webhook_port", env_file_values.get("HERMIT_WEBHOOK_PORT"))
-        _set_if_present(values, "webhook_control_secret", env_file_values.get("HERMIT_WEBHOOK_CONTROL_SECRET"))
-        _set_if_present(values, "approval_copy_formatter_enabled", env_file_values.get("HERMIT_APPROVAL_COPY_FORMATTER_ENABLED"))
-        _set_if_present(values, "approval_copy_model", env_file_values.get("HERMIT_APPROVAL_COPY_MODEL"))
-        _set_if_present(values, "approval_copy_formatter_timeout_ms", env_file_values.get("HERMIT_APPROVAL_COPY_FORMATTER_TIMEOUT_MS"))
-        _set_if_present(values, "progress_summary_enabled", env_file_values.get("HERMIT_PROGRESS_SUMMARY_ENABLED"))
-        _set_if_present(values, "progress_summary_model", env_file_values.get("HERMIT_PROGRESS_SUMMARY_MODEL"))
-        _set_if_present(values, "progress_summary_max_tokens", env_file_values.get("HERMIT_PROGRESS_SUMMARY_MAX_TOKENS"))
-        _set_if_present(values, "progress_summary_keepalive_seconds", env_file_values.get("HERMIT_PROGRESS_SUMMARY_KEEPALIVE_SECONDS"))
-        _override_if_present(values, "claude_api_key", os.environ.get("HERMIT_CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
-        _override_if_present(values, "claude_auth_token", os.environ.get("HERMIT_CLAUDE_AUTH_TOKEN") or os.environ.get("HERMIT_AUTH_TOKEN"))
-        _override_if_present(values, "claude_base_url", os.environ.get("HERMIT_CLAUDE_BASE_URL") or os.environ.get("HERMIT_BASE_URL"))
-        _override_if_present(values, "claude_headers", os.environ.get("HERMIT_CLAUDE_HEADERS") or os.environ.get("HERMIT_CUSTOM_HEADERS"))
-        _override_if_present(values, "openai_api_key", os.environ.get("HERMIT_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+        _set_if_present(
+            values, "webhook_control_secret", env_file_values.get("HERMIT_WEBHOOK_CONTROL_SECRET")
+        )
+        _set_if_present(
+            values,
+            "approval_copy_formatter_enabled",
+            env_file_values.get("HERMIT_APPROVAL_COPY_FORMATTER_ENABLED"),
+        )
+        _set_if_present(
+            values, "approval_copy_model", env_file_values.get("HERMIT_APPROVAL_COPY_MODEL")
+        )
+        _set_if_present(
+            values,
+            "approval_copy_formatter_timeout_ms",
+            env_file_values.get("HERMIT_APPROVAL_COPY_FORMATTER_TIMEOUT_MS"),
+        )
+        _set_if_present(
+            values,
+            "progress_summary_enabled",
+            env_file_values.get("HERMIT_PROGRESS_SUMMARY_ENABLED"),
+        )
+        _set_if_present(
+            values, "progress_summary_model", env_file_values.get("HERMIT_PROGRESS_SUMMARY_MODEL")
+        )
+        _set_if_present(
+            values,
+            "progress_summary_max_tokens",
+            env_file_values.get("HERMIT_PROGRESS_SUMMARY_MAX_TOKENS"),
+        )
+        _set_if_present(
+            values,
+            "progress_summary_keepalive_seconds",
+            env_file_values.get("HERMIT_PROGRESS_SUMMARY_KEEPALIVE_SECONDS"),
+        )
+        _override_if_present(
+            values,
+            "claude_api_key",
+            os.environ.get("HERMIT_CLAUDE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"),
+        )
+        _override_if_present(
+            values,
+            "claude_auth_token",
+            os.environ.get("HERMIT_CLAUDE_AUTH_TOKEN") or os.environ.get("HERMIT_AUTH_TOKEN"),
+        )
+        _override_if_present(
+            values,
+            "claude_base_url",
+            os.environ.get("HERMIT_CLAUDE_BASE_URL") or os.environ.get("HERMIT_BASE_URL"),
+        )
+        _override_if_present(
+            values,
+            "claude_headers",
+            os.environ.get("HERMIT_CLAUDE_HEADERS") or os.environ.get("HERMIT_CUSTOM_HEADERS"),
+        )
+        _override_if_present(
+            values,
+            "openai_api_key",
+            os.environ.get("HERMIT_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY"),
+        )
         _override_if_present(values, "openai_base_url", os.environ.get("HERMIT_OPENAI_BASE_URL"))
         _override_if_present(values, "openai_headers", os.environ.get("HERMIT_OPENAI_HEADERS"))
         _override_if_present(values, "locale", os.environ.get("HERMIT_LOCALE"))
-        _override_if_present(values, "feishu_app_id", os.environ.get("HERMIT_FEISHU_APP_ID") or os.environ.get("FEISHU_APP_ID"))
-        _override_if_present(values, "feishu_app_secret", os.environ.get("HERMIT_FEISHU_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET"))
-        _override_if_present(values, "feishu_thread_progress", os.environ.get("HERMIT_FEISHU_THREAD_PROGRESS"))
-        _override_if_present(values, "feishu_reaction_enabled", os.environ.get("HERMIT_FEISHU_REACTION_ENABLED"))
-        _override_if_present(values, "feishu_reaction_ack", os.environ.get("HERMIT_FEISHU_REACTION_ACK"))
-        _override_if_present(values, "feishu_reaction_done", os.environ.get("HERMIT_FEISHU_REACTION_DONE"))
-        _override_if_present(values, "scheduler_enabled", os.environ.get("HERMIT_SCHEDULER_ENABLED"))
-        _override_if_present(values, "scheduler_catch_up", os.environ.get("HERMIT_SCHEDULER_CATCH_UP"))
-        _override_if_present(values, "scheduler_feishu_chat_id", os.environ.get("HERMIT_SCHEDULER_FEISHU_CHAT_ID"))
-        _override_if_present(values, "kernel_dispatch_worker_count", os.environ.get("HERMIT_KERNEL_DISPATCH_WORKER_COUNT"))
+        _override_if_present(
+            values,
+            "feishu_app_id",
+            os.environ.get("HERMIT_FEISHU_APP_ID") or os.environ.get("FEISHU_APP_ID"),
+        )
+        _override_if_present(
+            values,
+            "feishu_app_secret",
+            os.environ.get("HERMIT_FEISHU_APP_SECRET") or os.environ.get("FEISHU_APP_SECRET"),
+        )
+        _override_if_present(
+            values, "feishu_thread_progress", os.environ.get("HERMIT_FEISHU_THREAD_PROGRESS")
+        )
+        _override_if_present(
+            values, "scheduler_enabled", os.environ.get("HERMIT_SCHEDULER_ENABLED")
+        )
+        _override_if_present(
+            values, "scheduler_catch_up", os.environ.get("HERMIT_SCHEDULER_CATCH_UP")
+        )
+        _override_if_present(
+            values, "scheduler_feishu_chat_id", os.environ.get("HERMIT_SCHEDULER_FEISHU_CHAT_ID")
+        )
+        _override_if_present(
+            values,
+            "kernel_dispatch_worker_count",
+            os.environ.get("HERMIT_KERNEL_DISPATCH_WORKER_COUNT"),
+        )
         _override_if_present(values, "webhook_enabled", os.environ.get("HERMIT_WEBHOOK_ENABLED"))
         _override_if_present(values, "webhook_host", os.environ.get("HERMIT_WEBHOOK_HOST"))
         _override_if_present(values, "webhook_port", os.environ.get("HERMIT_WEBHOOK_PORT"))
-        _override_if_present(values, "webhook_control_secret", os.environ.get("HERMIT_WEBHOOK_CONTROL_SECRET"))
-        _override_if_present(values, "approval_copy_formatter_enabled", os.environ.get("HERMIT_APPROVAL_COPY_FORMATTER_ENABLED"))
-        _override_if_present(values, "approval_copy_model", os.environ.get("HERMIT_APPROVAL_COPY_MODEL"))
-        _override_if_present(values, "approval_copy_formatter_timeout_ms", os.environ.get("HERMIT_APPROVAL_COPY_FORMATTER_TIMEOUT_MS"))
-        _override_if_present(values, "progress_summary_enabled", os.environ.get("HERMIT_PROGRESS_SUMMARY_ENABLED"))
-        _override_if_present(values, "progress_summary_model", os.environ.get("HERMIT_PROGRESS_SUMMARY_MODEL"))
-        _override_if_present(values, "progress_summary_max_tokens", os.environ.get("HERMIT_PROGRESS_SUMMARY_MAX_TOKENS"))
-        _override_if_present(values, "progress_summary_keepalive_seconds", os.environ.get("HERMIT_PROGRESS_SUMMARY_KEEPALIVE_SECONDS"))
+        _override_if_present(
+            values, "webhook_control_secret", os.environ.get("HERMIT_WEBHOOK_CONTROL_SECRET")
+        )
+        _override_if_present(
+            values,
+            "approval_copy_formatter_enabled",
+            os.environ.get("HERMIT_APPROVAL_COPY_FORMATTER_ENABLED"),
+        )
+        _override_if_present(
+            values, "approval_copy_model", os.environ.get("HERMIT_APPROVAL_COPY_MODEL")
+        )
+        _override_if_present(
+            values,
+            "approval_copy_formatter_timeout_ms",
+            os.environ.get("HERMIT_APPROVAL_COPY_FORMATTER_TIMEOUT_MS"),
+        )
+        _override_if_present(
+            values, "progress_summary_enabled", os.environ.get("HERMIT_PROGRESS_SUMMARY_ENABLED")
+        )
+        _override_if_present(
+            values, "progress_summary_model", os.environ.get("HERMIT_PROGRESS_SUMMARY_MODEL")
+        )
+        _override_if_present(
+            values,
+            "progress_summary_max_tokens",
+            os.environ.get("HERMIT_PROGRESS_SUMMARY_MAX_TOKENS"),
+        )
+        _override_if_present(
+            values,
+            "progress_summary_keepalive_seconds",
+            os.environ.get("HERMIT_PROGRESS_SUMMARY_KEEPALIVE_SECONDS"),
+        )
         return values
 
     @model_validator(mode="after")
@@ -256,6 +385,7 @@ class Settings(BaseSettings):
         if self.thinking_budget > 0 and self.max_tokens <= self.thinking_budget:
             return self.thinking_budget + self.max_tokens
         return self.max_tokens
+
     prevent_sleep: bool = True
     log_level: str = "INFO"
     sandbox_mode: str = "l0"

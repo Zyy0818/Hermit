@@ -14,6 +14,7 @@ from hermit.core.budgets import Deadline, ExecutionBudget, get_runtime_budget
 from hermit.kernel.observation import observation_envelope
 
 _RECENT_LINE_BUFFER = 200
+_COARSE_OBSERVATION_GRACE_SECONDS = 0.1
 
 
 @dataclass
@@ -38,13 +39,17 @@ class _ObservedProcess:
     failure_patterns: list[dict[str, Any]] = field(default_factory=list)
     progress_patterns: list[dict[str, Any]] = field(default_factory=list)
     ready_return: bool = False
+    coarse_observation_emitted: bool = False
     cancelled: bool = False
     completed: bool = False
     returncode: int | None = None
+    completed_at: float | None = None
     stdout_chunks: list[str] = field(default_factory=list)
     stderr_chunks: list[str] = field(default_factory=list)
     pending_events: list[tuple[str, str]] = field(default_factory=list)
-    recent_events: deque[tuple[str, str]] = field(default_factory=lambda: deque(maxlen=_RECENT_LINE_BUFFER))
+    recent_events: deque[tuple[str, str]] = field(
+        default_factory=lambda: deque(maxlen=_RECENT_LINE_BUFFER)
+    )
     reader_threads: list[threading.Thread] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -55,7 +60,7 @@ class CommandSandbox:
     def __init__(
         self,
         mode: str = "l0",
-        timeout_seconds: int = 30,
+        timeout_seconds: float = 30,
         cwd: Path | None = None,
         budget: ExecutionBudget | None = None,
     ) -> None:
@@ -74,9 +79,10 @@ class CommandSandbox:
             observation_window=base_budget.observation_window,
             observation_poll_interval=base_budget.observation_poll_interval,
         )
-        self.timeout_seconds = int(soft)
+        self.timeout_seconds = soft
         self.cwd = cwd
         self._jobs: dict[str, _ObservedProcess] = {}
+        self._terminal_results: dict[str, tuple[float, dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
     def run(self, command: str | dict[str, Any]) -> CommandResult | dict[str, Any]:
@@ -99,7 +105,9 @@ class CommandSandbox:
             proc=proc,
             deadline=deadline,
             created_at=time.time(),
-            display_name=str(payload.get("display_name", "") or self._default_display_name(command_text)),
+            display_name=str(
+                payload.get("display_name", "") or self._default_display_name(command_text)
+            ),
             ready_patterns=self._normalize_pattern_rules(payload.get("ready_patterns")),
             failure_patterns=self._normalize_pattern_rules(payload.get("failure_patterns")),
             progress_patterns=self._normalize_progress_rules(payload.get("progress_patterns")),
@@ -145,9 +153,13 @@ class CommandSandbox:
         )
 
     def poll(self, job_id: str) -> dict[str, Any]:
+        self._prune_terminal_results()
         with self._lock:
             job = self._jobs.get(job_id)
+            cached_terminal = self._terminal_results.get(job_id)
         if job is None:
+            if cached_terminal is not None:
+                return dict(cached_terminal[1])
             return {
                 "status": "failed",
                 "topic_summary": f"Observed command {job_id} is no longer available.",
@@ -200,9 +212,7 @@ class CommandSandbox:
         if failure_progress is not None:
             self._terminate_job(job)
             stdout, stderr = self._output_text(job)
-            with self._lock:
-                self._jobs.pop(job_id, None)
-            return {
+            payload = {
                 "status": "failed",
                 "topic_summary": failure_progress["summary"],
                 "progress": failure_progress,
@@ -214,11 +224,13 @@ class CommandSandbox:
                 },
                 "is_error": True,
             }
-
-        if ready_progress is not None and job.ready_return:
+            self._store_terminal_result(job_id, payload, now=now)
             with self._lock:
                 self._jobs.pop(job_id, None)
-            return {
+            return payload
+
+        if ready_progress is not None and job.ready_return:
+            payload = {
                 "status": "observing",
                 "topic_summary": ready_progress["summary"],
                 "progress": ready_progress,
@@ -230,18 +242,20 @@ class CommandSandbox:
                 },
                 "is_error": False,
             }
+            self._store_terminal_result(job_id, payload, now=now)
+            with self._lock:
+                self._jobs.pop(job_id, None)
+            return payload
 
         if job.proc.poll() is None:
             if now >= job.deadline.hard_at:
                 self._terminate_job(job, force=True)
                 stdout, stderr = self._output_text(job)
-                with self._lock:
-                    self._jobs.pop(job_id, None)
                 timeout_progress = {
                     "phase": "timeout",
                     "summary": f"{job.display_name} timed out.",
                 }
-                return {
+                payload = {
                     "status": "timeout",
                     "topic_summary": timeout_progress["summary"],
                     "progress": timeout_progress,
@@ -253,29 +267,45 @@ class CommandSandbox:
                     },
                     "is_error": True,
                 }
-            progress = matched_progress or {
-                "phase": "running",
-                "summary": f"{job.display_name} is still running.",
-            }
-            return {
-                "status": "observing",
-                "topic_summary": str(progress.get("summary", "") or f"{job.display_name} is still running."),
-                "progress": progress,
-                "poll_after_seconds": self.budget.observation_poll_interval,
-            }
+                self._store_terminal_result(job_id, payload, now=now)
+                with self._lock:
+                    self._jobs.pop(job_id, None)
+                return payload
+            progress = matched_progress
+            if progress is None:
+                progress = self._coarse_running_progress(job)
+                job.coarse_observation_emitted = True
+            return self._observing_payload(
+                job,
+                progress=progress,
+                poll_after_seconds=self.budget.observation_poll_interval,
+            )
 
         job.returncode = job.proc.returncode
         job.completed = True
+        if job.completed_at is None:
+            job.completed_at = now
+        if self._should_extend_coarse_observation(
+            job,
+            now=now,
+            matched_progress=matched_progress,
+            ready_progress=ready_progress,
+            failure_progress=failure_progress,
+        ):
+            job.coarse_observation_emitted = True
+            return self._observing_payload(
+                job,
+                progress=self._coarse_running_progress(job),
+                poll_after_seconds=min(self.budget.observation_poll_interval, 0.05),
+            )
         self._join_reader_threads(job)
         stdout, stderr = self._output_text(job)
-        with self._lock:
-            self._jobs.pop(job_id, None)
         status = "completed" if job.proc.returncode == 0 else "failed"
         progress = matched_progress
         topic_summary = f"{job.display_name} finished ({status})."
         if progress and progress.get("summary"):
             topic_summary = str(progress["summary"])
-        return {
+        payload = {
             "status": status,
             "topic_summary": topic_summary,
             "progress": progress,
@@ -287,6 +317,10 @@ class CommandSandbox:
             },
             "is_error": job.proc.returncode != 0,
         }
+        self._store_terminal_result(job_id, payload, now=now)
+        with self._lock:
+            self._jobs.pop(job_id, None)
+        return payload
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
@@ -409,7 +443,9 @@ class CommandSandbox:
             return line
         fields = {"line": line, "stream": stream_name, "display_name": display_name}
         if match is not None:
-            fields.update({key: value for key, value in match.groupdict().items() if value is not None})
+            fields.update(
+                {key: value for key, value in match.groupdict().items() if value is not None}
+            )
         try:
             return text.format(**fields)
         except Exception:
@@ -527,4 +563,82 @@ class CommandSandbox:
             pass
         job.returncode = job.proc.poll()
         job.completed = True
+        if job.completed_at is None:
+            job.completed_at = time.time()
         self._join_reader_threads(job)
+
+    def _coarse_running_progress(self, job: _ObservedProcess) -> dict[str, Any]:
+        return {
+            "phase": "running",
+            "summary": f"{job.display_name} is still running.",
+        }
+
+    def _observing_payload(
+        self,
+        job: _ObservedProcess,
+        *,
+        progress: dict[str, Any],
+        poll_after_seconds: float,
+    ) -> dict[str, Any]:
+        summary = str(progress.get("summary", "") or self._coarse_running_progress(job)["summary"])
+        return {
+            "status": "observing",
+            "topic_summary": summary,
+            "progress": progress,
+            "poll_after_seconds": poll_after_seconds,
+        }
+
+    def _has_observation_output(self, job: _ObservedProcess) -> bool:
+        with job.lock:
+            return bool(
+                job.pending_events or job.recent_events or job.stdout_chunks or job.stderr_chunks
+            )
+
+    def _should_extend_coarse_observation(
+        self,
+        job: _ObservedProcess,
+        *,
+        now: float,
+        matched_progress: dict[str, Any] | None,
+        ready_progress: dict[str, Any] | None,
+        failure_progress: dict[str, Any] | None,
+    ) -> bool:
+        if (
+            matched_progress is not None
+            or ready_progress is not None
+            or failure_progress is not None
+        ):
+            return False
+        if self._has_observation_output(job):
+            return False
+        if job.coarse_observation_emitted:
+            return False
+        completed_at = job.completed_at or now
+        return (
+            completed_at - job.created_at < _COARSE_OBSERVATION_GRACE_SECONDS
+            and now - completed_at < _COARSE_OBSERVATION_GRACE_SECONDS
+        )
+
+    def _store_terminal_result(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        *,
+        now: float | None = None,
+    ) -> None:
+        current = time.time() if now is None else now
+        ttl = max(float(self.budget.observation_poll_interval or 0.0) * 2, 1.0)
+        ttl = min(ttl, float(self.budget.observation_window or ttl))
+        with self._lock:
+            self._terminal_results[job_id] = (current + ttl, dict(payload))
+
+    def _prune_terminal_results(self, *, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        with self._lock:
+            expired = [
+                job_id
+                for job_id, (expires_at, _payload) in self._terminal_results.items()
+                if expires_at <= current
+            ]
+            for job_id in expired:
+                self._terminal_results.pop(job_id, None)

@@ -10,6 +10,11 @@ from hermit.i18n import localize_schema, resolve_locale, tr
 from hermit.storage import atomic_write
 
 ToolHandler = Callable[[dict[str, Any]], Any]
+_RISK_HINTS = {"low", "medium", "high", "critical"}
+
+
+class ToolGovernanceError(ValueError):
+    """Raised when a tool spec is missing required governance metadata."""
 
 
 @dataclass
@@ -27,6 +32,33 @@ class ToolSpec:
     requires_receipt: bool | None = None
     supports_preview: bool = False
     result_is_internal_context: bool = False
+
+    def __post_init__(self) -> None:
+        self._validate_governance()
+
+    def _validate_governance(self) -> None:
+        action_class = str(self.action_class or "").strip()
+        if not action_class:
+            raise ToolGovernanceError(f"Tool '{self.name}' must declare action_class explicitly.")
+        if self.risk_hint is not None and self.risk_hint not in _RISK_HINTS:
+            raise ToolGovernanceError(
+                f"Tool '{self.name}' has unsupported risk_hint '{self.risk_hint}'."
+            )
+        if self.readonly:
+            if self.requires_receipt is not False:
+                raise ToolGovernanceError(
+                    f"Readonly tool '{self.name}' must declare requires_receipt=False."
+                )
+            return
+        if self.risk_hint is None:
+            raise ToolGovernanceError(
+                f"Mutating tool '{self.name}' must declare risk_hint explicitly."
+            )
+        if self.requires_receipt is None:
+            raise ToolGovernanceError(
+                f"Mutating tool '{self.name}' must declare requires_receipt explicitly."
+            )
+
 
 class ToolRegistry:
     def __init__(self) -> None:
@@ -60,7 +92,9 @@ def localize_tool_spec(tool: ToolSpec, *, locale: str | None = None) -> ToolSpec
             tool.description_key or "",
             locale=resolved_locale,
             default=tool.description,
-        ) if tool.description_key else tool.description,
+        )
+        if tool.description_key
+        else tool.description,
         input_schema=localize_schema(tool.input_schema, locale=resolved_locale),
         description_key=None,
     )
@@ -109,80 +143,93 @@ def create_builtin_tool_registry(
             "stderr": result.stderr,
             "timed_out": result.timed_out,
         }
+
     setattr(bash, "_sandbox", sandbox)
 
     registry.register(
-        localize_tool_spec(ToolSpec(
-            name="read_file",
-            description="Read a UTF-8 text file inside the workspace.",
-            description_key="tools.core.read_file.description",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description_key": "tools.core.read_file.path",
-                    }
-                },
-                "required": ["path"],
-            },
-            handler=read_file,
-            readonly=True,
-            action_class="read_local",
-            resource_scope_hint=str(root_dir),
-            idempotent=True,
-            risk_hint="low",
-            requires_receipt=False,
-        ), locale=resolved_locale)
-    )
-    registry.register(
-        localize_tool_spec(ToolSpec(
-            name="write_file",
-            description="Write a UTF-8 text file inside the workspace.",
-            description_key="tools.core.write_file.description",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description_key": "tools.core.write_file.path"},
-                    "content": {"type": "string", "description_key": "tools.core.write_file.content"},
-                },
-                "required": ["path", "content"],
-            },
-            handler=write_file,
-            action_class="write_local",
-            resource_scope_hint=str(root_dir),
-            risk_hint="high",
-            requires_receipt=True,
-            supports_preview=True,
-        ), locale=resolved_locale)
-    )
-    registry.register(
-        localize_tool_spec(ToolSpec(
-            name="bash",
-            description="Run a shell command inside the workspace sandbox.",
-            description_key="tools.core.bash.description",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description_key": "tools.core.bash.command",
+        localize_tool_spec(
+            ToolSpec(
+                name="read_file",
+                description="Read a UTF-8 text file inside the workspace.",
+                description_key="tools.core.read_file.description",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description_key": "tools.core.read_file.path",
+                        }
                     },
-                    "display_name": {"type": "string"},
-                    "ready_patterns": {"type": "array", "items": {"type": "object"}},
-                    "failure_patterns": {"type": "array", "items": {"type": "object"}},
-                    "progress_patterns": {"type": "array", "items": {"type": "object"}},
-                    "ready_return": {"type": "boolean"},
+                    "required": ["path"],
                 },
-                "required": ["command"],
-            },
-            handler=bash,
-            action_class="execute_command",
-            resource_scope_hint=str(root_dir),
-            risk_hint="critical",
-            requires_receipt=True,
-            supports_preview=True,
-        ), locale=resolved_locale)
+                handler=read_file,
+                readonly=True,
+                action_class="read_local",
+                resource_scope_hint=str(root_dir),
+                idempotent=True,
+                risk_hint="low",
+                requires_receipt=False,
+            ),
+            locale=resolved_locale,
+        )
+    )
+    registry.register(
+        localize_tool_spec(
+            ToolSpec(
+                name="write_file",
+                description="Write a UTF-8 text file inside the workspace.",
+                description_key="tools.core.write_file.description",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description_key": "tools.core.write_file.path"},
+                        "content": {
+                            "type": "string",
+                            "description_key": "tools.core.write_file.content",
+                        },
+                    },
+                    "required": ["path", "content"],
+                },
+                handler=write_file,
+                action_class="write_local",
+                resource_scope_hint=str(root_dir),
+                risk_hint="high",
+                requires_receipt=True,
+                supports_preview=True,
+            ),
+            locale=resolved_locale,
+        )
+    )
+    registry.register(
+        localize_tool_spec(
+            ToolSpec(
+                name="bash",
+                description="Run a shell command inside the workspace sandbox.",
+                description_key="tools.core.bash.description",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description_key": "tools.core.bash.command",
+                        },
+                        "display_name": {"type": "string"},
+                        "ready_patterns": {"type": "array", "items": {"type": "object"}},
+                        "failure_patterns": {"type": "array", "items": {"type": "object"}},
+                        "progress_patterns": {"type": "array", "items": {"type": "object"}},
+                        "ready_return": {"type": "boolean"},
+                    },
+                    "required": ["command"],
+                },
+                handler=bash,
+                action_class="execute_command",
+                resource_scope_hint=str(root_dir),
+                risk_hint="critical",
+                requires_receipt=True,
+                supports_preview=True,
+            ),
+            locale=resolved_locale,
+        )
     )
 
     if config_root_dir is not None:
@@ -225,73 +272,88 @@ def create_builtin_tool_registry(
             return entries
 
         registry.register(
-            localize_tool_spec(ToolSpec(
-                name="read_hermit_file",
-                description="Read a UTF-8 text file inside the Hermit config directory.",
-                description_key="tools.core.read_hermit_file.description",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description_key": "tools.core.read_hermit_file.path",
-                        }
+            localize_tool_spec(
+                ToolSpec(
+                    name="read_hermit_file",
+                    description="Read a UTF-8 text file inside the Hermit config directory.",
+                    description_key="tools.core.read_hermit_file.description",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description_key": "tools.core.read_hermit_file.path",
+                            }
+                        },
+                        "required": ["path"],
                     },
-                    "required": ["path"],
-                },
-                handler=read_hermit_file,
-                readonly=True,
-                action_class="read_local",
-                resource_scope_hint=str(config_root_dir),
-                idempotent=True,
-                risk_hint="low",
-                requires_receipt=False,
-            ), locale=resolved_locale)
+                    handler=read_hermit_file,
+                    readonly=True,
+                    action_class="read_local",
+                    resource_scope_hint=str(config_root_dir),
+                    idempotent=True,
+                    risk_hint="low",
+                    requires_receipt=False,
+                ),
+                locale=resolved_locale,
+            )
         )
         registry.register(
-            localize_tool_spec(ToolSpec(
-                name="write_hermit_file",
-                description="Write a UTF-8 text file inside the Hermit config directory.",
-                description_key="tools.core.write_hermit_file.description",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description_key": "tools.core.write_hermit_file.path"},
-                        "content": {"type": "string", "description_key": "tools.core.write_hermit_file.content"},
+            localize_tool_spec(
+                ToolSpec(
+                    name="write_hermit_file",
+                    description="Write a UTF-8 text file inside the Hermit config directory.",
+                    description_key="tools.core.write_hermit_file.description",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description_key": "tools.core.write_hermit_file.path",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description_key": "tools.core.write_hermit_file.content",
+                            },
+                        },
+                        "required": ["path", "content"],
                     },
-                    "required": ["path", "content"],
-                },
-                handler=write_hermit_file,
-                action_class="write_local",
-                resource_scope_hint=str(config_root_dir),
-                risk_hint="high",
-                requires_receipt=True,
-                supports_preview=True,
-            ), locale=resolved_locale)
+                    handler=write_hermit_file,
+                    action_class="write_local",
+                    resource_scope_hint=str(config_root_dir),
+                    risk_hint="high",
+                    requires_receipt=True,
+                    supports_preview=True,
+                ),
+                locale=resolved_locale,
+            )
         )
         registry.register(
-            localize_tool_spec(ToolSpec(
-                name="list_hermit_files",
-                description="List files or directories inside the Hermit config directory.",
-                description_key="tools.core.list_hermit_files.description",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description_key": "tools.core.list_hermit_files.path",
-                        }
+            localize_tool_spec(
+                ToolSpec(
+                    name="list_hermit_files",
+                    description="List files or directories inside the Hermit config directory.",
+                    description_key="tools.core.list_hermit_files.description",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description_key": "tools.core.list_hermit_files.path",
+                            }
+                        },
+                        "required": [],
                     },
-                    "required": [],
-                },
-                handler=list_hermit_files,
-                readonly=True,
-                action_class="read_local",
-                resource_scope_hint=str(config_root_dir),
-                idempotent=True,
-                risk_hint="low",
-                requires_receipt=False,
-            ), locale=resolved_locale)
+                    handler=list_hermit_files,
+                    readonly=True,
+                    action_class="read_local",
+                    resource_scope_hint=str(config_root_dir),
+                    idempotent=True,
+                    risk_hint="low",
+                    requires_receipt=False,
+                ),
+                locale=resolved_locale,
+            )
         )
     return registry
 

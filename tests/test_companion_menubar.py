@@ -26,6 +26,7 @@ provider = "codex-oauth"
     )
     monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
     monkeypatch.delenv("HERMIT_PROFILE", raising=False)
+    monkeypatch.delenv("HERMIT_PROVIDER", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
 

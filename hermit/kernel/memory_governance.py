@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
-from hermit.builtin.memory.engine import MemoryEngine
 from hermit.builtin.memory.types import MemoryEntry
 from hermit.kernel.context import TaskExecutionContext
+from hermit.kernel.memory_text import is_duplicate, shares_topic
 from hermit.kernel.models import BeliefRecord, MemoryRecord
 
 MemoryScopeKind = str
@@ -138,13 +138,35 @@ _DEFAULT_POLICY = MemoryCategoryPolicy(
     ttl_seconds=_VOLATILE_FACT_TTL_SECONDS,
 )
 _CATEGORY_POLICIES: dict[str, MemoryCategoryPolicy] = {
-    "用户偏好": MemoryCategoryPolicy("user_preference", "global", static_injection=True, retrieval_allowed=True),
-    "项目约定": MemoryCategoryPolicy("project_convention", "workspace", static_injection=True, retrieval_allowed=True),
-    "工具与环境": MemoryCategoryPolicy("tooling_environment", "workspace", static_injection=True, retrieval_allowed=True),
-    "环境与工具": MemoryCategoryPolicy("tooling_environment", "workspace", static_injection=False, retrieval_allowed=True),
-    "进行中的任务": MemoryCategoryPolicy("task_state", "conversation", static_injection=False, retrieval_allowed=True, ttl_seconds=_TASK_STATE_TTL_SECONDS),
-    "技术决策": MemoryCategoryPolicy("volatile_fact", "conversation", static_injection=False, retrieval_allowed=True),
-    "其他": MemoryCategoryPolicy("volatile_fact", "conversation", static_injection=False, retrieval_allowed=True, ttl_seconds=_VOLATILE_FACT_TTL_SECONDS),
+    "用户偏好": MemoryCategoryPolicy(
+        "user_preference", "global", static_injection=True, retrieval_allowed=True
+    ),
+    "项目约定": MemoryCategoryPolicy(
+        "project_convention", "workspace", static_injection=True, retrieval_allowed=True
+    ),
+    "工具与环境": MemoryCategoryPolicy(
+        "tooling_environment", "workspace", static_injection=True, retrieval_allowed=True
+    ),
+    "环境与工具": MemoryCategoryPolicy(
+        "tooling_environment", "workspace", static_injection=False, retrieval_allowed=True
+    ),
+    "进行中的任务": MemoryCategoryPolicy(
+        "task_state",
+        "conversation",
+        static_injection=False,
+        retrieval_allowed=True,
+        ttl_seconds=_TASK_STATE_TTL_SECONDS,
+    ),
+    "技术决策": MemoryCategoryPolicy(
+        "volatile_fact", "conversation", static_injection=False, retrieval_allowed=True
+    ),
+    "其他": MemoryCategoryPolicy(
+        "volatile_fact",
+        "conversation",
+        static_injection=False,
+        retrieval_allowed=True,
+        ttl_seconds=_VOLATILE_FACT_TTL_SECONDS,
+    ),
 }
 
 
@@ -203,7 +225,9 @@ class MemoryGovernanceService:
             scope_ref=scope_ref,
             promotion_reason=promotion_reason,
             retention_class=retention_class,
-            static_injection=policy.static_injection and retention_class in {
+            static_injection=policy.static_injection
+            and retention_class
+            in {
                 "user_preference",
                 "project_convention",
                 "tooling_environment",
@@ -232,17 +256,19 @@ class MemoryGovernanceService:
             "sensitive": [token for token in _SENSITIVE_SIGNAL_TOKENS if token in text],
             "stable_preference": [token for token in _PREFERENCE_SIGNAL_TOKENS if token in text],
             "task_state": [token for token in _TASK_STATE_SIGNAL_TOKENS if token in text],
-            "project_convention": [token for token in _PROJECT_CONVENTION_SIGNAL_TOKENS if token in text],
+            "project_convention": [
+                token for token in _PROJECT_CONVENTION_SIGNAL_TOKENS if token in text
+            ],
             "tooling_environment": [token for token in _TOOLING_SIGNAL_TOKENS if token in text],
         }
         return ClaimSignals(
             sensitive=bool(matched_signals["sensitive"]),
             stable_preference=category == "用户偏好" or bool(matched_signals["stable_preference"]),
             task_state=category == "进行中的任务" or bool(matched_signals["task_state"]),
-            project_convention=category == "项目约定" or bool(matched_signals["project_convention"]),
-            tooling_environment=category in {"工具与环境", "环境与工具"} or bool(
-                matched_signals["tooling_environment"]
-            ),
+            project_convention=category == "项目约定"
+            or bool(matched_signals["project_convention"]),
+            tooling_environment=category in {"工具与环境", "环境与工具"}
+            or bool(matched_signals["tooling_environment"]),
             subject_key=self._subject_key(text),
             topic_key=self._topic_key(text),
             matched_signals={name: hits for name, hits in matched_signals.items() if hits},
@@ -274,16 +300,30 @@ class MemoryGovernanceService:
         return filtered
 
     def eligible_for_static(self, memory: MemoryRecord, *, context: TaskExecutionContext) -> bool:
-        if memory.retention_class not in {"user_preference", "project_convention", "tooling_environment"}:
+        if memory.retention_class not in {
+            "user_preference",
+            "project_convention",
+            "tooling_environment",
+        }:
             return False
         return self.scope_matches(memory.scope_kind, memory.scope_ref, context=context)
 
-    def retrieval_reason(self, memory: MemoryRecord, *, context: TaskExecutionContext) -> str | None:
+    def retrieval_reason(
+        self, memory: MemoryRecord, *, context: TaskExecutionContext
+    ) -> str | None:
         if memory.retention_class in {"invalidated", "revoked"}:
             return None
         if memory.retention_class == "sensitive_fact":
-            return "scope_match" if self.scope_matches(memory.scope_kind, memory.scope_ref, context=context) else None
-        return "retrieval_policy" if self.scope_matches(memory.scope_kind, memory.scope_ref, context=context) else None
+            return (
+                "scope_match"
+                if self.scope_matches(memory.scope_kind, memory.scope_ref, context=context)
+                else None
+            )
+        return (
+            "retrieval_policy"
+            if self.scope_matches(memory.scope_kind, memory.scope_ref, context=context)
+            else None
+        )
 
     def scope_matches(
         self,
@@ -297,7 +337,11 @@ class MemoryGovernanceService:
         if scope_kind == "conversation":
             return scope_ref == context.conversation_id
         if scope_kind == "workspace":
-            normalized = str(Path(context.workspace_root or "").resolve()) if context.workspace_root else "workspace:default"
+            normalized = (
+                str(Path(context.workspace_root or "").resolve())
+                if context.workspace_root
+                else "workspace:default"
+            )
             return scope_ref in {normalized, "workspace:default"}
         if scope_kind == "entity":
             return scope_ref in {context.task_id, context.step_id, context.step_attempt_id}
@@ -319,7 +363,9 @@ class MemoryGovernanceService:
             if record.retention_class != classification.retention_class:
                 continue
             if classification.retention_class == "task_state":
-                if not self._subject_matches(classification.subject_key, self.subject_key_for_memory(record)):
+                if not self._subject_matches(
+                    classification.subject_key, self.subject_key_for_memory(record)
+                ):
                     continue
                 candidates.append(record)
                 continue
@@ -345,7 +391,7 @@ class MemoryGovernanceService:
             active_records=active_records,
         ):
             entry = entry_from_record(record)
-            if MemoryEngine._is_duplicate([entry], claim_text):
+            if is_duplicate([entry], claim_text):
                 duplicate = record
                 break
             if classification.retention_class == "task_state":
@@ -357,7 +403,7 @@ class MemoryGovernanceService:
                 ):
                     superseded.append(record)
                 continue
-            if MemoryEngine._shares_topic(record.claim_text, claim_text):
+            if shares_topic(record.claim_text, claim_text):
                 superseded.append(record)
         return duplicate, superseded
 
@@ -475,7 +521,7 @@ class MemoryGovernanceService:
             return False
         if left_subject and right_subject and left_subject == right_subject:
             return True
-        return MemoryEngine._shares_topic(left_claim, right_claim)
+        return shares_topic(left_claim, right_claim)
 
 
 __all__ = [

@@ -4,11 +4,11 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from hermit.builtin.memory.engine import MemoryEngine
 from hermit.builtin.memory.types import MemoryEntry
 from hermit.kernel.artifacts import ArtifactStore
 from hermit.kernel.context import TaskExecutionContext, WorkingStateSnapshot
 from hermit.kernel.memory_governance import MemoryGovernanceService
+from hermit.kernel.memory_text import shares_topic, summary_prompt, topic_tokens
 from hermit.kernel.models import BeliefRecord, MemoryRecord
 from hermit.kernel.store_support import _canonical_json, _sha256_hex
 
@@ -247,13 +247,14 @@ class ContextCompiler:
 
     def render_static_prompt(self, pack: ContextPack) -> str:
         categories = self._categories_from_payload(pack.static_memory)
-        return MemoryEngine.summary_prompt(categories, limit_per_category=3)
+        return summary_prompt(categories, limit_per_category=3)
 
     def render_retrieval_prompt(self, pack: ContextPack) -> str:
         categories = self._categories_from_payload(pack.retrieval_memory)
-        return MemoryEngine.summary_prompt(categories, limit_per_category=5).replace(
-            "以下是跨会话记忆，请优先遵循其中的长期约定：",
-            "以下是与当前任务最相关的跨会话记忆，只在相关时优先遵循：",
+        return summary_prompt(
+            categories,
+            limit_per_category=5,
+            intro="以下是与当前任务最相关的跨会话记忆，只在相关时优先遵循：",
         )
 
     def _memory_payload(self, memory: MemoryRecord) -> dict[str, Any]:
@@ -309,7 +310,7 @@ class ContextCompiler:
             score += 100.0
         if memory.expires_at is not None:
             score += max(0.0, memory.expires_at) / 1_000_000_000_000.0
-        if MemoryEngine._shares_topic(memory.claim_text, query):
+        if shares_topic(memory.claim_text, query):
             score += 10.0
         score += 5.0 if memory.trust_tier == "durable" else 0.0
         score += float(memory.updated_at or 0.0) / 1_000_000_000_000.0
@@ -339,17 +340,15 @@ class ContextCompiler:
             return True
         if cls._is_followup_query(query):
             return True
-        query_tokens = {token for token in MemoryEngine._topic_tokens(query) if len(token) >= 2}
-        memory_tokens = {
-            token for token in MemoryEngine._topic_tokens(memory.claim_text) if len(token) >= 2
-        }
-        if query_tokens & memory_tokens:
+        query_tokens_set = {token for token in topic_tokens(query) if len(token) >= 2}
+        memory_tokens = {token for token in topic_tokens(memory.claim_text) if len(token) >= 2}
+        if query_tokens_set & memory_tokens:
             return True
-        if any(token in memory.claim_text for token in query_tokens):
+        if any(token in memory.claim_text for token in query_tokens_set):
             return True
         if any(token in query for token in memory_tokens):
             return True
-        return MemoryEngine._shares_topic(memory.claim_text, query)
+        return shares_topic(memory.claim_text, query)
 
 
 __all__ = ["ContextCompiler", "ContextPack"]

@@ -61,6 +61,7 @@ def format_tool_result_content(value: Any, limit: int) -> Any:
         return _tool_result_json_text(serialized, limit)
     return serialized
 
+
 @dataclass
 class AgentResult:
     text: str
@@ -145,7 +146,9 @@ class AgentRuntime:
             **kwargs,
         )
 
-    def _tool_result_block(self, *, tool_name: str, tool_use_id: str, content: Any, is_error: bool = False) -> Dict[str, Any]:
+    def _tool_result_block(
+        self, *, tool_name: str, tool_use_id: str, content: Any, is_error: bool = False
+    ) -> Dict[str, Any]:
         block: Dict[str, Any] = {
             "type": "tool_result",
             "tool_use_id": tool_use_id,
@@ -225,7 +228,9 @@ class AgentRuntime:
                     default="Task resume requires a configured ToolExecutor",
                 )
             )
-        loader = getattr(self.tool_executor, "load_suspended_state", None) or getattr(self.tool_executor, "load_blocked_state")
+        loader = getattr(self.tool_executor, "load_suspended_state", None) or getattr(
+            self.tool_executor, "load_blocked_state"
+        )
         snapshot = loader(step_attempt_id)
         messages = normalize_messages(list(snapshot.get("messages", [])))
         pending_tool_blocks = list(snapshot.get("pending_tool_blocks", []))
@@ -281,7 +286,9 @@ class AgentRuntime:
                 return executed
             tool_result_blocks, tool_calls = executed
         messages.append({"role": "user", "content": tool_result_blocks})
-        clearer = getattr(self.tool_executor, "clear_suspended_state", None) or getattr(self.tool_executor, "clear_blocked_state")
+        clearer = getattr(self.tool_executor, "clear_suspended_state", None) or getattr(
+            self.tool_executor, "clear_blocked_state"
+        )
         clearer(step_attempt_id)
         return self._run_from_messages(
             messages,
@@ -322,7 +329,9 @@ class AgentRuntime:
                     )
                 )
             except Exception as exc:
-                log.error("provider_call_error", provider=self.provider.name, turn=turn, error=str(exc))
+                log.error(
+                    "provider_call_error", provider=self.provider.name, turn=turn, error=str(exc)
+                )
                 return self._usage_to_result(
                     usage,
                     text=f"[API Error] {exc}",
@@ -370,7 +379,9 @@ class AgentRuntime:
                     execution_status="succeeded",
                 )
 
-            tool_use_blocks = [block for block in response_blocks if block_value(block, "type") == "tool_use"]
+            tool_use_blocks = [
+                block for block in response_blocks if block_value(block, "type") == "tool_use"
+            ]
             if not tool_use_blocks:
                 raise RuntimeError(
                     self._t(
@@ -399,14 +410,15 @@ class AgentRuntime:
             messages.append({"role": "user", "content": tool_result_blocks})
 
         log.warning("max_turns_exceeded", max_turns=self.max_turns, tool_calls=tool_calls)
-        messages.append({
-            "role": "user",
-            "content": (
-                "[系统提示] 你已使用了最大允许的工具调用轮次。"
-                "请根据目前收集到的信息，直接给出你的最终回答。"
-                "不要再调用任何工具。"
-            ),
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": self._t(
+                    "prompt.runtime.max_turns_exceeded",
+                    default="You have reached the maximum turn limit. Stop using tools and provide the best possible final answer based on the work completed so far.",
+                ),
+            }
+        )
         try:
             response = self.provider.generate(
                 self._request(
@@ -437,7 +449,12 @@ class AgentRuntime:
             log.error("final_summary_failed", error=str(exc))
             return self._usage_to_result(
                 usage,
-                text=f"（分析未完成：超过最大轮次 {self.max_turns}，且汇总失败：{exc}）",
+                text=self._t(
+                    "prompt.runtime.final_summary_failed",
+                    default="Reached the maximum turn limit ({max_turns}) and the final summary request failed: {error}. Respond with a brief explanation of what was completed and what remains blocked.",
+                    max_turns=self.max_turns,
+                    error=exc,
+                ),
                 turns=self.max_turns + 1,
                 tool_calls=tool_calls,
                 messages=messages,
@@ -481,14 +498,20 @@ class AgentRuntime:
                 serialized = f"Error executing {tool_name}: {type(exc).__name__}: {exc}"
                 exec_result = ToolExecutionResult(model_content=serialized, raw_result=serialized)
 
-            if (exec_result.suspended or exec_result.blocked) and self.tool_executor is not None and task_context is not None:
+            if (
+                (exec_result.suspended or exec_result.blocked)
+                and self.tool_executor is not None
+                and task_context is not None
+            ):
                 note_cursor = (
                     self.tool_executor.current_note_cursor(task_context.step_attempt_id)
                     if hasattr(self.tool_executor, "current_note_cursor")
                     else 0
                 )
                 supports_suspend_persist = hasattr(self.tool_executor, "persist_suspended_state")
-                persister = getattr(self.tool_executor, "persist_suspended_state", None) or getattr(self.tool_executor, "persist_blocked_state")
+                persister = getattr(self.tool_executor, "persist_suspended_state", None) or getattr(
+                    self.tool_executor, "persist_blocked_state"
+                )
                 persister(
                     task_context,
                     pending_tool_blocks=tool_use_blocks[index:],
@@ -522,7 +545,9 @@ class AgentRuntime:
                     suspended=True,
                     waiting_kind=exec_result.waiting_kind,
                     approval_id=exec_result.approval_id,
-                    observation=exec_result.observation.to_dict() if exec_result.observation is not None else None,
+                    observation=exec_result.observation.to_dict()
+                    if exec_result.observation is not None
+                    else None,
                     task_id=task_context.task_id,
                     step_id=task_context.step_id,
                     step_attempt_id=task_context.step_attempt_id,
@@ -590,7 +615,11 @@ class AgentRuntime:
         messages: List[Dict[str, Any]],
         task_context: TaskExecutionContext | None,
     ) -> List[Dict[str, Any]]:
-        if self.tool_executor is None or task_context is None or not hasattr(self.tool_executor, "consume_appended_notes"):
+        if (
+            self.tool_executor is None
+            or task_context is None
+            or not hasattr(self.tool_executor, "consume_appended_notes")
+        ):
             return messages
         appended, _cursor = self.tool_executor.consume_appended_notes(task_context)
         if not appended:
@@ -688,7 +717,9 @@ class AgentRuntime:
                     execution_status="succeeded",
                 )
 
-            tool_use_blocks = [block for block in response_blocks if block_value(block, "type") == "tool_use"]
+            tool_use_blocks = [
+                block for block in response_blocks if block_value(block, "type") == "tool_use"
+            ]
             if not tool_use_blocks:
                 raise RuntimeError(
                     self._t(
@@ -733,14 +764,15 @@ class AgentRuntime:
                 tool_calls += 1
             messages.append({"role": "user", "content": tool_result_blocks})
 
-        messages.append({
-            "role": "user",
-            "content": (
-                "[系统提示] 你已使用了最大允许的工具调用轮次。"
-                "请根据目前收集到的信息，直接给出你的最终回答。"
-                "不要再调用任何工具。"
-            ),
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": self._t(
+                    "prompt.runtime.max_turns_exceeded",
+                    default="You have reached the maximum turn limit. Stop using tools and provide the best possible final answer based on the work completed so far.",
+                ),
+            }
+        )
         try:
             response = self.provider.generate(
                 self._request(
@@ -768,7 +800,12 @@ class AgentRuntime:
             log.error("final_summary_failed_stream", error=str(exc))
             return self._usage_to_result(
                 usage,
-                text=f"（分析未完成：超过最大轮次 {self.max_turns}，且汇总失败：{exc}）",
+                text=self._t(
+                    "prompt.runtime.final_summary_failed",
+                    default="Reached the maximum turn limit ({max_turns}) and the final summary request failed: {error}. Respond with a brief explanation of what was completed and what remains blocked.",
+                    max_turns=self.max_turns,
+                    error=exc,
+                ),
                 turns=self.max_turns + 1,
                 tool_calls=tool_calls,
                 messages=messages,

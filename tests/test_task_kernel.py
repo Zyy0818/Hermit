@@ -19,6 +19,7 @@ from hermit.kernel.approval_copy import ApprovalCopyService
 from hermit.kernel.approvals import ApprovalService
 from hermit.kernel.artifacts import ArtifactStore
 from hermit.kernel.context import TaskExecutionContext
+from hermit.kernel.contracts import known_action_classes
 from hermit.kernel.controller import TaskController
 from hermit.kernel.dispatch import KernelDispatchService
 from hermit.kernel.executor import ToolExecutor
@@ -63,7 +64,9 @@ class FakeProvider:
     def stream(self, request: ProviderRequest):
         raise NotImplementedError
 
-    def clone(self, *, model: str | None = None, system_prompt: str | None = None) -> "FakeProvider":
+    def clone(
+        self, *, model: str | None = None, system_prompt: str | None = None
+    ) -> "FakeProvider":
         return self
 
 
@@ -139,6 +142,9 @@ def _mixed_registry(root: Path) -> ToolRegistry:
             description="An unclassified mutating tool.",
             input_schema={"type": "object", "properties": {}, "required": []},
             handler=lambda payload: {"ok": True, "payload": payload},
+            action_class="external_mutation",
+            risk_hint="high",
+            requires_receipt=True,
         )
     )
     return registry
@@ -247,7 +253,9 @@ def _observation_registry(status_responses: list[dict[str, Any]]) -> ToolRegistr
     return registry
 
 
-def _kernel_runtime(tmp_path: Path) -> tuple[KernelStore, ArtifactStore, TaskController, ToolExecutor, TaskExecutionContext]:
+def _kernel_runtime(
+    tmp_path: Path,
+) -> tuple[KernelStore, ArtifactStore, TaskController, ToolExecutor, TaskExecutionContext]:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     store = KernelStore(tmp_path / "kernel" / "state.db")
@@ -290,7 +298,9 @@ class _RunnerSessionManager:
 
 class _RunnerPluginManager:
     def __init__(self, tmp_path: Path) -> None:
-        self.settings = SimpleNamespace(locale="en-US", base_dir=tmp_path, kernel_dispatch_worker_count=2)
+        self.settings = SimpleNamespace(
+            locale="en-US", base_dir=tmp_path, kernel_dispatch_worker_count=2
+        )
         self.hooks = HooksEngine()
         self.started: list[str] = []
         self.ended: list[str] = []
@@ -456,7 +466,7 @@ def test_enqueue_resume_supersedes_dirty_approval_attempt(tmp_path: Path) -> Non
     assert any(event["event_type"] == "step_attempt.superseded" for event in events)
 
 
-def test_kernel_dispatch_recovery_marks_async_running_attempts_failed(tmp_path: Path) -> None:
+def test_kernel_dispatch_recovery_requeues_async_running_attempts(tmp_path: Path) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
 
@@ -482,13 +492,18 @@ def test_kernel_dispatch_recovery_marks_async_running_attempts_failed(tmp_path: 
     sync_attempt = store.get_step_attempt(sync_ctx.step_attempt_id)
     async_task = store.get_task(async_ctx.task_id)
 
-    assert async_attempt is not None and async_attempt.status == "failed"
-    assert async_attempt.waiting_reason == "worker_interrupted"
-    assert async_task is not None and async_task.status == "failed"
+    assert async_attempt is not None and async_attempt.status == "ready"
+    assert async_attempt.waiting_reason == "worker_interrupted_requeued"
+    assert async_attempt.context["recovered_after_interrupt"] is True
+    assert async_attempt.context["reentry_required"] is True
+    assert async_attempt.context["reentry_boundary"] == "policy_reentry"
+    assert async_task is not None and async_task.status == "queued"
     assert sync_attempt is not None and sync_attempt.status == "running"
 
 
-def test_runner_process_claimed_attempt_run_emits_notify_and_records_scheduler_history(tmp_path: Path) -> None:
+def test_runner_process_claimed_attempt_run_emits_notify_and_records_scheduler_history(
+    tmp_path: Path,
+) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
     ctx = controller.enqueue_task(
@@ -539,7 +554,9 @@ def test_runner_process_claimed_attempt_run_emits_notify_and_records_scheduler_h
     assert list((tmp_path / "schedules" / "logs").glob("*_job_1.log"))
 
 
-def test_runner_process_claimed_attempt_resume_marks_suspended_without_post_run(tmp_path: Path) -> None:
+def test_runner_process_claimed_attempt_resume_marks_suspended_without_post_run(
+    tmp_path: Path,
+) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
     ctx = controller.enqueue_task(
@@ -650,7 +667,9 @@ def test_kernel_dispatch_reap_futures_handles_worker_exception() -> None:
 
 
 def test_kernel_dispatch_service_start_stop_and_wake(monkeypatch) -> None:
-    runner = SimpleNamespace(task_controller=SimpleNamespace(store=SimpleNamespace(list_step_attempts=lambda **_: [])))
+    runner = SimpleNamespace(
+        task_controller=SimpleNamespace(store=SimpleNamespace(list_step_attempts=lambda **_: []))
+    )
     service = KernelDispatchService(runner, worker_count=2)
     started: list[str] = []
     stopped: list[str] = []
@@ -703,7 +722,9 @@ def test_controller_helpers_cover_source_resolution_and_task_lifecycle(tmp_path:
     assert controller.resume_attempt(ctx.step_attempt_id).step_attempt_id == ctx.step_attempt_id
 
 
-def test_controller_context_lookup_and_decide_ingress_and_append_note(tmp_path: Path, monkeypatch) -> None:
+def test_controller_context_lookup_and_decide_ingress_and_append_note(
+    tmp_path: Path, monkeypatch
+) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
     ctx = controller.enqueue_task(
@@ -738,7 +759,9 @@ def test_controller_context_lookup_and_decide_ingress_and_append_note(tmp_path: 
 
     original_list_events = store.list_events
 
-    def fake_list_events(*, task_id: str | None = None, after_event_seq: int | None = None, limit: int = 100):
+    def fake_list_events(
+        *, task_id: str | None = None, after_event_seq: int | None = None, limit: int = 100
+    ):
         if limit == 1:
             return []
         return original_list_events(task_id=task_id, after_event_seq=after_event_seq, limit=limit)
@@ -823,7 +846,9 @@ def test_store_claim_next_ready_step_attempt_prefers_higher_queue_priority(tmp_p
     assert claimed.step_attempt_id == high.step_attempt_id
 
 
-def test_task_controller_prefers_latest_pending_approval_for_natural_language(tmp_path: Path) -> None:
+def test_task_controller_prefers_latest_pending_approval_for_natural_language(
+    tmp_path: Path,
+) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
 
@@ -858,11 +883,29 @@ def test_task_controller_prefers_latest_pending_approval_for_natural_language(tm
     )
 
     assert store.get_task(second.task_id).parent_task_id == first.task_id
-    assert controller.resolve_text_command("chat-approval", "开始执行") == ("approve_once", approval.approval_id, "")
-    assert controller.resolve_text_command("chat-approval", "通过") == ("approve_once", approval.approval_id, "")
-    assert controller.resolve_text_command("chat-approval", "批准") == ("approve_once", approval.approval_id, "")
-    assert controller.resolve_text_command("chat-approval", f"批准一次 {approval.approval_id}") == ("approve_once", approval.approval_id, "")
-    assert controller.resolve_text_command("chat-approval", f"始终允许此目录 {approval.approval_id}") == ("approve_always_directory", approval.approval_id, "")
+    assert controller.resolve_text_command("chat-approval", "开始执行") == (
+        "approve_once",
+        approval.approval_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-approval", "通过") == (
+        "approve_once",
+        approval.approval_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-approval", "批准") == (
+        "approve_once",
+        approval.approval_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-approval", f"批准一次 {approval.approval_id}") == (
+        "approve_once",
+        approval.approval_id,
+        "",
+    )
+    assert controller.resolve_text_command(
+        "chat-approval", f"始终允许此目录 {approval.approval_id}"
+    ) == ("approve_always_directory", approval.approval_id, "")
 
 
 def test_task_controller_resolves_natural_language_case_and_rollback(tmp_path: Path) -> None:
@@ -873,8 +916,16 @@ def test_task_controller_resolves_natural_language_case_and_rollback(tmp_path: P
         {"path": "nl-control.txt", "content": "hello\n"},
     )
 
-    assert controller.resolve_text_command("chat-kernel", "看看这个任务") == ("case", ctx.task_id, "")
-    assert controller.resolve_text_command("chat-kernel", "回滚这次操作") == ("rollback", result.receipt_id, "")
+    assert controller.resolve_text_command("chat-kernel", "看看这个任务") == (
+        "case",
+        ctx.task_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", "回滚这次操作") == (
+        "rollback",
+        result.receipt_id,
+        "",
+    )
 
 
 def test_task_controller_resolves_other_natural_language_commands(tmp_path: Path) -> None:
@@ -891,7 +942,9 @@ def test_task_controller_resolves_other_natural_language_commands(tmp_path: Path
         decision_ref=None,
         policy_ref=None,
     )
-    job = ScheduledJob.create(name="Daily", prompt="run", schedule_type="interval", interval_seconds=60)
+    job = ScheduledJob.create(
+        name="Daily", prompt="run", schedule_type="interval", interval_seconds=60
+    )
     store.create_schedule(job)
     store.append_schedule_history(
         JobExecutionRecord(
@@ -907,22 +960,72 @@ def test_task_controller_resolves_other_natural_language_commands(tmp_path: Path
     assert controller.resolve_text_command("chat-kernel", "帮助") == ("show_help", "", "")
     assert controller.resolve_text_command("chat-kernel", "查看历史") == ("show_history", "", "")
     assert controller.resolve_text_command("chat-kernel", "任务列表") == ("task_list", "", "")
-    assert controller.resolve_text_command("chat-kernel", "查看这个任务的事件") == ("task_events", ctx.task_id, "")
-    assert controller.resolve_text_command("chat-kernel", "查看这个任务的收据") == ("task_receipts", ctx.task_id, "")
-    assert controller.resolve_text_command("chat-kernel", "查看这个任务的证明") == ("task_proof", ctx.task_id, "")
-    assert controller.resolve_text_command("chat-kernel", "导出这个任务的证明") == ("task_proof_export", ctx.task_id, "")
+    assert controller.resolve_text_command("chat-kernel", "查看这个任务的事件") == (
+        "task_events",
+        ctx.task_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", "查看这个任务的收据") == (
+        "task_receipts",
+        ctx.task_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", "查看这个任务的证明") == (
+        "task_proof",
+        ctx.task_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", "导出这个任务的证明") == (
+        "task_proof_export",
+        ctx.task_id,
+        "",
+    )
     assert controller.resolve_text_command("chat-kernel", "查看授权") == ("grant_list", "", "")
-    assert controller.resolve_text_command("chat-kernel", f"撤销授权 {grant.grant_id}") == ("grant_revoke", grant.grant_id, "")
-    assert controller.resolve_text_command("chat-kernel", "定时任务列表") == ("schedule_list", "", "")
-    assert controller.resolve_text_command("chat-kernel", f"查看定时历史 {job.id}") == ("schedule_history", job.id, "")
-    assert controller.resolve_text_command("chat-kernel", f"启用定时任务 {job.id}") == ("schedule_enable", job.id, "")
-    assert controller.resolve_text_command("chat-kernel", f"禁用定时任务 {job.id}") == ("schedule_disable", job.id, "")
-    assert controller.resolve_text_command("chat-kernel", f"删除定时任务 {job.id}") == ("schedule_remove", job.id, "")
-    assert controller.resolve_text_command("chat-kernel", "重建这个任务投影") == ("projection_rebuild", ctx.task_id, "")
-    assert controller.resolve_text_command("chat-kernel", "重建所有投影") == ("projection_rebuild_all", "", "")
+    assert controller.resolve_text_command("chat-kernel", f"撤销授权 {grant.grant_id}") == (
+        "grant_revoke",
+        grant.grant_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", "定时任务列表") == (
+        "schedule_list",
+        "",
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", f"查看定时历史 {job.id}") == (
+        "schedule_history",
+        job.id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", f"启用定时任务 {job.id}") == (
+        "schedule_enable",
+        job.id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", f"禁用定时任务 {job.id}") == (
+        "schedule_disable",
+        job.id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", f"删除定时任务 {job.id}") == (
+        "schedule_remove",
+        job.id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", "重建这个任务投影") == (
+        "projection_rebuild",
+        ctx.task_id,
+        "",
+    )
+    assert controller.resolve_text_command("chat-kernel", "重建所有投影") == (
+        "projection_rebuild_all",
+        "",
+        "",
+    )
 
 
-def test_tool_executor_blocks_sensitive_mutation_and_creates_preview_artifact(tmp_path: Path) -> None:
+def test_tool_executor_blocks_sensitive_mutation_and_creates_preview_artifact(
+    tmp_path: Path,
+) -> None:
     store, artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
     target = Path(ctx.workspace_root) / ".env"
     target.write_text("before\n", encoding="utf-8")
@@ -954,10 +1057,15 @@ def test_tool_executor_blocks_sensitive_mutation_and_creates_preview_artifact(tm
     task = store.get_task(ctx.task_id)
     assert attempt is not None and attempt.status == "awaiting_approval"
     assert task is not None and task.status == "blocked"
-    assert any(event["event_type"] == "approval.requested" for event in store.list_events(task_id=ctx.task_id))
+    assert any(
+        event["event_type"] == "approval.requested"
+        for event in store.list_events(task_id=ctx.task_id)
+    )
 
 
-def test_tool_executor_executes_previewed_workspace_write_without_approval_and_issues_receipt(tmp_path: Path) -> None:
+def test_tool_executor_executes_previewed_workspace_write_without_approval_and_issues_receipt(
+    tmp_path: Path,
+) -> None:
     store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
     executed = executor.execute(
         ctx,
@@ -993,14 +1101,104 @@ def test_tool_executor_executes_previewed_workspace_write_without_approval_and_i
     assert bundle_payload["receipt_id"] == receipt.receipt_id
     assert bundle_payload["context_manifest_ref"]
     assert bundle_payload["task_event_head_hash"]
-    assert any(event["event_type"] == "receipt.issued" for event in store.list_events(task_id=ctx.task_id))
+    assert any(
+        event["event_type"] == "receipt.issued" for event in store.list_events(task_id=ctx.task_id)
+    )
 
 
-def test_tool_executor_enforces_permit_before_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_action_contracts_cover_policy_and_registered_tool_action_classes() -> None:
+    from hermit.builtin.feishu.tools import _all_tools as feishu_tools
+    from hermit.builtin.github.mcp import _GITHUB_TOOL_GOVERNANCE
+
+    action_classes = known_action_classes()
+
+    assert {
+        "delegate_reasoning",
+        "scheduler_mutation",
+        "attachment_ingest",
+        "ephemeral_ui_mutation",
+        "rollback",
+        "approval_resolution",
+        "publication",
+        "external_mutation",
+    }.issubset(action_classes)
+
+    pm = PluginManager()
+    pm._all_subagents.append(
+        SimpleNamespace(
+            name="researcher",
+            description="Research things",
+            system_prompt="Be concise.",
+            tools=[],
+            model="",
+        )
+    )
+    registry = ToolRegistry()
+    pm.setup_tools(registry)
+
+    assert registry.get("delegate_researcher").action_class in action_classes
+    assert all(tool.action_class in action_classes for tool in feishu_tools())
+    assert all(spec.action_class in action_classes for spec in _GITHUB_TOOL_GOVERNANCE.values())
+
+
+def test_approval_resolution_grant_and_deny_emit_receipts_but_consume_does_not(
+    tmp_path: Path,
+) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="chat-approval-receipts",
+        goal="approval receipts",
+        source_channel="chat",
+        kind="respond",
+    )
+    service = ApprovalService(store)
+    granted = store.create_approval(
+        task_id=ctx.task_id,
+        step_id=ctx.step_id,
+        step_attempt_id=ctx.step_attempt_id,
+        approval_type="write_local",
+        requested_action={"tool_name": "write_file"},
+        request_packet_ref=None,
+    )
+    denied = store.create_approval(
+        task_id=ctx.task_id,
+        step_id=ctx.step_id,
+        step_attempt_id=ctx.step_attempt_id,
+        approval_type="write_local",
+        requested_action={"tool_name": "write_file"},
+        request_packet_ref=None,
+    )
+
+    granted_receipt_id = service.approve_once(granted.approval_id)
+    denied_receipt_id = service.deny(denied.approval_id, reason="not now")
+    before_consume = store.list_receipts(task_id=ctx.task_id, limit=10)
+    store.consume_approval(granted.approval_id)
+    after_consume = store.list_receipts(task_id=ctx.task_id, limit=10)
+
+    assert granted_receipt_id is not None
+    assert denied_receipt_id is not None
+    granted_receipt = store.get_receipt(granted_receipt_id)
+    denied_receipt = store.get_receipt(denied_receipt_id)
+    assert granted_receipt is not None and granted_receipt.action_type == "approval_resolution"
+    assert granted_receipt.result_code == "granted"
+    assert granted_receipt.receipt_bundle_ref is not None
+    assert denied_receipt is not None and denied_receipt.action_type == "approval_resolution"
+    assert denied_receipt.result_code == "denied"
+    assert denied_receipt.receipt_bundle_ref is not None
+    assert len(before_consume) == 2
+    assert len(after_consume) == 2
+
+
+def test_tool_executor_enforces_permit_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
 
     def _raise_denied(*args, **kwargs):
-        raise CapabilityGrantError("scope_mismatch", "Capability grant no longer covers this write.")
+        raise CapabilityGrantError(
+            "scope_mismatch", "Capability grant no longer covers this write."
+        )
 
     monkeypatch.setattr(executor.permit_service, "enforce", _raise_denied)
 
@@ -1025,12 +1223,16 @@ def test_tool_executor_enforces_permit_before_dispatch(tmp_path: Path, monkeypat
     assert task is not None and task.status == "failed"
     assert permit is not None and permit.status == "issued"
     assert receipt is not None and receipt.result_code == "dispatch_denied"
-    assert any(event["event_type"] == "dispatch.denied" for event in store.list_events(task_id=ctx.task_id))
+    assert any(
+        event["event_type"] == "dispatch.denied" for event in store.list_events(task_id=ctx.task_id)
+    )
     assert projection["permits"][result.permit_id]["status"] == "issued"
     assert projection["receipts"][result.receipt_id]["result_code"] == "dispatch_denied"
 
 
-def test_policy_engine_defaults_readonly_to_allow_and_unknown_mutation_to_approval(tmp_path: Path) -> None:
+def test_policy_engine_defaults_readonly_to_allow_and_explicit_external_mutation_to_approval(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "readme.txt").write_text("hello", encoding="utf-8")
@@ -1045,7 +1247,7 @@ def test_policy_engine_defaults_readonly_to_allow_and_unknown_mutation_to_approv
     assert readonly_decision.action_class == "read_local"
     assert readonly_decision.requires_receipt is False
     assert unknown_decision.decision == "approval_required"
-    assert unknown_decision.action_class == "write_local"
+    assert unknown_decision.action_class == "external_mutation"
     assert unknown_decision.risk_level == "high"
 
 
@@ -1156,8 +1358,14 @@ def test_approval_copy_service_uses_display_copy_and_falls_back_for_legacy_recor
     )
 
     assert canonical.summary == "The agent is about to run `git push origin main`."
-    assert canonical.detail == "This action affects the remote repository and needs explicit confirmation."
-    assert legacy.summary == "The agent is about to run a command that changes the current environment."
+    assert (
+        canonical.detail
+        == "This action affects the remote repository and needs explicit confirmation."
+    )
+    assert (
+        legacy.summary
+        == "The agent is about to run a command that changes the current environment."
+    )
     assert "original command is available in the details" in legacy.detail
 
 
@@ -1227,7 +1435,9 @@ def test_approval_copy_service_builds_structured_scheduler_copy() -> None:
     assert copy.sections[0].title == "What this action will do"
     assert any("Prompt summary:" in item for item in copy.sections[0].items)
     assert copy.sections[1].title == "Why this needs your approval"
-    assert copy.sections[1].items == ("Creating this schedule means Hermit will run automatically later.",)
+    assert copy.sections[1].items == (
+        "Creating this schedule means Hermit will run automatically later.",
+    )
     assert canonical["sections"][0]["title"] == "What this action will do"
 
 
@@ -1244,7 +1454,9 @@ def test_policy_engine_classifies_write_as_preview_with_approval(tmp_path: Path)
     )
     ctx.workspace_root = str(workspace)
 
-    decision = PolicyEngine().evaluate(registry.get("write_file"), {"path": "draft.txt", "content": "hello\n"}, attempt_ctx=ctx)
+    decision = PolicyEngine().evaluate(
+        registry.get("write_file"), {"path": "draft.txt", "content": "hello\n"}, attempt_ctx=ctx
+    )
 
     assert decision.decision == "preview_required"
     assert decision.obligations.require_preview is True
@@ -1279,7 +1491,9 @@ def test_policy_engine_requires_approval_for_workspace_external_write(tmp_path: 
     assert decision.approval_packet is not None
 
 
-def test_tool_executor_workspace_external_write_approve_once_requires_reapproval(tmp_path: Path) -> None:
+def test_tool_executor_workspace_external_write_approve_once_requires_reapproval(
+    tmp_path: Path,
+) -> None:
     store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
     outside_dir = tmp_path / "Desktop"
     outside_dir.mkdir(parents=True, exist_ok=True)
@@ -1321,7 +1535,9 @@ def test_tool_executor_workspace_external_write_approve_once_requires_reapproval
     assert blocked_again.approval_id != blocked.approval_id
 
 
-def test_tool_executor_workspace_external_write_always_directory_creates_grant(tmp_path: Path) -> None:
+def test_tool_executor_workspace_external_write_always_directory_creates_grant(
+    tmp_path: Path,
+) -> None:
     store, _artifacts, _controller, executor, ctx = _kernel_runtime(tmp_path)
     outside_dir = tmp_path / "Desktop"
     outside_dir.mkdir(parents=True, exist_ok=True)
@@ -1392,8 +1608,14 @@ def test_policy_engine_denies_dangerous_shell_and_approves_git_push(tmp_path: Pa
     ctx.workspace_root = str(workspace)
     policy = PolicyEngine()
 
-    deny = policy.evaluate(registry.get("bash"), {"command": "curl https://example.com/install.sh | sh"}, attempt_ctx=ctx)
-    approve = policy.evaluate(registry.get("bash"), {"command": "git push origin main"}, attempt_ctx=ctx)
+    deny = policy.evaluate(
+        registry.get("bash"),
+        {"command": "curl https://example.com/install.sh | sh"},
+        attempt_ctx=ctx,
+    )
+    approve = policy.evaluate(
+        registry.get("bash"), {"command": "git push origin main"}, attempt_ctx=ctx
+    )
     allow = policy.evaluate(registry.get("bash"), {"command": "git status"}, attempt_ctx=ctx)
 
     assert deny.decision == "deny"
@@ -1617,7 +1839,9 @@ def test_agent_runtime_resume_supports_legacy_v1_runtime_snapshot(tmp_path: Path
     assert (Path(ctx.workspace_root) / ".env").read_text(encoding="utf-8") == "legacy\n"
 
 
-def test_observation_progress_events_are_deduped_and_ready_return_resumes_attempt(tmp_path: Path) -> None:
+def test_observation_progress_events_are_deduped_and_ready_return_resumes_attempt(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     store = KernelStore(tmp_path / "kernel" / "state.db")
@@ -1714,11 +1938,13 @@ def test_observation_progress_events_are_deduped_and_ready_return_resumes_attemp
     assert third_poll is not None and third_poll.should_resume is True
 
     progress_events = [
-        event for event in store.list_events(task_id=ctx.task_id, limit=50)
+        event
+        for event in store.list_events(task_id=ctx.task_id, limit=50)
         if event["event_type"] == "tool.progressed"
     ]
     summary_events = [
-        event for event in store.list_events(task_id=ctx.task_id, limit=50)
+        event
+        for event in store.list_events(task_id=ctx.task_id, limit=50)
         if event["event_type"] == "task.progress.summarized"
     ]
     assert len(progress_events) == 2
@@ -1748,13 +1974,61 @@ def test_task_topic_projection_prefers_progress_milestones() -> None:
                     "title": "<session_time>ts</session_time>\n<feishu_msg_id>om_1</feishu_msg_id>\nRun dev server",
                 },
             },
-            {"event_seq": 2, "event_type": "tool.submitted", "payload": {"topic_summary": "Submitting dev server"}},
-            {"event_seq": 3, "event_type": "tool.progressed", "payload": {"phase": "starting", "summary": "Booting dev server", "progress_percent": 10}},
-            {"event_seq": 4, "event_type": "tool.status.changed", "payload": {"status": "observing", "topic_summary": "Booting dev server"}},
-            {"event_seq": 5, "event_type": "task.progress.summarized", "payload": {"phase": "starting", "summary": "正在启动 dev server，并等待首个 ready 信号。", "detail": "暂时没有阻塞。", "progress_percent": 10}},
-            {"event_seq": 6, "event_type": "tool.progressed", "payload": {"phase": "ready", "summary": "Dev server ready", "detail": "READY http://127.0.0.1:3000", "progress_percent": 100, "ready": True}},
-            {"event_seq": 7, "event_type": "task.progress.summarized", "payload": {"phase": "ready", "summary": "dev server 已就绪，接下来可以继续 smoke test。", "detail": "服务已经可访问。", "progress_percent": 100}},
-            {"event_seq": 8, "event_type": "task.completed", "payload": {"result_preview": "北京今天晴，最高 16°C。"}},
+            {
+                "event_seq": 2,
+                "event_type": "tool.submitted",
+                "payload": {"topic_summary": "Submitting dev server"},
+            },
+            {
+                "event_seq": 3,
+                "event_type": "tool.progressed",
+                "payload": {
+                    "phase": "starting",
+                    "summary": "Booting dev server",
+                    "progress_percent": 10,
+                },
+            },
+            {
+                "event_seq": 4,
+                "event_type": "tool.status.changed",
+                "payload": {"status": "observing", "topic_summary": "Booting dev server"},
+            },
+            {
+                "event_seq": 5,
+                "event_type": "task.progress.summarized",
+                "payload": {
+                    "phase": "starting",
+                    "summary": "正在启动 dev server，并等待首个 ready 信号。",
+                    "detail": "暂时没有阻塞。",
+                    "progress_percent": 10,
+                },
+            },
+            {
+                "event_seq": 6,
+                "event_type": "tool.progressed",
+                "payload": {
+                    "phase": "ready",
+                    "summary": "Dev server ready",
+                    "detail": "READY http://127.0.0.1:3000",
+                    "progress_percent": 100,
+                    "ready": True,
+                },
+            },
+            {
+                "event_seq": 7,
+                "event_type": "task.progress.summarized",
+                "payload": {
+                    "phase": "ready",
+                    "summary": "dev server 已就绪，接下来可以继续 smoke test。",
+                    "detail": "服务已经可访问。",
+                    "progress_percent": 100,
+                },
+            },
+            {
+                "event_seq": 8,
+                "event_type": "task.completed",
+                "payload": {"result_preview": "北京今天晴，最高 16°C。"},
+            },
         ]
     )
 
@@ -1796,7 +2070,9 @@ def test_tool_executor_denied_action_records_failure_without_approval(tmp_path: 
     assert result.blocked is False
     assert store.list_approvals(task_id=ctx.task_id, limit=10) == []
     assert store.get_task(ctx.task_id).status == "failed"
-    assert any(event["event_type"] == "policy.denied" for event in store.list_events(task_id=ctx.task_id))
+    assert any(
+        event["event_type"] == "policy.denied" for event in store.list_events(task_id=ctx.task_id)
+    )
 
 
 def test_executor_requires_new_approval_when_fingerprint_changes(tmp_path: Path) -> None:
@@ -1914,7 +2190,10 @@ def test_executor_marks_unknown_outcome_and_reconciles_local_write(tmp_path: Pat
     assert permit is not None and permit.status == "uncertain"
     assert receipt.result_code == "reconciled_applied"
     assert receipt.permit_ref == result.permit_id
-    assert any(event["event_type"] == "outcome.uncertain" for event in store.list_events(task_id=ctx.task_id))
+    assert any(
+        event["event_type"] == "outcome.uncertain"
+        for event in store.list_events(task_id=ctx.task_id)
+    )
 
 
 def test_runner_preserves_reconciling_status_for_reconciled_tool_outcomes(tmp_path: Path) -> None:
@@ -2055,12 +2334,28 @@ def test_executor_reconciles_git_mutation_from_repo_state(tmp_path: Path) -> Non
     workspace = tmp_path / "repo"
     workspace.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=workspace, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.name", "Tester"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Tester"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     tracked = workspace / "tracked.txt"
     tracked.write_text("before\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=workspace, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "add", "tracked.txt"], cwd=workspace, check=True, capture_output=True, text=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=workspace, check=True, capture_output=True, text=True
+    )
 
     store = KernelStore(tmp_path / "kernel" / "state.db")
     artifacts = ArtifactStore(tmp_path / "kernel" / "artifacts")
@@ -2075,8 +2370,16 @@ def test_executor_reconciles_git_mutation_from_repo_state(tmp_path: Path) -> Non
 
     def flaky_git(payload: dict[str, Any]) -> dict[str, Any]:
         tracked.write_text("after\n", encoding="utf-8")
-        subprocess.run(["git", "add", "tracked.txt"], cwd=workspace, check=True, capture_output=True, text=True)
-        subprocess.run(["git", "commit", "-m", "after"], cwd=workspace, check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "add", "tracked.txt"], cwd=workspace, check=True, capture_output=True, text=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "after"],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         raise RuntimeError(f"git crashed after mutation: {payload['command']}")
 
     registry = ToolRegistry()
@@ -2112,7 +2415,10 @@ def test_executor_reconciles_git_mutation_from_repo_state(tmp_path: Path) -> Non
     assert result.receipt_id is not None
     assert result.result_code == "reconciled_applied"
     assert result.execution_status == "reconciling"
-    assert any(event["event_type"] == "outcome.uncertain" for event in store.list_events(task_id=ctx.task_id))
+    assert any(
+        event["event_type"] == "outcome.uncertain"
+        for event in store.list_events(task_id=ctx.task_id)
+    )
 
 
 def test_runner_marks_unknown_outcome_as_needs_attention(tmp_path: Path) -> None:
@@ -2261,7 +2567,9 @@ def test_runner_deny_approval_persists_denial_message_in_session(tmp_path: Path)
     session.append_user("please continue")
     runner.session_manager.save(session)
 
-    result = runner._resolve_approval("chat-deny", action="deny", approval_id=approval.approval_id, reason="not now")
+    result = runner._resolve_approval(
+        "chat-deny", action="deny", approval_id=approval.approval_id, reason="not now"
+    )
 
     assert result.is_command is True
     assert "This approval was denied" in result.text
@@ -2325,7 +2633,9 @@ def test_runner_approve_resumes_attempt_and_finalizes_task(tmp_path: Path) -> No
         task_controller=controller,
     )
 
-    result = runner._resolve_approval("chat-approve", action="approve", approval_id=approval.approval_id)
+    result = runner._resolve_approval(
+        "chat-approve", action="approve", approval_id=approval.approval_id
+    )
 
     assert result.is_command is False
     assert result.text == "all done"
@@ -2349,7 +2659,9 @@ def test_runner_dispatches_natural_language_case_and_rollback_without_slash(tmp_
         decision_ref=None,
         policy_ref=None,
     )
-    job = ScheduledJob.create(name="RunnerJob", prompt="run", schedule_type="interval", interval_seconds=60)
+    job = ScheduledJob.create(
+        name="RunnerJob", prompt="run", schedule_type="interval", interval_seconds=60
+    )
     store.create_schedule(job)
     store.append_schedule_history(
         JobExecutionRecord(
@@ -2392,12 +2704,28 @@ def test_runner_dispatches_natural_language_case_and_rollback_without_slash(tmp_
     assert json.loads(rollback_result.text)["status"] == "succeeded"
     assert help_result.is_command is True and "/task" in help_result.text
     assert history_result.is_command is True and "Current session" in history_result.text
-    assert list_result.is_command is True and json.loads(list_result.text)[0]["task_id"] == ctx.task_id
-    assert proof_result.is_command is True and json.loads(proof_result.text)["task"]["task_id"] == ctx.task_id
-    assert grant_result.is_command is True and json.loads(grant_result.text)[0]["grant_id"] == grant.grant_id
-    assert schedule_result.is_command is True and json.loads(schedule_result.text)[0]["id"] == job.id
-    assert schedule_history_result.is_command is True and json.loads(schedule_history_result.text)[0]["job_id"] == job.id
-    assert schedule_disable_result.is_command is True and "Disabled task" in schedule_disable_result.text
+    assert (
+        list_result.is_command is True and json.loads(list_result.text)[0]["task_id"] == ctx.task_id
+    )
+    assert (
+        proof_result.is_command is True
+        and json.loads(proof_result.text)["task"]["task_id"] == ctx.task_id
+    )
+    assert (
+        grant_result.is_command is True
+        and json.loads(grant_result.text)[0]["grant_id"] == grant.grant_id
+    )
+    assert (
+        schedule_result.is_command is True and json.loads(schedule_result.text)[0]["id"] == job.id
+    )
+    assert (
+        schedule_history_result.is_command is True
+        and json.loads(schedule_history_result.text)[0]["job_id"] == job.id
+    )
+    assert (
+        schedule_disable_result.is_command is True
+        and "Disabled task" in schedule_disable_result.text
+    )
     assert grant_revoke_result.is_command is True and "Revoked grant" in grant_revoke_result.text
 
 
@@ -2574,5 +2902,9 @@ def test_projection_service_incrementally_updates_tool_history(tmp_path: Path) -
     finally:
         service._full_rebuild = original_full_rebuild  # type: ignore[method-assign]
 
-    assert [entry["tool_name"] for entry in second["tool_history"]] == ["grok_search", "write_file", "grok_search"]
+    assert [entry["tool_name"] for entry in second["tool_history"]] == [
+        "grok_search",
+        "write_file",
+        "grok_search",
+    ]
     assert second["tool_history"][-1]["key_input"] == '"topic-2"'

@@ -24,6 +24,11 @@ def _tool(name: str = "search") -> ToolSpec:
         description="Search docs",
         input_schema={"type": "object"},
         handler=lambda payload: payload,
+        readonly=True,
+        action_class="read_local",
+        idempotent=True,
+        risk_hint="low",
+        requires_receipt=False,
     )
 
 
@@ -52,7 +57,13 @@ def test_cache_helpers_cover_string_list_and_thinking_cleanup() -> None:
     stripped = _strip_thinking_blocks(
         [
             {"role": "assistant", "content": [{"type": "thinking", "thinking": "plan"}]},
-            {"role": "assistant", "content": [{"type": "thinking", "thinking": "p"}, {"type": "text", "text": "done"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "p"},
+                    {"type": "text", "text": "done"},
+                ],
+            },
         ]
     )
     assert stripped[0]["content"] == [{"type": "text", "text": ""}]
@@ -98,14 +109,24 @@ def test_claude_payload_moves_internal_tool_context_into_system_prompt() -> None
         model="claude-3",
         max_tokens=256,
         messages=[
-            {"role": "assistant", "content": [{"type": "tool_use", "id": "call_skill", "name": "read_skill", "input": {"name": "grok-search"}}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_skill",
+                        "name": "read_skill",
+                        "input": {"name": "grok-search"},
+                    }
+                ],
+            },
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "tool_result",
                         "tool_use_id": "call_skill",
-                        "content": "<skill_content name=\"grok-search\">secret</skill_content>",
+                        "content": '<skill_content name="grok-search">secret</skill_content>',
                         "internal_context": True,
                         "tool_name": "read_skill",
                     }
@@ -134,20 +155,30 @@ def test_claude_generate_normalizes_usage_and_api_errors() -> None:
         ),
     )
     provider = ClaudeProvider(
-        client=SimpleNamespace(messages=SimpleNamespace(create=lambda **_kwargs: dict_error_response)),
+        client=SimpleNamespace(
+            messages=SimpleNamespace(create=lambda **_kwargs: dict_error_response)
+        ),
         model="claude-3",
     )
 
     response = provider.generate(
-        ProviderRequest(model="claude-3", max_tokens=10, messages=[{"role": "user", "content": "hi"}])
+        ProviderRequest(
+            model="claude-3", max_tokens=10, messages=[{"role": "user", "content": "hi"}]
+        )
     )
 
     assert response.error == "backend failed"
     assert response.usage.input_tokens == 11
     assert response.usage.cache_creation_tokens == 2
 
-    provider.client.messages.create = lambda **_kwargs: SimpleNamespace(content=[], error="plain error", usage=None)
-    plain = provider.generate(ProviderRequest(model="claude-3", max_tokens=10, messages=[{"role": "user", "content": "hi"}]))
+    provider.client.messages.create = lambda **_kwargs: SimpleNamespace(
+        content=[], error="plain error", usage=None
+    )
+    plain = provider.generate(
+        ProviderRequest(
+            model="claude-3", max_tokens=10, messages=[{"role": "user", "content": "hi"}]
+        )
+    )
     assert plain.error == "plain error"
     assert plain.usage.output_tokens == 0
 
@@ -166,25 +197,51 @@ def test_claude_stream_emits_text_thinking_json_and_message_end() -> None:
                 ),
             ),
         ),
-        SimpleNamespace(type="content_block_start", content_block={"type": "thinking", "thinking": ""}),
-        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="thinking_delta", thinking="plan")),
+        SimpleNamespace(
+            type="content_block_start", content_block={"type": "thinking", "thinking": ""}
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="thinking_delta", thinking="plan"),
+        ),
         SimpleNamespace(type="content_block_stop"),
-        SimpleNamespace(type="content_block_start", content_block={"type": "tool_use", "id": "1", "name": "search"}),
-        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="input_json_delta", partial_json='{"q":"hi"}')),
-        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="signature_delta", signature="sig")),
+        SimpleNamespace(
+            type="content_block_start",
+            content_block={"type": "tool_use", "id": "1", "name": "search"},
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="input_json_delta", partial_json='{"q":"hi"}'),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="signature_delta", signature="sig"),
+        ),
         SimpleNamespace(type="content_block_stop"),
         SimpleNamespace(type="content_block_start", content_block={"type": "text", "text": ""}),
-        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="hello")),
-        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="end_turn"), usage=SimpleNamespace(output_tokens=9)),
+        SimpleNamespace(
+            type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="hello")
+        ),
+        SimpleNamespace(
+            type="message_delta",
+            delta=SimpleNamespace(stop_reason="end_turn"),
+            usage=SimpleNamespace(output_tokens=9),
+        ),
         SimpleNamespace(type="content_block_stop"),
     ]
     provider = ClaudeProvider(
-        client=SimpleNamespace(messages=SimpleNamespace(create=lambda **_kwargs: iter(stream_events))),
+        client=SimpleNamespace(
+            messages=SimpleNamespace(create=lambda **_kwargs: iter(stream_events))
+        ),
         model="claude-3",
     )
 
     events = list(
-        provider.stream(ProviderRequest(model="claude-3", max_tokens=10, messages=[{"role": "user", "content": "hi"}]))
+        provider.stream(
+            ProviderRequest(
+                model="claude-3", max_tokens=10, messages=[{"role": "user", "content": "hi"}]
+            )
+        )
     )
 
     assert events[0].type == "thinking"
@@ -203,17 +260,29 @@ def test_claude_stream_emits_text_thinking_json_and_message_end() -> None:
 
 def test_claude_stream_drops_invalid_partial_json() -> None:
     stream_events = [
-        SimpleNamespace(type="content_block_start", content_block={"type": "tool_use", "id": "1", "name": "search"}),
-        SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="input_json_delta", partial_json="{bad")),
+        SimpleNamespace(
+            type="content_block_start",
+            content_block={"type": "tool_use", "id": "1", "name": "search"},
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="input_json_delta", partial_json="{bad"),
+        ),
         SimpleNamespace(type="content_block_stop"),
     ]
     provider = ClaudeProvider(
-        client=SimpleNamespace(messages=SimpleNamespace(create=lambda **_kwargs: iter(stream_events))),
+        client=SimpleNamespace(
+            messages=SimpleNamespace(create=lambda **_kwargs: iter(stream_events))
+        ),
         model="claude-3",
     )
 
     events = list(
-        provider.stream(ProviderRequest(model="claude-3", max_tokens=10, messages=[{"role": "user", "content": "hi"}]))
+        provider.stream(
+            ProviderRequest(
+                model="claude-3", max_tokens=10, messages=[{"role": "user", "content": "hi"}]
+            )
+        )
     )
     assert events[0].block.get("input") is None
 

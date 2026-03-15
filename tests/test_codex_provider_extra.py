@@ -68,12 +68,18 @@ def _tool() -> ToolSpec:
         description="Run shell command",
         input_schema={"type": "array"},
         handler=lambda payload: payload,
+        action_class="execute_command",
+        risk_hint="critical",
+        requires_receipt=True,
     )
 
 
 def test_codex_helper_functions_cover_core_serialization_paths() -> None:
     assert _responses_url("https://api.openai.com/v1") == "https://api.openai.com/v1/responses"
-    assert _responses_url("https://api.openai.com/v1/responses") == "https://api.openai.com/v1/responses"
+    assert (
+        _responses_url("https://api.openai.com/v1/responses")
+        == "https://api.openai.com/v1/responses"
+    )
     assert _responses_url("https://example.com/custom") == "https://example.com/custom/v1/responses"
     assert _stringify_tool_output({"ok": True}) == '{"ok": true}'
 
@@ -83,22 +89,33 @@ def test_codex_helper_functions_cover_core_serialization_paths() -> None:
         {"type": "input_image", "image_url": "https://example.com/a.png"}
     ]
     assert _tool_result_output(image_block, codex_oauth=False) == "[tool returned image content]"
-    assert _tool_result_output(mixed_blocks, codex_oauth=False) == '[{"type": "text", "text": "before"}]'
+    assert (
+        _tool_result_output(mixed_blocks, codex_oauth=False)
+        == '[{"type": "text", "text": "before"}]'
+    )
     follow_up = _tool_result_follow_up_items("call_1", mixed_blocks, codex_oauth=True)
     assert follow_up[0]["content"][1]["type"] == "input_image"
 
 
 def test_codex_error_and_image_helpers_cover_edge_cases() -> None:
     assert _error_code_message({"error": {"code": "bad", "message": "broken"}}) == ("bad", "broken")
-    assert _error_code_message({"response": {"error": {"code": "nested", "detail": "oops"}}}) == ("nested", "oops")
-    assert _error_code_message({"response": {"incomplete_details": {"reason": "truncated"}}}) == ("truncated", "truncated")
+    assert _error_code_message({"response": {"error": {"code": "nested", "detail": "oops"}}}) == (
+        "nested",
+        "oops",
+    )
+    assert _error_code_message({"response": {"incomplete_details": {"reason": "truncated"}}}) == (
+        "truncated",
+        "truncated",
+    )
     assert _format_stream_error("prefix", {"message": "oops"}) == "prefix: oops"
     assert _format_stream_error("prefix", {"foo": "bar"}).startswith("prefix: {")
 
-    assert _image_part_from_block({"source": {"type": "base64", "media_type": "image/png", "data": "abc"}})[
-        "image_url"
-    ].startswith("data:image/png;base64,abc")
-    assert _codex_oauth_image_part_from_block({"source": {"type": "url", "url": "https://example.com"}}) == {
+    assert _image_part_from_block(
+        {"source": {"type": "base64", "media_type": "image/png", "data": "abc"}}
+    )["image_url"].startswith("data:image/png;base64,abc")
+    assert _codex_oauth_image_part_from_block(
+        {"source": {"type": "url", "url": "https://example.com"}}
+    ) == {
         "type": "input_image",
         "image_url": "https://example.com",
     }
@@ -114,7 +131,11 @@ def test_codex_message_schema_usage_and_output_parsers() -> None:
     assert _message_content_parts("hello") == [{"type": "input_text", "text": "hello"}]
     assert _message_content_parts(123) == [{"type": "input_text", "text": "123"}]
     assert _message_content_parts(
-        [{"type": "text", "text": "hi"}, {"type": "thinking", "thinking": "plan"}, {"type": "image", "source": {"type": "url", "url": "https://example.com"}}]
+        [
+            {"type": "text", "text": "hi"},
+            {"type": "thinking", "thinking": "plan"},
+            {"type": "image", "source": {"type": "url", "url": "https://example.com"}},
+        ]
     ) == [
         {"type": "input_text", "text": "hi"},
         {"type": "input_image", "image_url": "https://example.com"},
@@ -160,12 +181,21 @@ def test_codex_provider_init_clone_headers_and_stream_events() -> None:
     assert provider._headers()["X-Test"] == "1"
 
     provider.generate = lambda _request: SimpleNamespace(  # type: ignore[assignment]
-        content=[{"type": "text", "text": "hello"}, {"type": "tool_use", "id": "call_1", "name": "bash", "input": {}}],
+        content=[
+            {"type": "text", "text": "hello"},
+            {"type": "tool_use", "id": "call_1", "name": "bash", "input": {}},
+        ],
         error=None,
         stop_reason="tool_use",
         usage=SimpleNamespace(input_tokens=1, output_tokens=2),
     )
-    events = list(provider.stream(ProviderRequest(model="gpt-5.4", max_tokens=64, messages=[{"role": "user", "content": "hi"}])))
+    events = list(
+        provider.stream(
+            ProviderRequest(
+                model="gpt-5.4", max_tokens=64, messages=[{"role": "user", "content": "hi"}]
+            )
+        )
+    )
     assert [event.type for event in events] == ["text", "block_end", "block_end", "message_end"]
 
 
@@ -194,7 +224,9 @@ def test_codex_jwt_and_token_manager_read_refresh_and_access_paths(
     manager = CodexOAuthTokenManager(auth_path=auth_path)
 
     def fake_urlopen(request, timeout: int):
-        return _FakeHttpResponse({"access_token": "new-access", "refresh_token": "new-refresh", "id_token": "id"})
+        return _FakeHttpResponse(
+            {"access_token": "new-access", "refresh_token": "new-refresh", "id_token": "id"}
+        )
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     monkeypatch.setattr("time.strftime", lambda *_args, **_kwargs: "2026-03-12T10:00:00Z")
@@ -204,18 +236,32 @@ def test_codex_jwt_and_token_manager_read_refresh_and_access_paths(
     assert refreshed["tokens"]["id_token"] == "id"
 
     fresh_token = "header.eyJleHAiOiA0MTAyNDQ0ODAwLCAiY2xpZW50X2lkIjogImFwcCJ9.sig"
-    auth_path.write_text(json.dumps({"tokens": {"access_token": fresh_token, "refresh_token": "rt"}}), encoding="utf-8")
+    auth_path.write_text(
+        json.dumps({"tokens": {"access_token": fresh_token, "refresh_token": "rt"}}),
+        encoding="utf-8",
+    )
     assert manager.get_access_token() == fresh_token
 
-    auth_path.write_text(json.dumps({"tokens": {"access_token": "header.eyJleHAiOiAxfQ.sig", "refresh_token": "rt"}}), encoding="utf-8")
-    monkeypatch.setattr(manager, "_refresh", lambda data: {"tokens": {"access_token": "refreshed-token"}})
+    auth_path.write_text(
+        json.dumps(
+            {"tokens": {"access_token": "header.eyJleHAiOiAxfQ.sig", "refresh_token": "rt"}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        manager, "_refresh", lambda data: {"tokens": {"access_token": "refreshed-token"}}
+    )
     assert manager.get_access_token() == "refreshed-token"
 
 
-def test_codex_token_manager_refresh_error_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codex_token_manager_refresh_error_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     token = "header.eyJjbGllbnRfaWQiOiAiYXBwIn0.sig"
     auth_path = tmp_path / "auth.json"
-    auth_path.write_text(json.dumps({"tokens": {"access_token": token, "refresh_token": "rt"}}), encoding="utf-8")
+    auth_path.write_text(
+        json.dumps({"tokens": {"access_token": token, "refresh_token": "rt"}}), encoding="utf-8"
+    )
     manager = CodexOAuthTokenManager(auth_path=auth_path)
 
     def http_error(request, timeout: int):
@@ -235,12 +281,16 @@ def test_codex_token_manager_refresh_error_paths(tmp_path: Path, monkeypatch: py
     with pytest.raises(RuntimeError, match="did not return access_token"):
         manager._refresh(manager._read())
 
-    auth_path.write_text(json.dumps({"tokens": {"access_token": "", "refresh_token": "rt"}}), encoding="utf-8")
+    auth_path.write_text(
+        json.dumps({"tokens": {"access_token": "", "refresh_token": "rt"}}), encoding="utf-8"
+    )
     with pytest.raises(RuntimeError, match="Missing access_token"):
         manager.get_access_token()
 
 
-def test_codex_oauth_provider_helpers_and_stream_impl_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codex_oauth_provider_helpers_and_stream_impl_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     token_manager = SimpleNamespace(get_access_token=lambda: "access-token")
     provider = CodexOAuthProvider(
         token_manager=token_manager,
@@ -248,7 +298,11 @@ def test_codex_oauth_provider_helpers_and_stream_impl_paths(monkeypatch: pytest.
         system_prompt=None,
         default_headers={"X-Test": "1"},
     )
-    payload = provider._payload(ProviderRequest(model="gpt-5.4", max_tokens=32, messages=[{"role": "user", "content": "hi"}]))
+    payload = provider._payload(
+        ProviderRequest(
+            model="gpt-5.4", max_tokens=32, messages=[{"role": "user", "content": "hi"}]
+        )
+    )
     assert payload["instructions"] == "You are Hermit's coding assistant."
     assert payload["stream"] is True
     assert provider._headers()["Accept"] == "text/event-stream"
@@ -281,11 +335,21 @@ def test_codex_oauth_provider_helpers_and_stream_impl_paths(monkeypatch: pytest.
             "\n",
         ]
     )
-    events = list(provider._stream_impl(ProviderRequest(model="gpt-5.4", max_tokens=64, messages=[{"role": "user", "content": "hi"}])))
+    events = list(
+        provider._stream_impl(
+            ProviderRequest(
+                model="gpt-5.4", max_tokens=64, messages=[{"role": "user", "content": "hi"}]
+            )
+        )
+    )
     assert [event.type for event in events] == ["text", "block_end", "message_end"]
 
     provider._stream_impl = lambda request: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[assignment]
-    response = provider.generate(ProviderRequest(model="gpt-5.4", max_tokens=64, messages=[{"role": "user", "content": "hi"}]))
+    response = provider.generate(
+        ProviderRequest(
+            model="gpt-5.4", max_tokens=64, messages=[{"role": "user", "content": "hi"}]
+        )
+    )
     assert response.error == "Codex OAuth API error: boom"
 
     def http_error_stream(_request):
@@ -299,5 +363,9 @@ def test_codex_oauth_provider_helpers_and_stream_impl_paths(monkeypatch: pytest.
         yield ProviderEvent(type="message_end")
 
     provider._stream_impl = http_error_stream  # type: ignore[assignment]
-    error_response = provider.generate(ProviderRequest(model="gpt-5.4", max_tokens=64, messages=[{"role": "user", "content": "hi"}]))
+    error_response = provider.generate(
+        ProviderRequest(
+            model="gpt-5.4", max_tokens=64, messages=[{"role": "user", "content": "hi"}]
+        )
+    )
     assert error_response.error == "Codex OAuth API error 403: blocked"

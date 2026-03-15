@@ -1,4 +1,5 @@
 """Feishu adapter plugin: bridges Feishu messaging to Hermit AgentRunner."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +11,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from hermit.builtin.feishu.normalize import FeishuMessage, normalize_event
@@ -50,7 +52,17 @@ _TOPIC_REFRESH_INTERVAL_SECONDS = 5
 
 # Minimum seconds between consecutive PATCH calls on the progress card.
 _PATCH_MIN_INTERVAL = 1.0
-_RAW_CONTROL_TEXT = {"开始执行", "执行吧", "确认执行", "继续执行", "approve", "deny", "通过", "批准", "同意"}
+_RAW_CONTROL_TEXT = {
+    "开始执行",
+    "执行吧",
+    "确认执行",
+    "继续执行",
+    "approve",
+    "deny",
+    "通过",
+    "批准",
+    "同意",
+}
 _RAW_CONTROL_PREFIXES = (
     "批准 ",
     "批准一次 ",
@@ -61,7 +73,9 @@ _RAW_CONTROL_PREFIXES = (
     "approve_always_directory ",
     "deny ",
 )
-_SCHEDULE_REACTION_TOOLS = frozenset({"schedule_list", "schedule_create", "schedule_update", "schedule_delete"})
+_SCHEDULE_REACTION_TOOLS = frozenset(
+    {"schedule_list", "schedule_create", "schedule_update", "schedule_delete"}
+)
 _DISPLAYABLE_TOPIC_KINDS = {
     "tool.submitted",
     "tool.progressed",
@@ -73,10 +87,186 @@ _DISPLAYABLE_TOPIC_KINDS = {
 _TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
 
 _ACTIVE_ADAPTER: "FeishuAdapter | None" = None
+_LARK_RECEIVE_LOOP_PATCHED = False
+_LARK_CONNECT_PATCHED = False
+_LARK_RUNTIME_PATCHED = False
+_FEISHU_WS_SHUTDOWN = False
+
+
+def _is_expected_lark_ws_close(exc: BaseException) -> bool:
+    message = str(exc)
+    return (
+        "sent 1000 (OK)" in message and "received 1000 (OK)" in message
+    ) or message == "connection is closed"
+
+
+def _patch_lark_receive_loop(ws_client_module: Any) -> None:
+    global _LARK_RECEIVE_LOOP_PATCHED
+    if _LARK_RECEIVE_LOOP_PATCHED:
+        return
+
+    loop_ref = ws_client_module.loop
+    logger = ws_client_module.logger
+    connection_closed = ws_client_module.ConnectionClosedException
+    client_cls = ws_client_module.Client
+
+    async def _receive_message_loop(client: Any) -> None:
+        adapter_ref = getattr(client, "_hermit_adapter_ref", None)
+        try:
+            while True:
+                if client._conn is None:
+                    if adapter_ref is not None and adapter_ref._stopped:
+                        return
+                    raise connection_closed("connection is closed")
+                msg = await client._conn.recv()
+                loop_ref.create_task(client._handle_message(msg))
+        except Exception as exc:
+            graceful_close = (
+                adapter_ref is not None and adapter_ref._stopped and _is_expected_lark_ws_close(exc)
+            )
+            if graceful_close:
+                log.info("Feishu WebSocket receive loop closed cleanly during shutdown.")
+            else:
+                logger.error(client._fmt_log("receive message loop exit, err: {}", exc))
+            with suppress(Exception):
+                await client._disconnect()
+            if client._auto_reconnect and not graceful_close:
+                await client._reconnect()
+            elif not client._auto_reconnect and not graceful_close:
+                raise
+
+    setattr(_receive_message_loop, "_hermit_patched", True)
+    client_cls._receive_message_loop = _receive_message_loop
+    _LARK_RECEIVE_LOOP_PATCHED = True
+
+
+def _patch_lark_connect(ws_client_module: Any) -> None:
+    global _LARK_CONNECT_PATCHED
+    if _LARK_CONNECT_PATCHED:
+        return
+
+    loop_ref = ws_client_module.loop
+    logger = ws_client_module.logger
+    parse_ws_conn_exception = ws_client_module._parse_ws_conn_exception
+    client_cls = ws_client_module.Client
+    websockets_module = ws_client_module.websockets
+
+    def _consume_receive_task(task: asyncio.Task[Any], *, client: Any) -> None:
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is None:
+            return
+        adapter_ref = getattr(client, "_hermit_adapter_ref", None)
+        graceful_close = _is_expected_lark_ws_close(exc) and (
+            _FEISHU_WS_SHUTDOWN or (adapter_ref is not None and adapter_ref._stopped)
+        )
+        if graceful_close:
+            log.info("Suppressed expected Feishu WebSocket receive task exception during shutdown.")
+            return
+        loop_ref.call_exception_handler(
+            {
+                "message": "Unhandled exception in Feishu WebSocket receive task.",
+                "exception": exc,
+                "task": task,
+            }
+        )
+
+    async def _connect(client: Any) -> None:
+        await client._lock.acquire()
+        try:
+            if client._conn is not None:
+                return
+            conn_url = client._get_conn_url()
+            u = ws_client_module.urlparse(conn_url)
+            q = ws_client_module.parse_qs(u.query)
+            conn_id = q[ws_client_module.DEVICE_ID][0]
+            service_id = q[ws_client_module.SERVICE_ID][0]
+
+            conn = await websockets_module.connect(conn_url)
+            client._conn = conn
+            client._conn_url = conn_url
+            client._conn_id = conn_id
+            client._service_id = service_id
+
+            logger.info(client._fmt_log("connected to {}", conn_url))
+            receive_task = loop_ref.create_task(client._receive_message_loop())
+            setattr(client, "_hermit_receive_task", receive_task)
+            receive_task.add_done_callback(lambda task: _consume_receive_task(task, client=client))
+        except websockets_module.InvalidStatusCode as exc:
+            parse_ws_conn_exception(exc)
+        finally:
+            client._lock.release()
+
+    setattr(_connect, "_hermit_patched", True)
+    client_cls._connect = _connect
+    _LARK_CONNECT_PATCHED = True
+
+
+def _patch_lark_runtime(ws_client_module: Any) -> None:
+    global _LARK_RUNTIME_PATCHED
+    if _LARK_RUNTIME_PATCHED:
+        return
+
+    original_error = ws_client_module.logger.error
+
+    def _error(message: Any, *args: Any, **kwargs: Any) -> Any:
+        rendered = str(message)
+        try:
+            if args:
+                rendered = rendered.format(*args)
+        except Exception:
+            rendered = str(message)
+        if (
+            _FEISHU_WS_SHUTDOWN
+            and "receive message loop exit, err:" in rendered
+            and "sent 1000 (OK)" in rendered
+        ):
+            log.info("Suppressed expected Feishu WebSocket close log during shutdown.")
+            return None
+        return original_error(message, *args, **kwargs)
+
+    ws_client_module.logger.error = _error
+
+    loop = ws_client_module.loop
+    previous_handler = loop.get_exception_handler()
+
+    def _handler(active_loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        exc = context.get("exception")
+        if (
+            _FEISHU_WS_SHUTDOWN
+            and isinstance(exc, BaseException)
+            and _is_expected_lark_ws_close(exc)
+        ):
+            log.info("Suppressed expected Feishu WebSocket close exception during shutdown.")
+            return
+        if previous_handler is not None:
+            previous_handler(active_loop, context)
+        else:
+            active_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+    _LARK_RUNTIME_PATCHED = True
+
+
+with suppress(Exception):
+    from lark_oapi.ws import client as _lark_ws_client_module
+
+    _patch_lark_receive_loop(_lark_ws_client_module)
+    _patch_lark_connect(_lark_ws_client_module)
+    _patch_lark_runtime(_lark_ws_client_module)
 
 
 def get_active_adapter() -> "FeishuAdapter | None":
     return _ACTIVE_ADAPTER
+
+
+def _bind_lark_client_runtime(client: Any, ws_client_module: Any) -> None:
+    for name in ("_receive_message_loop", "_connect"):
+        method = getattr(ws_client_module.Client, name, None)
+        if callable(method):
+            setattr(client, name, method.__get__(client, type(client)))
 
 
 class FeishuAdapter:
@@ -129,6 +319,8 @@ class FeishuAdapter:
         global _ACTIVE_ADAPTER
         self._runner = runner
         _ACTIVE_ADAPTER = self
+        global _FEISHU_WS_SHUTDOWN
+        _FEISHU_WS_SHUTDOWN = False
         self._stopped = False
         self._ws_error = None
         self._ws_loop = None
@@ -174,10 +366,7 @@ class FeishuAdapter:
         self._ws_loop = ws_client_module.loop
 
         self._client = (
-            lark.Client.builder()
-            .app_id(self._app_id)
-            .app_secret(self._app_secret)
-            .build()
+            lark.Client.builder().app_id(self._app_id).app_secret(self._app_secret).build()
         )
         self._reissue_pending_approval_cards()
 
@@ -195,12 +384,54 @@ class FeishuAdapter:
             event_handler=event_handler,
             log_level=lark.LogLevel.INFO,
         )
+        setattr(self._ws_client, "_hermit_adapter_ref", self)
+        self._ensure_lark_receive_loop_patch(ws_client_module)
+        _patch_lark_connect(ws_client_module)
+        _bind_lark_client_runtime(self._ws_client, ws_client_module)
+        _patch_lark_runtime(ws_client_module)
+        self._install_ws_exception_handler()
         self._ws_client.start()
 
+    def _is_expected_ws_close(self, exc: BaseException) -> bool:
+        return _is_expected_lark_ws_close(exc)
+
+    def _ensure_lark_receive_loop_patch(self, ws_client_module: Any) -> None:
+        _patch_lark_receive_loop(ws_client_module)
+
+    async def _cancel_ws_receive_task(self) -> None:
+        if self._ws_client is None:
+            return
+        receive_task = getattr(self._ws_client, "_hermit_receive_task", None)
+        if receive_task is None or receive_task.done():
+            return
+        receive_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await receive_task
+
+    def _install_ws_exception_handler(self) -> None:
+        if self._ws_loop is None:
+            return
+
+        previous_handler = self._ws_loop.get_exception_handler()
+
+        def _handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+            exc = context.get("exception")
+            if self._stopped and isinstance(exc, BaseException) and self._is_expected_ws_close(exc):
+                log.info("Suppressed expected Feishu WebSocket close during shutdown.")
+                return
+            if previous_handler is not None:
+                previous_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+
+        self._ws_loop.set_exception_handler(_handler)
+
     async def stop(self) -> None:
+        global _FEISHU_WS_SHUTDOWN
         global _ACTIVE_ADAPTER
         log.info("Stopping Feishu adapter...")
         self._stopped = True
+        _FEISHU_WS_SHUTDOWN = True
         if _ACTIVE_ADAPTER is self:
             _ACTIVE_ADAPTER = None
 
@@ -218,10 +449,20 @@ class FeishuAdapter:
         await self._shutdown_ws()
         self._executor.shutdown(wait=False, cancel_futures=True)
         await asyncio.to_thread(self._join_ws_thread)
+        _FEISHU_WS_SHUTDOWN = False
 
     async def _shutdown_ws(self) -> None:
         if self._ws_client is None or self._ws_loop is None:
             return
+
+        try:
+            receive_future = asyncio.run_coroutine_threadsafe(
+                self._cancel_ws_receive_task(),
+                self._ws_loop,
+            )
+            await asyncio.wait_for(asyncio.wrap_future(receive_future), timeout=2)
+        except Exception:
+            log.debug("Best-effort Feishu receive task cancellation failed", exc_info=True)
 
         try:
             setattr(self._ws_client, "_auto_reconnect", False)
@@ -253,7 +494,8 @@ class FeishuAdapter:
         if self._stopped:
             return
         self._sweep_timer = threading.Timer(
-            _SWEEP_INTERVAL_SECONDS, self._sweep_idle_sessions,
+            _SWEEP_INTERVAL_SECONDS,
+            self._sweep_idle_sessions,
         )
         self._sweep_timer.daemon = True
         self._sweep_timer.start()
@@ -275,8 +517,7 @@ class FeishuAdapter:
         sm = self._runner.session_manager
         idle_timeout = sm.idle_timeout_seconds
         expired = [
-            sid for sid, session in list(sm._active.items())
-            if session.is_expired(idle_timeout)
+            sid for sid, session in list(sm._active.items()) if session.is_expired(idle_timeout)
         ]
         for sid in expired:
             log.info("Closing idle Feishu session %s (SESSION_END)", sid)
@@ -320,7 +561,10 @@ class FeishuAdapter:
                         approval_id = str(mapping.get("approval_id", "") or "").strip()
                         if approval_id and hasattr(store, "get_approval"):
                             approval = store.get_approval(approval_id)
-                            if approval is None or str(getattr(approval, "status", "") or "") != "pending":
+                            if (
+                                approval is None
+                                or str(getattr(approval, "status", "") or "") != "pending"
+                            ):
                                 updated = dict(mapping)
                                 updated.pop("approval_id", None)
                                 updated["card_mode"] = "topic"
@@ -329,7 +573,9 @@ class FeishuAdapter:
                                 self._patch_task_topic(task_id, message_id=message_id)
                                 continue
                         if task.status in _TERMINAL_TASK_STATUSES:
-                            delivered = self._patch_terminal_result_card(task_id, message_id=message_id)
+                            delivered = self._patch_terminal_result_card(
+                                task_id, message_id=message_id
+                            )
                             if delivered and approval_id:
                                 updated = dict(mapping)
                                 updated.pop("approval_id", None)
@@ -340,12 +586,15 @@ class FeishuAdapter:
                     message_id = str(mapping.get("root_message_id", "") or "")
                     pending = None
                     if task.status == "blocked" and hasattr(store, "list_approvals"):
-                        pending_approvals = store.list_approvals(task_id=task_id, status="pending", limit=1)
+                        pending_approvals = store.list_approvals(
+                            task_id=task_id, status="pending", limit=1
+                        )
                         pending = pending_approvals[0] if pending_approvals else None
                     if pending is not None:
                         approval_card, _approval = self._build_pending_approval_card(
                             pending.approval_id,
-                            fallback_text=self._task_terminal_result_text(task_id) or self._t("feishu.adapter.progress.thinking"),
+                            fallback_text=self._task_terminal_result_text(task_id)
+                            or self._t("feishu.adapter.progress.thinking"),
                             approval=pending,
                         )
                         if message_id:
@@ -459,7 +708,9 @@ class FeishuAdapter:
         value = mappings.get(task_id, {})
         return dict(value) if isinstance(value, dict) else {}
 
-    def _task_id_for_message_reference(self, conversation_id: str, message_id: str | None) -> str | None:
+    def _task_id_for_message_reference(
+        self, conversation_id: str, message_id: str | None
+    ) -> str | None:
         normalized = str(message_id or "").strip()
         if not normalized or self._runner is None:
             return None
@@ -497,7 +748,9 @@ class FeishuAdapter:
         metadata["feishu_task_topics"] = mappings
         store.update_conversation_metadata(conversation_id, metadata)
 
-    def _update_task_topic_mapping(self, conversation_id: str, task_id: str, **updates: Any) -> None:
+    def _update_task_topic_mapping(
+        self, conversation_id: str, task_id: str, **updates: Any
+    ) -> None:
         if self._runner is None:
             return
         store = getattr(getattr(self._runner, "task_controller", None), "store", None)
@@ -536,10 +789,14 @@ class FeishuAdapter:
         for event in reversed(store.list_events(task_id=task_id, limit=500)):
             if event["event_type"] in {"task.completed", "task.failed", "task.cancelled"}:
                 payload = dict(event.get("payload", {}) or {})
-                return str(payload.get("result_text", "") or payload.get("result_preview", "") or "").strip()
+                return str(
+                    payload.get("result_text", "") or payload.get("result_preview", "") or ""
+                ).strip()
         return ""
 
-    def _task_history_steps(self, task_id: str, *, live_steps: list[ToolStep] | None = None) -> list[ToolStep]:
+    def _task_history_steps(
+        self, task_id: str, *, live_steps: list[ToolStep] | None = None
+    ) -> list[ToolStep]:
         if self._runner is None:
             return list(live_steps or [])
         store = getattr(getattr(self._runner, "task_controller", None), "store", None)
@@ -570,7 +827,10 @@ class FeishuAdapter:
         for live_step in live_steps:
             replaced = False
             for idx in range(len(merged) - 1, -1, -1):
-                if merged[idx].name == live_step.name and merged[idx].key_input == live_step.key_input:
+                if (
+                    merged[idx].name == live_step.name
+                    and merged[idx].key_input == live_step.key_input
+                ):
                     merged[idx] = live_step
                     replaced = True
                     break
@@ -591,8 +851,14 @@ class FeishuAdapter:
         current_hint = str(topic.get("current_hint", "") or "").strip()
         current_phase = str(topic.get("current_phase", "") or "").strip()
         items = list(topic.get("items", []) or [])
-        meaningful_kinds = _DISPLAYABLE_TOPIC_KINDS | {"task.completed", "task.failed", "task.cancelled"}
-        has_meaningful_progress = any(str(item.get("kind", "")).strip() in meaningful_kinds for item in items)
+        meaningful_kinds = _DISPLAYABLE_TOPIC_KINDS | {
+            "task.completed",
+            "task.failed",
+            "task.cancelled",
+        }
+        has_meaningful_progress = any(
+            str(item.get("kind", "")).strip() in meaningful_kinds for item in items
+        )
         if current_phase in {"", "started", "submitted"} and not has_meaningful_progress:
             return self._t("feishu.adapter.progress.thinking")
         return current_hint or self._t("feishu.adapter.progress.thinking")
@@ -611,7 +877,9 @@ class FeishuAdapter:
         if self._client is None:
             return None
         reply_to_message_id = str(mapping.get("reply_to_message_id", "") or "").strip()
-        chat_id = str(mapping.get("chat_id", "") or "").strip() or self._chat_id_from_conversation_id(conversation_id)
+        chat_id = str(
+            mapping.get("chat_id", "") or ""
+        ).strip() or self._chat_id_from_conversation_id(conversation_id)
         if reply_to_message_id:
             message_id = reply_card_return_id(self._client, reply_to_message_id, card)
         elif chat_id:
@@ -632,7 +900,9 @@ class FeishuAdapter:
         self._update_task_topic_mapping(conversation_id, task_id, **updates)
         return normalized_message_id
 
-    def _deliver_terminal_result_without_card(self, task_id: str, *, mapping: dict[str, Any]) -> bool:
+    def _deliver_terminal_result_without_card(
+        self, task_id: str, *, mapping: dict[str, Any]
+    ) -> bool:
         if self._runner is None or self._client is None:
             return False
         store = getattr(getattr(self._runner, "task_controller", None), "store", None)
@@ -647,15 +917,23 @@ class FeishuAdapter:
         if not text:
             return False
         reply_to_message_id = str(mapping.get("reply_to_message_id", "") or "").strip()
-        chat_id = str(mapping.get("chat_id", "") or "").strip() or self._chat_id_from_conversation_id(task.conversation_id)
+        chat_id = str(
+            mapping.get("chat_id", "") or ""
+        ).strip() or self._chat_id_from_conversation_id(task.conversation_id)
         sent_message_id = ""
         if reply_to_message_id:
-            delivered = bool(smart_reply(self._client, reply_to_message_id, text, locale=self._locale()))
+            delivered = bool(
+                smart_reply(self._client, reply_to_message_id, text, locale=self._locale())
+            )
             if not delivered and chat_id:
-                sent_message_id = str(smart_send_message(self._client, chat_id, text, locale=self._locale()) or "").strip()
+                sent_message_id = str(
+                    smart_send_message(self._client, chat_id, text, locale=self._locale()) or ""
+                ).strip()
                 delivered = bool(sent_message_id)
         elif chat_id:
-            sent_message_id = str(smart_send_message(self._client, chat_id, text, locale=self._locale()) or "").strip()
+            sent_message_id = str(
+                smart_send_message(self._client, chat_id, text, locale=self._locale()) or ""
+            ).strip()
             delivered = bool(sent_message_id)
         else:
             return False
@@ -750,7 +1028,9 @@ class FeishuAdapter:
             return False
         patched = patch_card(self._client, root_message_id, card)
         if patched:
-            self._update_task_topic_mapping(task.conversation_id, task_id, topic_signature=signature)
+            self._update_task_topic_mapping(
+                task.conversation_id, task_id, topic_signature=signature
+            )
         return patched
 
     def _maybe_send_completion_result_message(
@@ -766,14 +1046,22 @@ class FeishuAdapter:
         if store is None:
             return False
         task = store.get_task(task_id)
-        if task is None or task.source_channel != "feishu" or task.status not in {"completed", "failed", "cancelled"}:
+        if (
+            task is None
+            or task.source_channel != "feishu"
+            or task.status not in {"completed", "failed", "cancelled"}
+        ):
             return False
         if not self._task_has_appended_notes(task_id):
             return False
         mapping = self._task_topic_mapping(task.conversation_id, task_id)
         if bool(mapping.get("completion_reply_sent", False)):
             return False
-        resolved_chat_id = chat_id or str(mapping.get("chat_id", "") or "") or self._chat_id_from_conversation_id(task.conversation_id)
+        resolved_chat_id = (
+            chat_id
+            or str(mapping.get("chat_id", "") or "")
+            or self._chat_id_from_conversation_id(task.conversation_id)
+        )
         if not resolved_chat_id:
             return False
         text = str(task_text or "").strip() or self._task_terminal_result_text(task_id)
@@ -810,7 +1098,9 @@ class FeishuAdapter:
             return False
         patched = patch_card(self._client, root_message_id, card)
         if patched:
-            self._update_task_topic_mapping(task.conversation_id, task_id, topic_signature=signature)
+            self._update_task_topic_mapping(
+                task.conversation_id, task_id, topic_signature=signature
+            )
         return patched
 
     def _flush_all_sessions(self) -> None:
@@ -881,9 +1171,16 @@ class FeishuAdapter:
             log.debug("Duplicate message_id=%s, skipping", msg.message_id)
             return
 
-        log.info("Received msg_id=%s chat=%s chat_type=%s message_type=%s sender=%s text=%s images=%s",
-                 msg.message_id, msg.chat_id, msg.chat_type,
-                 msg.message_type, msg.sender_id, msg.text[:80], len(msg.image_keys))
+        log.info(
+            "Received msg_id=%s chat=%s chat_type=%s message_type=%s sender=%s text=%s images=%s",
+            msg.message_id,
+            msg.chat_id,
+            msg.chat_type,
+            msg.message_type,
+            msg.sender_id,
+            msg.text[:80],
+            len(msg.image_keys),
+        )
         try:
             self._executor.submit(self._process_message, msg)
         except RuntimeError:
@@ -899,7 +1196,11 @@ class FeishuAdapter:
         approval_id = str(value.get("approval_id", "")).strip()
         message_id = str(getattr(context, "open_message_id", "") or "")
 
-        if value.get("kind") != "approval" or action_type not in {"approve_once", "approve_always_directory", "deny"} or not approval_id:
+        if (
+            value.get("kind") != "approval"
+            or action_type not in {"approve_once", "approve_always_directory", "deny"}
+            or not approval_id
+        ):
             return self._card_action_response(
                 self._t("feishu.adapter.card_action.unsupported"),
                 level="info",
@@ -924,7 +1225,9 @@ class FeishuAdapter:
                 level="error",
             )
         if approval.status != "pending":
-            status_text = self._t("feishu.adapter.card_action.already_handled", status=approval.status)
+            status_text = self._t(
+                "feishu.adapter.card_action.already_handled", status=approval.status
+            )
             return self._card_action_response(
                 status_text,
                 level="info",
@@ -937,7 +1240,9 @@ class FeishuAdapter:
             )
 
         try:
-            self._executor.submit(self._handle_approval_action, approval_id, action_type, message_id)
+            self._executor.submit(
+                self._handle_approval_action, approval_id, action_type, message_id
+            )
         except RuntimeError:
             return self._card_action_response(
                 self._t("feishu.adapter.card_action.executor_stopped"),
@@ -1036,7 +1341,9 @@ class FeishuAdapter:
             approval_title = approval_copy.title
             approval_detail = approval_copy.detail
             approval_sections = approval_copy.sections
-            command_preview = str(approval.requested_action.get("command_preview", "") or "").strip() or None
+            command_preview = (
+                str(approval.requested_action.get("command_preview", "") or "").strip() or None
+            )
 
         suffix = str(detail_suffix or "").strip()
         if suffix:
@@ -1085,7 +1392,9 @@ class FeishuAdapter:
             if card_message_id:
                 patch_card(self._client, card_message_id, approval_card)
             elif reply_to_message_id:
-                card_message_id = reply_card_return_id(self._client, reply_to_message_id, approval_card)
+                card_message_id = reply_card_return_id(
+                    self._client, reply_to_message_id, approval_card
+                )
             return card_message_id, blocked, task_id
 
         if not result_text:
@@ -1153,7 +1462,11 @@ class FeishuAdapter:
                     card_mode="approval",
                     approval_id=approval.approval_id,
                 )
-                log.info("reissued_pending_approval_card approval_id=%s chat_id=%s", approval.approval_id, chat_id)
+                log.info(
+                    "reissued_pending_approval_card approval_id=%s chat_id=%s",
+                    approval.approval_id,
+                    chat_id,
+                )
 
     def _should_dispatch_raw(self, session_id: str, raw_text: str) -> bool:
         stripped = raw_text.strip()
@@ -1272,9 +1585,9 @@ class FeishuAdapter:
             def _on_tool_start(name: str, tool_input: dict[str, Any]) -> None:
                 nonlocal current_hint, schedule_reacted
                 if not schedule_reacted:
-                    if (
-                        name in _SCHEDULE_REACTION_TOOLS
-                        or (name == "read_skill" and str(tool_input.get("name", "")).strip().lower() == "scheduler")
+                    if name in _SCHEDULE_REACTION_TOOLS or (
+                        name == "read_skill"
+                        and str(tool_input.get("name", "")).strip().lower() == "scheduler"
                     ):
                         schedule_reacted = True
                         add_reaction(self._client, msg.message_id, "Get")
@@ -1286,6 +1599,7 @@ class FeishuAdapter:
             on_tool_start = _on_tool_start
 
         if progress_enabled:
+
             def _on_tool_call(name: str, tool_input: dict[str, Any], result: Any) -> None:
                 nonlocal current_hint
                 steps.append(make_tool_step(name, tool_input, result, 0, locale=self._locale()))
@@ -1360,7 +1674,11 @@ class FeishuAdapter:
             send_ack(self._client, msg.message_id, self._settings)
         if self._should_dispatch_raw(session_id, raw_text):
             control = self._runner.task_controller.resolve_text_command(session_id, raw_text)
-            if control is not None and control[0] in {"approve_once", "approve_always_directory", "deny"}:
+            if control is not None and control[0] in {
+                "approve_once",
+                "approve_always_directory",
+                "deny",
+            }:
                 result = self._resolve_approval_from_feishu(
                     session_id,
                     action=control[0],
@@ -1387,11 +1705,12 @@ class FeishuAdapter:
         ingress = None
         reply_to_ref = str(getattr(msg, "reply_to_message_id", "") or "").strip() or None
         quoted_message_ref = str(getattr(msg, "quoted_message_id", "") or "").strip() or None
-        reply_to_task_id = (
-            self._task_id_for_message_reference(session_id, reply_to_ref)
-            or self._task_id_for_message_reference(session_id, quoted_message_ref)
-        )
-        if task_controller is not None and callable(getattr(task_controller, "decide_ingress", None)):
+        reply_to_task_id = self._task_id_for_message_reference(
+            session_id, reply_to_ref
+        ) or self._task_id_for_message_reference(session_id, quoted_message_ref)
+        if task_controller is not None and callable(
+            getattr(task_controller, "decide_ingress", None)
+        ):
             ingress = task_controller.decide_ingress(
                 conversation_id=session_id,
                 source_channel="feishu",
@@ -1503,7 +1822,9 @@ class FeishuAdapter:
                 card_mode="topic",
             )
 
-    def _card_action_response(self, content: str, *, level: str = "info", card: dict[str, Any] | None = None) -> Any:
+    def _card_action_response(
+        self, content: str, *, level: str = "info", card: dict[str, Any] | None = None
+    ) -> Any:
         from lark_oapi.event.callback.model.p2_card_action_trigger import (
             P2CardActionTriggerResponse,
         )
@@ -1581,7 +1902,10 @@ class FeishuAdapter:
                     patch_card(
                         self._client,
                         message_id,
-                        build_thinking_card(result.text or self._t("feishu.adapter.progress.thinking"), locale=self._locale()),
+                        build_thinking_card(
+                            result.text or self._t("feishu.adapter.progress.thinking"),
+                            locale=self._locale(),
+                        ),
                     )
                     self._update_task_topic_mapping(
                         task.conversation_id,
@@ -1605,7 +1929,9 @@ class FeishuAdapter:
                 steps=[],
             )
             if blocked and card_message_id and result_task_id:
-                next_approval_id = str(getattr(getattr(result, "agent_result", None), "approval_id", "") or "")
+                next_approval_id = str(
+                    getattr(getattr(result, "agent_result", None), "approval_id", "") or ""
+                )
                 self._update_task_topic_mapping(
                     task.conversation_id,
                     result_task_id,
@@ -1620,7 +1946,9 @@ class FeishuAdapter:
                 patch_card(
                     self._client,
                     message_id,
-                    build_error_card(self._t("feishu.adapter.approval.failed"), locale=self._locale()),
+                    build_error_card(
+                        self._t("feishu.adapter.approval.failed"), locale=self._locale()
+                    ),
                 )
 
     def _build_prompt(self, session_id: str, msg: FeishuMessage) -> str:
@@ -1647,9 +1975,13 @@ class FeishuAdapter:
         if not records:
             return "\n".join(lines)
         for index, record in enumerate(records, start=1):
-            summary = str(record.get("summary", "")).strip() or self._t("feishu.adapter.image_prompt.empty_summary")
+            summary = str(record.get("summary", "")).strip() or self._t(
+                "feishu.adapter.image_prompt.empty_summary"
+            )
             image_id = str(record.get("image_id", "")).strip() or "unknown"
-            tags = ", ".join(record.get("tags", [])[:5]) or self._t("feishu.adapter.image_prompt.no_tags")
+            tags = ", ".join(record.get("tags", [])[:5]) or self._t(
+                "feishu.adapter.image_prompt.no_tags"
+            )
             lines.append(
                 self._t(
                     "feishu.adapter.image_prompt.entry",
@@ -1664,7 +1996,9 @@ class FeishuAdapter:
     def _ingest_image_records(self, session_id: str, msg: FeishuMessage) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
         for image_key in msg.image_keys:
-            record = self._ingest_image_record(session_id=session_id, message_id=msg.message_id, image_key=image_key)
+            record = self._ingest_image_record(
+                session_id=session_id, message_id=msg.message_id, image_key=image_key
+            )
             if record is not None:
                 records.append(record)
         return records
@@ -1683,7 +2017,11 @@ class FeishuAdapter:
         task_controller = getattr(runner, "task_controller", None)
         tool_executor = getattr(getattr(runner, "agent", None), "tool_executor", None)
         if task_controller is None or tool_executor is None:
-            log.warning("image_store_from_feishu_unavailable", image_key=image_key, reason="missing_task_kernel")
+            log.warning(
+                "image_store_from_feishu_unavailable",
+                image_key=image_key,
+                reason="missing_task_kernel",
+            )
             return None
 
         workspace_root = str(getattr(getattr(runner, "agent", None), "workspace_root", "") or "")
@@ -1716,7 +2054,9 @@ class FeishuAdapter:
                 },
             )
         except KeyError:
-            log.warning("image_store_from_feishu_unavailable", image_key=image_key, reason="tool_missing")
+            log.warning(
+                "image_store_from_feishu_unavailable", image_key=image_key, reason="tool_missing"
+            )
             task_controller.finalize_result(ctx, status="failed")
             return None
         except Exception as exc:
@@ -1725,13 +2065,18 @@ class FeishuAdapter:
             return None
 
         if result.blocked:
-            log.warning("image_store_from_feishu_blocked", image_key=image_key, approval_id=result.approval_id)
+            log.warning(
+                "image_store_from_feishu_blocked",
+                image_key=image_key,
+                approval_id=result.approval_id,
+            )
             if result.approval_id:
-                task_controller.store.resolve_approval(
+                from hermit.kernel.approvals import ApprovalService
+
+                ApprovalService(task_controller.store).deny(
                     result.approval_id,
-                    status="denied",
                     resolved_by="feishu_adapter",
-                    resolution={"reason": "adapter ingress does not support interactive approval"},
+                    reason="adapter ingress does not support interactive approval",
                 )
             task_controller.finalize_result(ctx, status="failed")
             return None
@@ -1740,7 +2085,11 @@ class FeishuAdapter:
             if isinstance(result.raw_result, dict):
                 task_controller.finalize_result(ctx, status="succeeded")
                 return result.raw_result
-            log.warning("image_store_from_feishu_invalid_result", image_key=image_key, result_type=type(result.raw_result).__name__)
+            log.warning(
+                "image_store_from_feishu_invalid_result",
+                image_key=image_key,
+                result_type=type(result.raw_result).__name__,
+            )
             task_controller.finalize_result(ctx, status="failed")
             return None
 

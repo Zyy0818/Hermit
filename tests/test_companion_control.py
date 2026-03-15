@@ -80,6 +80,8 @@ claude_api_key = "sk-ant-test"
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMIT_PROFILE", "codex-oauth")
+    monkeypatch.delenv("HERMIT_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMIT_MODEL", raising=False)
 
     settings = control.load_profile_runtime_settings("claude-code", base_dir)
 

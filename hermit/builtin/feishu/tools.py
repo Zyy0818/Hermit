@@ -1,4 +1,5 @@
 """Feishu agent tools — document, wiki, messaging, bitable, sheets, calendar."""
+
 from __future__ import annotations
 
 import json
@@ -37,6 +38,7 @@ def _all_tools() -> list[ToolSpec]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _err(msg: str, code: int | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {"success": False, "error": msg}
     if code is not None:
@@ -57,9 +59,48 @@ def _check_resp(resp: Any) -> dict[str, Any] | None:
     return None
 
 
+def _readonly_feishu_tool(
+    *,
+    name: str,
+    description: str,
+    input_schema: dict[str, Any],
+    handler: Any,
+) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        description=description,
+        input_schema=input_schema,
+        handler=handler,
+        readonly=True,
+        action_class="network_read",
+        idempotent=True,
+        risk_hint="low",
+        requires_receipt=False,
+    )
+
+
+def _mutating_feishu_tool(
+    *,
+    name: str,
+    description: str,
+    input_schema: dict[str, Any],
+    handler: Any,
+) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        description=description,
+        input_schema=input_schema,
+        handler=handler,
+        action_class="credentialed_api_call",
+        risk_hint="high",
+        requires_receipt=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. feishu_doc_create
 # ---------------------------------------------------------------------------
+
 
 def _build_doc_create_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -94,10 +135,7 @@ def _build_doc_create_tool() -> ToolSpec:
                 meta_req = (
                     BatchQueryMetaRequest.builder()
                     .request_body(
-                        MetaRequest.builder()
-                        .request_docs([req_doc])
-                        .with_url(True)
-                        .build()
+                        MetaRequest.builder().request_docs([req_doc]).with_url(True).build()
                     )
                     .build()
                 )
@@ -119,7 +157,7 @@ def _build_doc_create_tool() -> ToolSpec:
             _log.exception("feishu_doc_create failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _mutating_feishu_tool(
         name="feishu_doc_create",
         description=(
             "Create a new Feishu document (docx). Returns the document_id and URL. "
@@ -144,13 +182,13 @@ def _build_doc_create_tool() -> ToolSpec:
             "required": ["title"],
         },
         handler=handler,
-        readonly=False,
     )
 
 
 # ---------------------------------------------------------------------------
 # 2. feishu_doc_read
 # ---------------------------------------------------------------------------
+
 
 def _build_doc_read_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -177,7 +215,7 @@ def _build_doc_read_tool() -> ToolSpec:
             _log.exception("feishu_doc_read failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _readonly_feishu_tool(
         name="feishu_doc_read",
         description=(
             "Read the plain-text content of a Feishu document (docx). "
@@ -196,13 +234,13 @@ def _build_doc_read_tool() -> ToolSpec:
             "required": ["document_id"],
         },
         handler=handler,
-        readonly=True,
     )
 
 
 # ---------------------------------------------------------------------------
 # 3. feishu_doc_append
 # ---------------------------------------------------------------------------
+
 
 def _build_doc_append_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -243,9 +281,7 @@ def _build_doc_append_tool() -> ToolSpec:
                 .document_id(document_id)
                 .block_id(document_id)
                 .request_body(
-                    CreateDocumentBlockChildrenRequestBody.builder()
-                    .children(blocks)
-                    .build()
+                    CreateDocumentBlockChildrenRequestBody.builder().children(blocks).build()
                 )
                 .build()
             )
@@ -263,7 +299,7 @@ def _build_doc_append_tool() -> ToolSpec:
             _log.exception("feishu_doc_append failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _mutating_feishu_tool(
         name="feishu_doc_append",
         description=(
             "Append text content to an existing Feishu document as new paragraph blocks. "
@@ -286,13 +322,13 @@ def _build_doc_append_tool() -> ToolSpec:
             "required": ["document_id", "content"],
         },
         handler=handler,
-        readonly=False,
     )
 
 
 # ---------------------------------------------------------------------------
 # 4. feishu_wiki_list
 # ---------------------------------------------------------------------------
+
 
 def _build_wiki_list_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -351,7 +387,7 @@ def _build_wiki_list_tool() -> ToolSpec:
             _log.exception("feishu_wiki_list failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _readonly_feishu_tool(
         name="feishu_wiki_list",
         description=(
             "List Feishu Wiki spaces or nodes. "
@@ -374,13 +410,13 @@ def _build_wiki_list_tool() -> ToolSpec:
             "required": [],
         },
         handler=handler,
-        readonly=True,
     )
 
 
 # ---------------------------------------------------------------------------
 # 5. feishu_wiki_create
 # ---------------------------------------------------------------------------
+
 
 def _build_wiki_create_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -396,12 +432,7 @@ def _build_wiki_create_tool() -> ToolSpec:
             from lark_oapi.api.wiki.v2 import CreateSpaceNodeRequest, Node
 
             client = build_lark_client()
-            node_builder = (
-                Node.builder()
-                .title(title)
-                .obj_type(obj_type)
-                .node_type("origin")
-            )
+            node_builder = Node.builder().title(title).obj_type(obj_type).node_type("origin")
             if parent_node_token:
                 node_builder = node_builder.parent_node_token(parent_node_token)
 
@@ -424,6 +455,7 @@ def _build_wiki_create_tool() -> ToolSpec:
                     MetaRequest,
                     RequestDoc,
                 )
+
                 req_doc = (
                     RequestDoc.builder()
                     .doc_token(node.obj_token)
@@ -433,10 +465,7 @@ def _build_wiki_create_tool() -> ToolSpec:
                 meta_req = (
                     BatchQueryMetaRequest.builder()
                     .request_body(
-                        MetaRequest.builder()
-                        .request_docs([req_doc])
-                        .with_url(True)
-                        .build()
+                        MetaRequest.builder().request_docs([req_doc]).with_url(True).build()
                     )
                     .build()
                 )
@@ -461,7 +490,7 @@ def _build_wiki_create_tool() -> ToolSpec:
             _log.exception("feishu_wiki_create failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _mutating_feishu_tool(
         name="feishu_wiki_create",
         description=(
             "Create a new document node in a Feishu Wiki space. "
@@ -496,13 +525,13 @@ def _build_wiki_create_tool() -> ToolSpec:
             "required": ["space_id", "title"],
         },
         handler=handler,
-        readonly=False,
     )
 
 
 # ---------------------------------------------------------------------------
 # 6. feishu_send_message
 # ---------------------------------------------------------------------------
+
 
 def _build_send_message_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -547,7 +576,7 @@ def _build_send_message_tool() -> ToolSpec:
             _log.exception("feishu_send_message failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _mutating_feishu_tool(
         name="feishu_send_message",
         description=(
             "Send a text message to a Feishu chat or user. "
@@ -577,13 +606,13 @@ def _build_send_message_tool() -> ToolSpec:
             "required": ["receive_id", "text"],
         },
         handler=handler,
-        readonly=False,
     )
 
 
 # ---------------------------------------------------------------------------
 # 7. feishu_bitable_query
 # ---------------------------------------------------------------------------
+
 
 def _build_bitable_query_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -618,10 +647,7 @@ def _build_bitable_query_tool() -> ToolSpec:
                     .build()
                 )
                 filter_info = (
-                    FilterInfo.builder()
-                    .conjunction("and")
-                    .conditions([condition])
-                    .build()
+                    FilterInfo.builder().conjunction("and").conditions([condition]).build()
                 )
                 body_builder = body_builder.filter(filter_info)
 
@@ -637,10 +663,7 @@ def _build_bitable_query_tool() -> ToolSpec:
             if err := _check_resp(resp):
                 return err
             items = resp.data.items or []
-            records = [
-                {"record_id": r.record_id, "fields": r.fields}
-                for r in items
-            ]
+            records = [{"record_id": r.record_id, "fields": r.fields} for r in items]
             return {
                 "success": True,
                 "app_token": app_token,
@@ -655,7 +678,7 @@ def _build_bitable_query_tool() -> ToolSpec:
             _log.exception("feishu_bitable_query failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _readonly_feishu_tool(
         name="feishu_bitable_query",
         description=(
             "Query records from a Feishu Bitable (multi-dimensional table). "
@@ -691,13 +714,13 @@ def _build_bitable_query_tool() -> ToolSpec:
             "required": ["app_token", "table_id"],
         },
         handler=handler,
-        readonly=True,
     )
 
 
 # ---------------------------------------------------------------------------
 # 8. feishu_bitable_add
 # ---------------------------------------------------------------------------
+
 
 def _build_bitable_add_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -742,7 +765,7 @@ def _build_bitable_add_tool() -> ToolSpec:
             _log.exception("feishu_bitable_add failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _mutating_feishu_tool(
         name="feishu_bitable_add",
         description=(
             "Add a new record to a Feishu Bitable table. "
@@ -764,14 +787,13 @@ def _build_bitable_add_tool() -> ToolSpec:
                     "type": "object",
                     "description": (
                         "Key-value pairs of column name → value. "
-                        "Example: {\"任务名\": \"完成接入\", \"状态\": \"进行中\", \"优先级\": \"高\"}"
+                        'Example: {"任务名": "完成接入", "状态": "进行中", "优先级": "高"}'
                     ),
                 },
             },
             "required": ["app_token", "table_id", "fields"],
         },
         handler=handler,
-        readonly=False,
     )
 
 
@@ -779,16 +801,14 @@ def _build_bitable_add_tool() -> ToolSpec:
 # 9. feishu_sheet_read
 # ---------------------------------------------------------------------------
 
+
 def _build_sheet_read_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
         spreadsheet_token = str(payload.get("spreadsheet_token", "")).strip()
         range_str = str(payload.get("range", "")).strip()
 
         if not spreadsheet_token:
-            return _err(
-                "spreadsheet_token is required "
-                "(from URL: /sheets/<spreadsheet_token>)"
-            )
+            return _err("spreadsheet_token is required (from URL: /sheets/<spreadsheet_token>)")
         if not range_str:
             return _err("range is required (e.g. 'Sheet1!A1:D10' or just 'A1:D10')")
 
@@ -803,8 +823,7 @@ def _build_sheet_read_tool() -> ToolSpec:
             req = BaseRequest()
             req.http_method = HttpMethod.GET
             req.uri = (
-                f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}"
-                f"/values/{encoded_range}"
+                f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{encoded_range}"
             )
             req.token_types = {AccessTokenType.TENANT}
             resp = client.request(req)
@@ -825,7 +844,7 @@ def _build_sheet_read_tool() -> ToolSpec:
             _log.exception("feishu_sheet_read failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _readonly_feishu_tool(
         name="feishu_sheet_read",
         description=(
             "Read cell values from a Feishu spreadsheet. "
@@ -848,13 +867,13 @@ def _build_sheet_read_tool() -> ToolSpec:
             "required": ["spreadsheet_token", "range"],
         },
         handler=handler,
-        readonly=True,
     )
 
 
 # ---------------------------------------------------------------------------
 # 10. feishu_sheet_write
 # ---------------------------------------------------------------------------
+
 
 def _build_sheet_write_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -876,9 +895,7 @@ def _build_sheet_write_tool() -> ToolSpec:
             client = build_lark_client()
             req = BaseRequest()
             req.http_method = HttpMethod.PUT
-            req.uri = (
-                f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values"
-            )
+            req.uri = f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values"
             req.token_types = {AccessTokenType.TENANT}
             req.body = {"valueRange": {"range": range_str, "values": values}}
             resp = client.request(req)
@@ -897,7 +914,7 @@ def _build_sheet_write_tool() -> ToolSpec:
             _log.exception("feishu_sheet_write failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _mutating_feishu_tool(
         name="feishu_sheet_write",
         description=(
             "Write cell values to a Feishu spreadsheet. "
@@ -920,7 +937,7 @@ def _build_sheet_write_tool() -> ToolSpec:
                     "type": "array",
                     "description": (
                         "2D array of values. Example: "
-                        "[[\"Name\", \"Score\"], [\"Alice\", 95], [\"Bob\", 87]]"
+                        '[["Name", "Score"], ["Alice", 95], ["Bob", 87]]'
                     ),
                     "items": {"type": "array"},
                 },
@@ -928,13 +945,13 @@ def _build_sheet_write_tool() -> ToolSpec:
             "required": ["spreadsheet_token", "range", "values"],
         },
         handler=handler,
-        readonly=False,
     )
 
 
 # ---------------------------------------------------------------------------
 # 11. feishu_calendar_create
 # ---------------------------------------------------------------------------
+
 
 def _build_calendar_create_tool() -> ToolSpec:
     def handler(payload: dict[str, Any]) -> dict[str, Any]:
@@ -962,12 +979,7 @@ def _build_calendar_create_tool() -> ToolSpec:
             start = TimeInfo.builder().timestamp(start_time).timezone(timezone).build()
             end = TimeInfo.builder().timestamp(end_time).timezone(timezone).build()
 
-            event_builder = (
-                CalendarEvent.builder()
-                .summary(summary)
-                .start_time(start)
-                .end_time(end)
-            )
+            event_builder = CalendarEvent.builder().summary(summary).start_time(start).end_time(end)
             if description:
                 event_builder = event_builder.description(description)
 
@@ -995,7 +1007,7 @@ def _build_calendar_create_tool() -> ToolSpec:
             _log.exception("feishu_calendar_create failed")
             return _err(str(exc))
 
-    return ToolSpec(
+    return _mutating_feishu_tool(
         name="feishu_calendar_create",
         description=(
             "Create a calendar event in the bot's primary Feishu calendar. "
@@ -1031,5 +1043,4 @@ def _build_calendar_create_tool() -> ToolSpec:
             "required": ["summary", "start_time", "end_time"],
         },
         handler=handler,
-        readonly=False,
     )

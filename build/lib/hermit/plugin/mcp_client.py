@@ -25,7 +25,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from hermit.core.budgets import get_runtime_budget
 from hermit.core.tools import ToolSpec
-from hermit.plugin.base import McpServerSpec
+from hermit.plugin.base import McpServerSpec, McpToolGovernance
 
 log = structlog.get_logger()
 
@@ -57,7 +57,7 @@ def parse_mcp_tool_name(full_name: str) -> tuple[str, str]:
     """Extract (server_name, tool_name) from 'mcp__server__tool'."""
     if not full_name.startswith(MCP_TOOL_PREFIX):
         raise ValueError(f"Not an MCP tool name: {full_name}")
-    rest = full_name[len(MCP_TOOL_PREFIX):]
+    rest = full_name[len(MCP_TOOL_PREFIX) :]
     server, _, tool = rest.partition(MCP_TOOL_SEP)
     if not tool:
         raise ValueError(f"Invalid MCP tool name: {full_name}")
@@ -87,7 +87,9 @@ class McpClientManager:
         self._connections: dict[str, _ServerConnection] = {}
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
-            target=self._loop.run_forever, daemon=True, name="mcp-event-loop",
+            target=self._loop.run_forever,
+            daemon=True,
+            name="mcp-event-loop",
         )
         self._thread.start()
         # Set by lifecycle() once it is running inside the background loop
@@ -139,6 +141,7 @@ class McpClientManager:
         for server_name, conn in self._connections.items():
             for tool in conn.tools:
                 full_name = mcp_tool_name(server_name, tool["name"])
+                governance = self._tool_governance(conn.spec, tool["name"])
 
                 def _make_handler(sn: str, tn: str):
                     def handler(payload: dict[str, Any]) -> str:
@@ -147,16 +150,29 @@ class McpClientManager:
                             self._call_tool(sn, tn, payload),
                             timeout=budget.tool_hard_deadline,
                         )
+
                     return handler
 
-                specs.append(ToolSpec(
-                    name=full_name,
-                    description=f"[MCP:{server_name}] {tool['description']}",
-                    input_schema=tool.get("input_schema", {
-                        "type": "object", "properties": {}, "required": [],
-                    }),
-                    handler=_make_handler(server_name, tool["name"]),
-                ))
+                specs.append(
+                    ToolSpec(
+                        name=full_name,
+                        description=f"[MCP:{server_name}] {tool['description']}",
+                        input_schema=tool.get(
+                            "input_schema",
+                            {
+                                "type": "object",
+                                "properties": {},
+                                "required": [],
+                            },
+                        ),
+                        handler=_make_handler(server_name, tool["name"]),
+                        readonly=governance.readonly,
+                        action_class=governance.action_class,
+                        risk_hint=governance.risk_hint,
+                        requires_receipt=governance.requires_receipt,
+                        supports_preview=governance.supports_preview,
+                    )
+                )
         return specs
 
     def close_all_sync(self) -> None:
@@ -198,10 +214,9 @@ class McpClientManager:
                 log.error("mcp_missing_url", server=spec.name)
                 return
             import httpx
+
             headers = _sanitize_http_headers(spec.headers)
-            http_client = await stack.enter_async_context(
-                httpx.AsyncClient(headers=headers)
-            )
+            http_client = await stack.enter_async_context(httpx.AsyncClient(headers=headers))
             transport = await stack.enter_async_context(
                 streamable_http_client(spec.url, http_client=http_client)
             )
@@ -210,9 +225,7 @@ class McpClientManager:
             return
 
         read_stream, write_stream = transport[0], transport[1]
-        session = await stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
+        session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
         await session.initialize()
 
         tools_result = await session.list_tools()
@@ -220,11 +233,21 @@ class McpClientManager:
         for tool in tools_result.tools:
             if spec.allowed_tools and tool.name not in spec.allowed_tools:
                 continue
-            raw_tools.append({
-                "name": tool.name,
-                "description": tool.description or "",
-                "input_schema": tool.inputSchema,
-            })
+            raw_tools.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "input_schema": tool.inputSchema,
+                }
+            )
+        missing_governance = [
+            tool["name"] for tool in raw_tools if tool["name"] not in spec.tool_governance
+        ]
+        if missing_governance:
+            raise ValueError(
+                f"MCP server '{spec.name}' is missing governance metadata for tools: "
+                f"{', '.join(sorted(missing_governance))}"
+            )
 
         conn = _ServerConnection(spec=spec, session=session, tools=raw_tools)
         self._connections[spec.name] = conn
@@ -236,7 +259,10 @@ class McpClientManager:
         )
 
     async def _call_tool(
-        self, server_name: str, tool_name: str, arguments: dict[str, Any],
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
     ) -> Any:
         conn = self._connections.get(server_name)
         if conn is None or conn.session is None:
@@ -265,3 +291,10 @@ class McpClientManager:
         except Exception as exc:
             log.error("mcp_call_error", server=server_name, tool=tool_name, error=str(exc))
             return f"Error calling MCP tool {server_name}/{tool_name}: {exc}"
+
+    @staticmethod
+    def _tool_governance(spec: McpServerSpec, tool_name: str) -> McpToolGovernance:
+        governance = spec.tool_governance.get(tool_name)
+        if governance is None:
+            raise ValueError(f"MCP tool governance missing for {spec.name}/{tool_name}")
+        return governance

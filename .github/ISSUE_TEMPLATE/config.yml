@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Project documentation
-    url: https://github.com/heggria/Hermit#readme
-    about: Check the README and docs before opening an issue.
+    url: https://heggria.github.io/Hermit/
+    about: Check the docs site and repository guides before opening an issue.
+  - name: Discussions
+    url: https://github.com/heggria/Hermit/discussions
+    about: Ask questions, share ideas, and start product or architecture discussions.

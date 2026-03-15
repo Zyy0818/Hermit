@@ -9,7 +9,7 @@ import pytest
 import typer
 
 import hermit.main as main_mod
-from hermit.plugin.base import McpServerSpec
+from hermit.plugin.base import McpServerSpec, McpToolGovernance
 from hermit.plugin.mcp_client import (
     MCP_TOOL_PREFIX,
     McpClientManager,
@@ -20,7 +20,9 @@ from hermit.plugin.mcp_client import (
 )
 
 
-def test_main_env_helpers_and_output_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_env_helpers_and_output_helpers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     base_dir = tmp_path / ".hermit"
     env_path = base_dir / ".env"
     base_dir.mkdir(parents=True)
@@ -41,7 +43,9 @@ def test_main_env_helpers_and_output_helpers(tmp_path: Path, monkeypatch: pytest
     echoed: list[str] = []
     monkeypatch.setattr(main_mod.typer, "echo", lambda text="": echoed.append(text))
     main_mod._on_tool_call("echo", {"value": "hi"}, {"ok": True})
-    main_mod._print_result(main_mod.AgentResult(text="done", turns=1, tool_calls=0, thinking="plan"))
+    main_mod._print_result(
+        main_mod.AgentResult(text="done", turns=1, tool_calls=0, thinking="plan")
+    )
     assert any("echo(value='hi')" in line for line in echoed)
     assert any("thinking" in line for line in echoed)
     assert echoed[-1].endswith("done")
@@ -138,10 +142,17 @@ def test_main_auth_snapshot_workspace_caffeinate_and_require_auth(
     assert settings.memory_file.exists()
 
     with pytest.raises(typer.BadParameter, match="requires HERMIT_OPENAI_API_KEY"):
-        main_mod._require_auth(SimpleNamespace(has_auth=False, provider="codex", codex_auth_file_exists=False))
+        main_mod._require_auth(
+            SimpleNamespace(has_auth=False, provider="codex", codex_auth_file_exists=False)
+        )
     with pytest.raises(typer.BadParameter, match="does not expose an OpenAI API key"):
         main_mod._require_auth(
-            SimpleNamespace(has_auth=False, provider="codex", codex_auth_file_exists=True, codex_auth_mode="chatgpt")
+            SimpleNamespace(
+                has_auth=False,
+                provider="codex",
+                codex_auth_file_exists=True,
+                codex_auth_mode="chatgpt",
+            )
         )
     with pytest.raises(typer.BadParameter, match="requires a local Codex login"):
         main_mod._require_auth(SimpleNamespace(has_auth=False, provider="codex-oauth"))
@@ -162,7 +173,11 @@ def test_main_auth_snapshot_workspace_caffeinate_and_require_auth(
             calls.append("wait")
 
     monkeypatch.setattr(main_mod.sys, "platform", "darwin")
-    monkeypatch.setattr(main_mod.shutil, "which", lambda name: "/usr/bin/caffeinate" if name == "caffeinate" else None)
+    monkeypatch.setattr(
+        main_mod.shutil,
+        "which",
+        lambda name: "/usr/bin/caffeinate" if name == "caffeinate" else None,
+    )
     monkeypatch.setattr(main_mod.subprocess, "Popen", lambda *args, **kwargs: FakeProc())
     with main_mod._caffeinate(SimpleNamespace(prevent_sleep=True)):
         calls.append("body")
@@ -176,7 +191,9 @@ def test_main_preflight_helpers_cover_codex_and_oauth_paths(
     base_dir.mkdir(parents=True)
     monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
     monkeypatch.setenv("HERMIT_PROVIDER", "codex")
-    (base_dir / ".env").write_text("HERMIT_PROVIDER=codex\nHERMIT_MODEL=gpt-5.4\n", encoding="utf-8")
+    (base_dir / ".env").write_text(
+        "HERMIT_PROVIDER=codex\nHERMIT_MODEL=gpt-5.4\n", encoding="utf-8"
+    )
 
     env_keys = main_mod._read_env_file_keys()
     assert env_keys == {"HERMIT_PROVIDER", "HERMIT_MODEL"}
@@ -184,7 +201,10 @@ def test_main_preflight_helpers_cover_codex_and_oauth_paths(
     assert main_mod._resolve_env_key("MISSING", "OPENAI_API_KEY") == "OPENAI_API_KEY"
     assert main_mod._describe_env_source("HERMIT_PROVIDER", env_keys) == "~/.hermit/.env"
     assert main_mod._describe_env_source("OPENAI_API_KEY", env_keys) == "shell env"
-    assert main_mod._format_preflight_item(main_mod._PreflightItem("鉴权", False, "缺失")) == "  [MISSING] 鉴权: 缺失"
+    assert (
+        main_mod._format_preflight_item(main_mod._PreflightItem("鉴权", False, "缺失"))
+        == "  [MISSING] 鉴权: 缺失"
+    )
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     codex_settings = SimpleNamespace(
@@ -240,7 +260,9 @@ def test_main_preflight_helpers_cover_codex_and_oauth_paths(
 
 
 def test_mcp_client_helpers_and_call_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert _sanitize_http_headers({"X-Test": " 1 ", "Authorization": "Bearer ", "Blank": " "}) == {"X-Test": "1"}
+    assert _sanitize_http_headers({"X-Test": " 1 ", "Authorization": "Bearer ", "Blank": " "}) == {
+        "X-Test": "1"
+    }
     assert mcp_tool_name("server", "tool") == f"{MCP_TOOL_PREFIX}server__tool"
     assert parse_mcp_tool_name("mcp__server__tool") == ("server", "tool")
     with pytest.raises(ValueError):
@@ -249,12 +271,34 @@ def test_mcp_client_helpers_and_call_paths(monkeypatch: pytest.MonkeyPatch) -> N
     mgr = object.__new__(McpClientManager)
     mgr._connections = {
         "server": _ServerConnection(
-            spec=McpServerSpec(name="server", description="s", transport="stdio"),
+            spec=McpServerSpec(
+                name="server",
+                description="s",
+                transport="stdio",
+                tool_governance={
+                    "tool": McpToolGovernance(
+                        action_class="network_read",
+                        risk_hint="low",
+                        requires_receipt=False,
+                        readonly=True,
+                    )
+                },
+            ),
             tools=[{"name": "tool", "description": "desc", "input_schema": {"type": "object"}}],
         )
     }
     called: list[tuple[str, str, dict]] = []
-    mgr._run_async = lambda coro, timeout=60: (called.append((coro.cr_frame.f_locals["server_name"], coro.cr_frame.f_locals["tool_name"], coro.cr_frame.f_locals["arguments"])), coro.close(), "ok")[2]  # type: ignore[attr-defined]
+    mgr._run_async = lambda coro, timeout=60: (
+        called.append(
+            (
+                coro.cr_frame.f_locals["server_name"],
+                coro.cr_frame.f_locals["tool_name"],
+                coro.cr_frame.f_locals["arguments"],
+            )
+        ),
+        coro.close(),
+        "ok",
+    )[2]  # type: ignore[attr-defined]
 
     specs = mgr.get_tool_specs()
     assert specs[0].name == "mcp__server__tool"
@@ -268,7 +312,9 @@ def test_mcp_client_helpers_and_call_paths(monkeypatch: pytest.MonkeyPatch) -> N
         stop=lambda: loop_calls.append("stop"),
     )
     mgr._shutdown_event = SimpleNamespace(set=lambda: loop_calls.append("shutdown"))
-    mgr._lifecycle_future = SimpleNamespace(result=lambda timeout=15: (_ for _ in ()).throw(RuntimeError("close boom")))
+    mgr._lifecycle_future = SimpleNamespace(
+        result=lambda timeout=15: (_ for _ in ()).throw(RuntimeError("close boom"))
+    )
     mgr._thread = SimpleNamespace(join=lambda timeout=5: loop_calls.append("join"))
     mgr.close_all_sync()
     assert loop_calls == ["call", "shutdown", "call", "stop", "join"]
@@ -280,7 +326,9 @@ async def test_mcp_call_tool_and_connect_one_paths(monkeypatch: pytest.MonkeyPat
     mgr = object.__new__(McpClientManager)
     mgr._connections = {}
 
-    assert await mgr._call_tool("missing", "tool", {}) == "Error: MCP server 'missing' not connected"
+    assert (
+        await mgr._call_tool("missing", "tool", {}) == "Error: MCP server 'missing' not connected"
+    )
 
     class FakeSession:
         def __init__(self, *_args) -> None:
@@ -292,25 +340,42 @@ async def test_mcp_call_tool_and_connect_one_paths(monkeypatch: pytest.MonkeyPat
         async def list_tools(self):
             return SimpleNamespace(
                 tools=[
-                    SimpleNamespace(name="allowed", description="Allowed", inputSchema={"type": "object"}),
-                    SimpleNamespace(name="blocked", description="Blocked", inputSchema={"type": "object"}),
+                    SimpleNamespace(
+                        name="allowed", description="Allowed", inputSchema={"type": "object"}
+                    ),
+                    SimpleNamespace(
+                        name="blocked", description="Blocked", inputSchema={"type": "object"}
+                    ),
                 ]
             )
 
         async def call_tool(self, tool_name: str, arguments: dict) -> object:
             if tool_name == "error":
-                return SimpleNamespace(isError=True, content=[SimpleNamespace(text="failed badly")], structuredContent=None)
+                return SimpleNamespace(
+                    isError=True,
+                    content=[SimpleNamespace(text="failed badly")],
+                    structuredContent=None,
+                )
             if tool_name == "structured":
                 return SimpleNamespace(isError=False, content=[], structuredContent={"ok": True})
             if tool_name == "plain":
-                return SimpleNamespace(isError=False, content=[SimpleNamespace(text="line 1"), SimpleNamespace(text="line 2")], structuredContent=None)
+                return SimpleNamespace(
+                    isError=False,
+                    content=[SimpleNamespace(text="line 1"), SimpleNamespace(text="line 2")],
+                    structuredContent=None,
+                )
             if tool_name == "empty":
                 return SimpleNamespace(isError=False, content=[], structuredContent=None)
             raise RuntimeError("boom")
 
     monkeypatch.setattr("hermit.plugin.mcp_client.ClientSession", FakeSession)
-    monkeypatch.setattr("hermit.plugin.mcp_client.stdio_client", lambda params: SimpleNamespace(params=params))
-    monkeypatch.setattr("hermit.plugin.mcp_client.streamable_http_client", lambda url, http_client=None: SimpleNamespace(url=url, http_client=http_client))
+    monkeypatch.setattr(
+        "hermit.plugin.mcp_client.stdio_client", lambda params: SimpleNamespace(params=params)
+    )
+    monkeypatch.setattr(
+        "hermit.plugin.mcp_client.streamable_http_client",
+        lambda url, http_client=None: SimpleNamespace(url=url, http_client=http_client),
+    )
 
     class FakeAsyncClient:
         def __init__(self, headers=None) -> None:
@@ -327,12 +392,30 @@ async def test_mcp_call_tool_and_connect_one_paths(monkeypatch: pytest.MonkeyPat
 
     stdio_stack = FakeStack([("read", "write"), FakeSession("read", "write")])
     await mgr._connect_one(
-        McpServerSpec(name="stdio", description="server", transport="stdio", command=["python", "server.py"], allowed_tools=["allowed"]),
+        McpServerSpec(
+            name="stdio",
+            description="server",
+            transport="stdio",
+            command=["python", "server.py"],
+            allowed_tools=["allowed"],
+            tool_governance={
+                "allowed": McpToolGovernance(
+                    action_class="network_read",
+                    risk_hint="low",
+                    requires_receipt=False,
+                    readonly=True,
+                )
+            },
+        ),
         stdio_stack,
     )
-    assert mgr._connections["stdio"].tools == [{"name": "allowed", "description": "Allowed", "input_schema": {"type": "object"}}]
+    assert mgr._connections["stdio"].tools == [
+        {"name": "allowed", "description": "Allowed", "input_schema": {"type": "object"}}
+    ]
 
-    http_stack = FakeStack([FakeAsyncClient(headers={"X-Test": "1"}), ("read", "write"), FakeSession("read", "write")])
+    http_stack = FakeStack(
+        [FakeAsyncClient(headers={"X-Test": "1"}), ("read", "write"), FakeSession("read", "write")]
+    )
     await mgr._connect_one(
         McpServerSpec(
             name="http",
@@ -340,6 +423,15 @@ async def test_mcp_call_tool_and_connect_one_paths(monkeypatch: pytest.MonkeyPat
             transport="http",
             url="https://example.com/mcp",
             headers={"X-Test": "1", "Authorization": "Bearer "},
+            allowed_tools=["allowed"],
+            tool_governance={
+                "allowed": McpToolGovernance(
+                    action_class="network_read",
+                    risk_hint="low",
+                    requires_receipt=False,
+                    readonly=True,
+                )
+            },
         ),
         http_stack,
     )
@@ -350,4 +442,6 @@ async def test_mcp_call_tool_and_connect_one_paths(monkeypatch: pytest.MonkeyPat
     assert await mgr._call_tool("stdio", "structured", {}) == '{\n  "ok": true\n}'
     assert await mgr._call_tool("stdio", "plain", {}) == "line 1\nline 2"
     assert await mgr._call_tool("stdio", "empty", {}) == "(no output)"
-    assert "Error calling MCP tool stdio/explode: boom" == await mgr._call_tool("stdio", "explode", {})
+    assert "Error calling MCP tool stdio/explode: boom" == await mgr._call_tool(
+        "stdio", "explode", {}
+    )

@@ -104,32 +104,37 @@ class PluginManager:
 
         if self._all_skills:
             skill_names = [s.name for s in self._all_skills]
-            registry.register(localize_tool_spec(ToolSpec(
-                name="read_skill",
-                description=(
-                    "Load a skill's full instructions into context. "
-                    "Use when a task matches a skill's description from the catalog."
-                ),
-                description_key="prompt.available_skills.read_skill.description",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description_key": "prompt.available_skills.read_skill.name",
-                            "enum": skill_names,
+            registry.register(
+                localize_tool_spec(
+                    ToolSpec(
+                        name="read_skill",
+                        description=(
+                            "Load a skill's full instructions into context. "
+                            "Use when a task matches a skill's description from the catalog."
+                        ),
+                        description_key="prompt.available_skills.read_skill.description",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description_key": "prompt.available_skills.read_skill.name",
+                                    "enum": skill_names,
+                                },
+                            },
+                            "required": ["name"],
                         },
-                    },
-                    "required": ["name"],
-                },
-                handler=self._read_skill_handler,
-                readonly=True,
-                action_class="read_local",
-                idempotent=True,
-                risk_hint="low",
-                requires_receipt=False,
-                result_is_internal_context=True,
-            ), locale=locale))
+                        handler=self._read_skill_handler,
+                        readonly=True,
+                        action_class="read_local",
+                        idempotent=True,
+                        risk_hint="low",
+                        requires_receipt=False,
+                        result_is_internal_context=True,
+                    ),
+                    locale=locale,
+                )
+            )
 
         self.hooks.fire(HookEvent.REGISTER_TOOLS, registry=registry)
 
@@ -232,9 +237,7 @@ class PluginManager:
         spec = self._all_adapters.get(name)
         if spec is None:
             available = list(self._all_adapters.keys()) or ["(none)"]
-            raise KeyError(
-                f"Adapter '{name}' not found. Available: {', '.join(available)}"
-            )
+            raise KeyError(f"Adapter '{name}' not found. Available: {', '.join(available)}")
         return spec.factory(self.settings)
 
     def list_adapters(self) -> List[str]:
@@ -246,30 +249,39 @@ class PluginManager:
 
     def _build_delegation_tool(self, spec: SubagentSpec) -> ToolSpec:
         locale = resolve_locale(getattr(self.settings, "locale", None))
+
         def handler(payload: dict[str, Any]) -> str:
             return self._run_subagent(spec, str(payload.get("task", "")))
 
-        return localize_tool_spec(ToolSpec(
-            name=f"delegate_{spec.name}",
-            description=tr(
-                "prompt.delegation.description",
-                locale=locale,
-                default=f"Delegate a task to the {spec.name} subagent. {spec.description}",
-                name=spec.name,
-                description=spec.description,
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description_key": "prompt.delegation.task",
-                    }
+        return localize_tool_spec(
+            ToolSpec(
+                name=f"delegate_{spec.name}",
+                description=tr(
+                    "prompt.delegation.description",
+                    locale=locale,
+                    default=f"Delegate a task to the {spec.name} subagent. {spec.description}",
+                    name=spec.name,
+                    description=spec.description,
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description_key": "prompt.delegation.task",
+                        }
+                    },
+                    "required": ["task"],
                 },
-                "required": ["task"],
-            },
-            handler=handler,
-        ), locale=locale)
+                handler=handler,
+                readonly=True,
+                action_class="delegate_reasoning",
+                idempotent=True,
+                risk_hint="low",
+                requires_receipt=False,
+            ),
+            locale=locale,
+        )
 
     def _run_subagent(self, spec: SubagentSpec, task: str) -> str:
         if not self._runtime or not self._registry:
@@ -350,6 +362,7 @@ class PluginManager:
         if not self._all_mcp:
             return
         from hermit.plugin.mcp_client import McpClientManager
+
         self._mcp_manager = McpClientManager()
         try:
             self._mcp_manager.connect_all_sync(self._all_mcp)

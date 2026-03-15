@@ -270,9 +270,8 @@ def test_task_controller_prefers_focus_task_when_multiple_open_tasks_exist(tmp_p
     assert second.task_id != decision.task_id
     ingress = store.get_ingress(decision.ingress_id or "")
     assert ingress is not None
-    assert ingress.rationale["shadow_binding"]["match_actual"] is False
-    assert ingress.rationale["shadow_binding"]["chosen_task_id"] == second.task_id
     assert ingress.rationale["actual_binding"]["chosen_task_id"] == first.task_id
+    assert "shadow_binding" not in ingress.rationale
 
 
 def test_task_controller_resolve_text_command_can_switch_focus_task(tmp_path) -> None:
@@ -514,22 +513,71 @@ def test_kernel_dispatch_service_recovers_async_attempts_and_runs_loop(monkeypat
     service._loop()
 
     assert failed_attempt_updates[0][0] == "attempt-running"
-    assert failed_attempt_updates[0][1]["status"] == "failed"
+    assert failed_attempt_updates[0][1]["status"] == "ready"
+    assert failed_attempt_updates[0][1]["waiting_reason"] == "worker_interrupted_requeued"
+    assert failed_attempt_updates[0][1]["context"]["recovered_after_interrupt"] is True
+    assert failed_attempt_updates[0][1]["context"]["reentry_required"] is True
+    assert failed_attempt_updates[0][1]["context"]["reentry_boundary"] == "policy_reentry"
     assert failed_step_updates == [
         (
             "step-running",
-            {"status": "failed", "finished_at": failed_step_updates[0][1]["finished_at"]},
+            {"status": "ready", "finished_at": None},
         )
     ]
     assert task_status_updates == [
         (
             "task-running",
-            "failed",
-            {"result_preview": "worker_interrupted", "result_text": "worker_interrupted"},
+            "queued",
+            {
+                "result_preview": "worker_interrupted_requeued",
+                "result_text": "worker_interrupted_requeued",
+            },
         )
     ]
     assert processed_attempts == ["attempt-ready"]
     assert service._futures == {}
+
+
+def test_task_controller_resume_attempt_clears_worker_interrupt_recovery_flag(tmp_path) -> None:
+    store = KernelStore(tmp_path / "kernel" / "state.db")
+    controller = TaskController(store)
+    ctx = controller.start_task(
+        conversation_id="oc_recovery",
+        goal="resume interrupted attempt",
+        source_channel="chat",
+        kind="respond",
+    )
+
+    store.update_step_attempt(
+        ctx.step_attempt_id,
+        status="blocked",
+        waiting_reason="worker_interrupted_recovery_required",
+        context={
+            "workspace_root": str(tmp_path),
+            "phase": "observing",
+            "recovery_required": True,
+            "reentry_required": True,
+            "reentry_reason": "worker_interrupted",
+            "reentry_boundary": "observation_resolution",
+            "runtime_snapshot": {
+                "schema_version": 2,
+                "kind": "runtime_snapshot",
+                "payload": {"suspend_kind": "observing"},
+            },
+        },
+    )
+
+    resumed = controller.resume_attempt(ctx.step_attempt_id)
+    refreshed = store.get_step_attempt(ctx.step_attempt_id)
+    events = store.list_events(task_id=ctx.task_id)
+
+    assert resumed.step_attempt_id == ctx.step_attempt_id
+    assert refreshed is not None
+    assert refreshed.context["recovery_required"] is False
+    assert refreshed.context["reentry_required"] is False
+    assert refreshed.context["execution_mode"] == "resume"
+    assert refreshed.context["phase"] == "observing"
+    assert any(event["event_type"] == "step_attempt.reentry_resumed" for event in events)
 
 
 def test_kernel_dispatch_service_reaps_failed_futures_and_wakes(monkeypatch) -> None:

@@ -100,6 +100,8 @@ def test_serve_preflight_reports_missing_feishu_env(tmp_path, monkeypatch) -> No
     from hermit.config import get_settings
 
     monkeypatch.setenv("HERMIT_BASE_DIR", str(tmp_path / ".hermit"))
+    monkeypatch.setenv("HERMIT_PROVIDER", "claude")
+    monkeypatch.delenv("HERMIT_PROFILE", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.delenv("HERMIT_FEISHU_APP_ID", raising=False)
     monkeypatch.delenv("HERMIT_FEISHU_APP_SECRET", raising=False)
@@ -253,11 +255,14 @@ def test_profiles_list_reports_missing_config_toml(tmp_path, monkeypatch) -> Non
     result = runner.invoke(app, ["profiles", "list"])
 
     assert result.exit_code == 0
-    assert tr(
-        "cli.profiles_list.no_config",
-        locale="zh-CN",
-        path=base_dir / "config.toml",
-    ) in result.output
+    assert (
+        tr(
+            "cli.profiles_list.no_config",
+            locale="zh-CN",
+            path=base_dir / "config.toml",
+        )
+        in result.output
+    )
 
 
 def test_config_show_includes_profile_and_auth_summary(tmp_path, monkeypatch) -> None:
@@ -277,6 +282,8 @@ model = "claude-3-7-sonnet-latest"
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    monkeypatch.delenv("HERMIT_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMIT_PROFILE", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     get_settings.cache_clear()
 
@@ -438,7 +445,9 @@ def test_task_list_show_and_receipts_commands_read_kernel_state(tmp_path, monkey
     assert "write_file executed successfully" in receipts_result.output
 
 
-def test_memory_inspect_command_reports_stored_and_preview_governance(tmp_path, monkeypatch) -> None:
+def test_memory_inspect_command_reports_stored_and_preview_governance(
+    tmp_path, monkeypatch
+) -> None:
     from hermit.config import get_settings
     from hermit.kernel.store import KernelStore
 
@@ -482,7 +491,9 @@ def test_memory_inspect_command_reports_stored_and_preview_governance(tmp_path, 
     assert preview_payload["inspection"]["scope_kind"] == "global"
 
 
-def test_memory_list_status_and_rebuild_commands_cover_inspection_suite(tmp_path, monkeypatch) -> None:
+def test_memory_list_status_and_rebuild_commands_cover_inspection_suite(
+    tmp_path, monkeypatch
+) -> None:
     from hermit.config import get_settings
     from hermit.kernel.store import KernelStore
 
@@ -605,7 +616,10 @@ def test_task_explain_command_summarizes_authority_chain(tmp_path, monkeypatch) 
     assert payload["operator_answers"]["why_execute"] == "Policy allowed this write."
     assert payload["operator_answers"]["authority"]["permit"]["permit_id"] == permit.permit_id
     assert payload["operator_answers"]["authority"]["target_paths"] == ["workspace/example.txt"]
-    assert payload["operator_answers"]["outcome"]["result_summary"] == "write_file executed successfully"
+    assert (
+        payload["operator_answers"]["outcome"]["result_summary"]
+        == "write_file executed successfully"
+    )
 
 
 def test_task_proof_commands_report_and_export_proof_bundle(tmp_path, monkeypatch) -> None:
@@ -674,7 +688,9 @@ def test_task_proof_commands_report_and_export_proof_bundle(tmp_path, monkeypatc
     assert proof_payload["missing_receipt_bundle_count"] == 1
 
     output_path = tmp_path / "proof.json"
-    export_result = runner.invoke(app, ["task", "proof-export", task.task_id, "--output", str(output_path)])
+    export_result = runner.invoke(
+        app, ["task", "proof-export", task.task_id, "--output", str(output_path)]
+    )
     assert export_result.exit_code == 0
     export_payload = json.loads(export_result.output)
     assert export_payload["status"] == "verified"
@@ -682,7 +698,9 @@ def test_task_proof_commands_report_and_export_proof_bundle(tmp_path, monkeypatc
     assert output_path.read_text(encoding="utf-8").strip() == export_result.output.strip()
     refreshed_receipt = store.get_receipt(legacy_receipt.receipt_id)
     assert refreshed_receipt is not None and refreshed_receipt.receipt_bundle_ref is not None
-    assert ProofService(store).build_proof_summary(task.task_id)["missing_receipt_bundle_count"] == 0
+    assert (
+        ProofService(store).build_proof_summary(task.task_id)["missing_receipt_bundle_count"] == 0
+    )
 
 
 def test_task_case_and_projection_rebuild_commands(tmp_path, monkeypatch) -> None:
@@ -797,14 +815,25 @@ def test_task_case_and_projection_rebuild_commands(tmp_path, monkeypatch) -> Non
     case_payload = json.loads(case_result.output)
     assert case_payload["operator_answers"]["why_execute"] == "Policy allowed this write."
     assert case_payload["ingress_observability"]["conversation"]["focus"]["task_id"] == task.task_id
-    assert case_payload["ingress_observability"]["conversation"]["metrics"]["resolution_counts"]["append_note"] >= 1
+    assert (
+        case_payload["ingress_observability"]["conversation"]["metrics"]["resolution_counts"][
+            "append_note"
+        ]
+        >= 1
+    )
     assert case_payload["ingress_observability"]["conversation"]["pending_ingress_count"] >= 1
     assert any(
         item["reply_to_ref"] == "msg_reply_1"
         for item in case_payload["ingress_observability"]["conversation"]["recent_ingresses"]
     )
-    assert case_payload["ingress_observability"]["task"]["recent_related_ingresses"][0]["relation"] == "chosen_task"
-    assert case_payload["ingress_observability"]["task"]["pending_disambiguations"][0]["status"] == "pending_disambiguation"
+    assert (
+        case_payload["ingress_observability"]["task"]["recent_related_ingresses"][0]["relation"]
+        == "chosen_task"
+    )
+    assert (
+        case_payload["ingress_observability"]["task"]["pending_disambiguations"][0]["status"]
+        == "pending_disambiguation"
+    )
     assert rebuild_result.exit_code == 0
     assert json.loads(rebuild_result.output)["task"]["task_id"] == task.task_id
 

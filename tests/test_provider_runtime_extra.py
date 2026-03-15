@@ -53,7 +53,9 @@ class FakeProvider:
             raise self._stream_error
         yield from self._stream_events.pop(0)
 
-    def clone(self, *, model: str | None = None, system_prompt: str | None = None) -> "FakeProvider":
+    def clone(
+        self, *, model: str | None = None, system_prompt: str | None = None
+    ) -> "FakeProvider":
         return self
 
 
@@ -97,7 +99,9 @@ def test_runtime_clone_and_request_handle_thinking_support() -> None:
     )
 
     clone = runtime.clone(model="child-model", system_prompt="child", max_turns=5)
-    request = runtime._request([{"role": "user", "content": "hi"}], disable_tools=True, readonly_only=False, stream=False)
+    request = runtime._request(
+        [{"role": "user", "content": "hi"}], disable_tools=True, readonly_only=False, stream=False
+    )
 
     assert clone.model == "child-model"
     assert clone.system_prompt == "child"
@@ -112,9 +116,46 @@ def test_runtime_resume_requires_tool_executor() -> None:
         runtime.resume(step_attempt_id="attempt", task_context=SimpleNamespace())
 
 
+def test_runtime_max_turn_fallback_is_localized(monkeypatch) -> None:
+    monkeypatch.setenv("HERMIT_LOCALE", "zh-CN")
+    provider = FakeProvider(
+        responses=[
+            ProviderResponse(
+                content=[
+                    {"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}
+                ],
+                stop_reason="tool_use",
+            )
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="echo",
+            description="Echo value",
+            input_schema={"type": "object"},
+            handler=lambda payload: payload,
+            readonly=True,
+            action_class="read_local",
+            idempotent=True,
+            risk_hint="low",
+            requires_receipt=False,
+        )
+    )
+    runtime = AgentRuntime(
+        provider=provider, registry=registry, model="fake", max_turns=1, locale="zh-CN"
+    )
+
+    result = runtime.run("hello")
+
+    assert "已达到最大轮次限制" in result.text
+
+
 def test_runtime_run_returns_provider_error_payload() -> None:
     provider = FakeProvider(
-        responses=[ProviderResponse(content=[{"type": "text", "text": "ignored"}], error="bad gateway")]
+        responses=[
+            ProviderResponse(content=[{"type": "text", "text": "ignored"}], error="bad gateway")
+        ]
     )
     runtime = AgentRuntime(provider=provider, registry=ToolRegistry(), model="fake")
 
@@ -125,7 +166,9 @@ def test_runtime_run_returns_provider_error_payload() -> None:
 
 
 def test_runtime_resume_executes_pending_tool_results_before_appended_notes() -> None:
-    provider = FakeProvider(responses=[ProviderResponse(content=[{"type": "text", "text": "done"}])])
+    provider = FakeProvider(
+        responses=[ProviderResponse(content=[{"type": "text", "text": "done"}])]
+    )
     executed: list[tuple[str, dict[str, object]]] = []
 
     runtime = AgentRuntime(
@@ -137,10 +180,19 @@ def test_runtime_resume_executes_pending_tool_results_before_appended_notes() ->
                 "messages": [
                     {
                         "role": "assistant",
-                        "content": [{"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}],
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "call_1",
+                                "name": "echo",
+                                "input": {"value": "hi"},
+                            }
+                        ],
                     }
                 ],
-                "pending_tool_blocks": [{"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}],
+                "pending_tool_blocks": [
+                    {"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}
+                ],
                 "tool_result_blocks": [],
                 "next_turn": 2,
                 "disable_tools": False,
@@ -179,7 +231,14 @@ def test_runtime_marks_internal_context_tool_results() -> None:
     provider = FakeProvider(
         responses=[
             ProviderResponse(
-                content=[{"type": "tool_use", "id": "call_1", "name": "read_skill", "input": {"name": "grok-search"}}],
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "read_skill",
+                        "input": {"name": "grok-search"},
+                    }
+                ],
                 stop_reason="tool_use",
             ),
             ProviderResponse(content=[{"type": "text", "text": "done"}], stop_reason="end_turn"),
@@ -192,6 +251,11 @@ def test_runtime_marks_internal_context_tool_results() -> None:
             description="Read a skill",
             input_schema={"type": "object"},
             handler=lambda payload: payload,
+            readonly=True,
+            action_class="read_local",
+            idempotent=True,
+            risk_hint="low",
+            requires_receipt=False,
             result_is_internal_context=True,
         )
     )
@@ -202,7 +266,7 @@ def test_runtime_marks_internal_context_tool_results() -> None:
         max_turns=2,
         tool_executor=SimpleNamespace(
             execute=lambda *_args, **_kwargs: ToolExecutionResult(
-                model_content="<skill_content name=\"grok-search\">secret</skill_content>",
+                model_content='<skill_content name="grok-search">secret</skill_content>',
                 raw_result="secret",
             )
         ),
@@ -231,10 +295,14 @@ def test_runtime_errors_are_localized_when_locale_is_set() -> None:
     provider = FakeProvider(responses=[ProviderResponse(content=[], stop_reason="tool_use")])
     runtime = AgentRuntime(provider=provider, registry=ToolRegistry(), model="fake", locale="zh-CN")
 
-    with pytest.raises(RuntimeError, match="Provider 请求了 tool_use，但响应中没有对应的 tool block"):
+    with pytest.raises(
+        RuntimeError, match="Provider 请求了 tool_use，但响应中没有对应的 tool block"
+    ):
         runtime.run("hello")
 
-    runtime = AgentRuntime(provider=FakeProvider(), registry=ToolRegistry(), model="fake", locale="zh-CN")
+    runtime = AgentRuntime(
+        provider=FakeProvider(), registry=ToolRegistry(), model="fake", locale="zh-CN"
+    )
     with pytest.raises(RuntimeError, match="恢复任务执行需要已配置的 ToolExecutor"):
         runtime.resume(step_attempt_id="attempt", task_context=SimpleNamespace())
 
@@ -243,7 +311,9 @@ def test_runtime_run_max_turns_final_summary_success() -> None:
     provider = FakeProvider(
         responses=[
             ProviderResponse(
-                content=[{"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}],
+                content=[
+                    {"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}
+                ],
                 stop_reason="tool_use",
             ),
             ProviderResponse(content=[{"type": "text", "text": "summary"}], stop_reason="end_turn"),
@@ -254,8 +324,11 @@ def test_runtime_run_max_turns_final_summary_success() -> None:
         registry=ToolRegistry(),
         model="fake",
         max_turns=1,
+        locale="en-US",
         tool_executor=SimpleNamespace(
-            execute=lambda *_args, **_kwargs: ToolExecutionResult(model_content="ok", raw_result="ok")
+            execute=lambda *_args, **_kwargs: ToolExecutionResult(
+                model_content="ok", raw_result="ok"
+            )
         ),
     )
     task_ctx = SimpleNamespace(task_id="task", step_id="step", step_attempt_id="attempt")
@@ -265,7 +338,7 @@ def test_runtime_run_max_turns_final_summary_success() -> None:
     assert result.text == "summary"
     assert result.turns == 2
     assert result.messages[-2]["role"] == "user"
-    assert "最大允许的工具调用轮次" in result.messages[-2]["content"]
+    assert "maximum turn limit" in result.messages[-2]["content"]
 
 
 def test_runtime_run_max_turns_final_summary_failure() -> None:
@@ -279,7 +352,9 @@ def test_runtime_run_max_turns_final_summary_failure() -> None:
     provider = FailingSummaryProvider(
         responses=[
             ProviderResponse(
-                content=[{"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}],
+                content=[
+                    {"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}}
+                ],
                 stop_reason="tool_use",
             )
         ]
@@ -289,15 +364,18 @@ def test_runtime_run_max_turns_final_summary_failure() -> None:
         registry=ToolRegistry(),
         model="fake",
         max_turns=1,
+        locale="en-US",
         tool_executor=SimpleNamespace(
-            execute=lambda *_args, **_kwargs: ToolExecutionResult(model_content="ok", raw_result="ok")
+            execute=lambda *_args, **_kwargs: ToolExecutionResult(
+                model_content="ok", raw_result="ok"
+            )
         ),
     )
     task_ctx = SimpleNamespace(task_id="task", step_id="step", step_attempt_id="attempt")
 
     result = runtime.run("hello", task_context=task_ctx)
 
-    assert "汇总失败：summary boom" in result.text
+    assert "final summary request failed: summary boom" in result.text
     assert result.execution_status == "failed"
 
 
@@ -348,7 +426,10 @@ def test_run_stream_serializes_localized_tool_execution_errors() -> None:
         features=ProviderFeatures(supports_streaming=True),
         stream_events=[
             [
-                SimpleNamespace(type="block_end", block={"type": "tool_use", "id": "1", "name": "write_file", "input": {}}),
+                SimpleNamespace(
+                    type="block_end",
+                    block={"type": "tool_use", "id": "1", "name": "write_file", "input": {}},
+                ),
                 SimpleNamespace(type="message_end", stop_reason="tool_use", usage=UsageMetrics()),
             ]
         ],
@@ -441,7 +522,9 @@ def test_execute_tool_requires_executor_and_task_context() -> None:
 def test_run_stream_raises_when_tool_use_has_no_blocks() -> None:
     provider = FakeProvider(
         features=ProviderFeatures(supports_streaming=True),
-        stream_events=[[SimpleNamespace(type="message_end", stop_reason="tool_use", usage=UsageMetrics())]],
+        stream_events=[
+            [SimpleNamespace(type="message_end", stop_reason="tool_use", usage=UsageMetrics())]
+        ],
     )
     runtime = AgentRuntime(provider=provider, registry=ToolRegistry(), model="fake")
 
@@ -456,14 +539,21 @@ def test_run_stream_max_turns_summary_success_and_failure() -> None:
             [
                 SimpleNamespace(
                     type="block_end",
-                    block={"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}},
+                    block={
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "echo",
+                        "input": {"value": "hi"},
+                    },
                 ),
                 SimpleNamespace(type="message_end", stop_reason="tool_use", usage=UsageMetrics()),
             ]
         ],
         responses=[ProviderResponse(content=[{"type": "text", "text": "summary"}])],
     )
-    runtime = AgentRuntime(provider=success_provider, registry=ToolRegistry(), model="fake", max_turns=1)
+    runtime = AgentRuntime(
+        provider=success_provider, registry=ToolRegistry(), model="fake", max_turns=1
+    )
     success = runtime.run_stream("hello")
     assert success.text == "summary"
     assert success.turns == 2
@@ -474,13 +564,24 @@ def test_run_stream_max_turns_summary_success_and_failure() -> None:
             [
                 SimpleNamespace(
                     type="block_end",
-                    block={"type": "tool_use", "id": "call_1", "name": "echo", "input": {"value": "hi"}},
+                    block={
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "echo",
+                        "input": {"value": "hi"},
+                    },
                 ),
                 SimpleNamespace(type="message_end", stop_reason="tool_use", usage=UsageMetrics()),
             ]
         ],
         generate_error=RuntimeError("summary boom"),
     )
-    failed = AgentRuntime(provider=fail_provider, registry=ToolRegistry(), model="fake", max_turns=1).run_stream("hello")
-    assert "汇总失败：summary boom" in failed.text
+    failed = AgentRuntime(
+        provider=fail_provider,
+        registry=ToolRegistry(),
+        model="fake",
+        max_turns=1,
+        locale="en-US",
+    ).run_stream("hello")
+    assert "final summary request failed: summary boom" in failed.text
     assert failed.execution_status == "failed"

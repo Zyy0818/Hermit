@@ -1,17 +1,30 @@
 # Hermit Kernel Spec v0.1
 
-**Status:** Draft **Last updated:** 2026-03-11
+**Status:** Draft
+**Last updated:** 2026-03-15
 
-This document defines the target kernel architecture for the next major iteration of Hermit. It is a forward-looking specification, not a description of the current repository state.
+This document defines the **target kernel architecture** for the next major iteration of Hermit.
 
-Hermit vNext is not a chat shell with tools. It is a **local-first agent kernel** for durable, governed, evidence-bound work.
+It is a forward-looking specification, not a full description of the current repository state.
+
+Read this document alongside:
+
+- [`architecture.md`](./architecture.md) for the current implementation
+- [`roadmap.md`](./roadmap.md) for current maturity and convergence status
+
+Safe interpretation:
+
+- the current repository already contains real kernel objects and control paths
+- this spec defines the stronger target architecture those implementation paths are converging toward
+- this document should not be read as a claim that every runtime surface already fully matches the spec
+
+Hermit vNext is not a chat shell with tools. It is a **local-first governed agent kernel** for durable, governed, evidence-bound work.
 
 ## 1. Design Position
 
 Hermit Kernel v0.1 is defined as:
 
-
-A local-first, event-sourced agent kernel where durable tasks advance through recoverable step attempts, compile artifact-native context, maintain bounded working state plus evidence-backed beliefs and durable memory, gate side effects through policy and approval, execute with least-privilege capability grants, and close every important action with a structured receipt.
+A local-first, event-backed agent kernel where durable tasks advance through recoverable step attempts, compile artifact-native context, maintain bounded working state plus evidence-backed beliefs and durable memory, gate side effects through policy and approval, execute with least-privilege capability grants, and close every important action with a structured receipt.
 
 
 Hermit’s target competitive scope is narrow and intentional:

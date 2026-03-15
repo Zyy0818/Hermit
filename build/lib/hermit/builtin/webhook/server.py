@@ -1,4 +1,5 @@
 """Webhook HTTP server — FastAPI-based event receiver for agent dispatch."""
+
 from __future__ import annotations
 
 import hashlib
@@ -14,8 +15,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from hermit.builtin.webhook.models import WebhookConfig, WebhookRoute
-from hermit.kernel.proofs import ProofService
 from hermit.kernel.projections import ProjectionService
+from hermit.kernel.proofs import ProofService
 from hermit.kernel.rollbacks import RollbackService
 from hermit.kernel.supervision import SupervisionService
 from hermit.plugin.base import HookEvent
@@ -72,9 +73,7 @@ class WebhookServer:
         self._config = config
         self._hooks = hooks
         self._runner: "AgentRunner | None" = None
-        self._executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="webhook"
-        )
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="webhook")
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
 
@@ -86,8 +85,12 @@ class WebhookServer:
         self._app.add_api_route("/tasks/{task_id}/events", self._task_events, methods=["GET"])
         self._app.add_api_route("/tasks/{task_id}/case", self._task_case, methods=["GET"])
         self._app.add_api_route("/tasks/{task_id}/proof", self._task_proof, methods=["GET"])
-        self._app.add_api_route("/tasks/{task_id}/proof/export", self._task_proof_export, methods=["POST"])
-        self._app.add_api_route("/receipts/{receipt_id}/rollback", self._receipt_rollback, methods=["POST"])
+        self._app.add_api_route(
+            "/tasks/{task_id}/proof/export", self._task_proof_export, methods=["POST"]
+        )
+        self._app.add_api_route(
+            "/receipts/{receipt_id}/rollback", self._receipt_rollback, methods=["POST"]
+        )
         self._app.add_api_route("/projections/rebuild", self._rebuild_projections, methods=["POST"])
         self._app.add_api_route("/approvals/pending", self._list_pending_approvals, methods=["GET"])
         self._app.add_api_route("/approvals/{approval_id}/approve", self._approve, methods=["POST"])
@@ -116,6 +119,7 @@ class WebhookServer:
 
             try:
                 import json
+
                 payload: dict[str, Any] = json.loads(body) if body else {}
             except Exception:
                 payload = {}
@@ -147,9 +151,7 @@ class WebhookServer:
         else:
             sig_hex = sig_header
 
-        expected = hmac.new(
-            secret.encode(), body, hashlib.sha256
-        ).hexdigest()
+        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
         if not hmac.compare_digest(expected, sig_hex):
             raise HTTPException(status_code=401, detail="Invalid signature")
@@ -184,7 +186,9 @@ class WebhookServer:
                 try:
                     self._runner.close_session(session_id)
                 except Exception:
-                    _log.exception("webhook_close_session_error", route=route.name, session_id=session_id)  # type: ignore[call-arg]
+                    _log.exception(
+                        "webhook_close_session_error", route=route.name, session_id=session_id
+                    )  # type: ignore[call-arg]
 
             self._hooks.fire(
                 HookEvent.DISPATCH_RESULT,
@@ -239,9 +243,7 @@ class WebhookServer:
     async def _list_tasks(self, request: Request, limit: int = 20) -> dict[str, Any]:
         await self._verify_control_request(request)
         store = self._kernel_store()
-        return {
-            "tasks": [task.__dict__ for task in store.list_tasks(limit=limit)]
-        }
+        return {"tasks": [task.__dict__ for task in store.list_tasks(limit=limit)]}
 
     async def _show_task(self, task_id: str, request: Request) -> dict[str, Any]:
         await self._verify_control_request(request)
@@ -251,10 +253,14 @@ class WebhookServer:
             raise HTTPException(status_code=404, detail="Task not found")
         return {
             "task": task.__dict__,
-            "approvals": [approval.__dict__ for approval in store.list_approvals(task_id=task_id, limit=20)],
+            "approvals": [
+                approval.__dict__ for approval in store.list_approvals(task_id=task_id, limit=20)
+            ],
         }
 
-    async def _task_events(self, task_id: str, request: Request, limit: int = 100) -> dict[str, Any]:
+    async def _task_events(
+        self, task_id: str, request: Request, limit: int = 100
+    ) -> dict[str, Any]:
         await self._verify_control_request(request)
         store = self._kernel_store()
         return {"events": store.list_events(task_id=task_id, limit=limit)}
@@ -285,6 +291,7 @@ class WebhookServer:
         if body:
             try:
                 import json
+
                 task_id = str(json.loads(body).get("task_id", "") or "").strip()
             except Exception:
                 task_id = ""
@@ -300,7 +307,9 @@ class WebhookServer:
     ) -> dict[str, Any]:
         await self._verify_control_request(request)
         store = self._kernel_store()
-        approvals = store.list_approvals(conversation_id=conversation_id, status="pending", limit=limit)
+        approvals = store.list_approvals(
+            conversation_id=conversation_id, status="pending", limit=limit
+        )
         return {"approvals": [approval.__dict__ for approval in approvals]}
 
     async def _approve(self, approval_id: str, request: Request) -> dict[str, Any]:
@@ -309,6 +318,7 @@ class WebhookServer:
         if body:
             try:
                 import json
+
                 resolution = json.loads(body)
             except Exception:
                 resolution = {}
@@ -340,6 +350,7 @@ class WebhookServer:
         if body:
             try:
                 import json
+
                 payload = json.loads(body)
                 reason = str(payload.get("reason", "")).strip()
             except Exception:

@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from hermit.core.tools import ToolRegistry
-from hermit.plugin.base import McpServerSpec, PluginContext, PluginManifest, PluginVariableSpec
+from hermit.plugin.base import (
+    McpServerSpec,
+    McpToolGovernance,
+    PluginContext,
+    PluginManifest,
+    PluginVariableSpec,
+)
 from hermit.plugin.config import resolve_plugin_context
 from hermit.plugin.hooks import HooksEngine
 from hermit.plugin.loader import load_plugin_entries, parse_manifest
@@ -80,8 +87,10 @@ def test_sanitize_http_headers_keeps_valid_authorization() -> None:
 class TestMcpServerSpec:
     def test_stdio_spec(self):
         spec = McpServerSpec(
-            name="test", description="Test server",
-            transport="stdio", command=["python", "server.py"],
+            name="test",
+            description="Test server",
+            transport="stdio",
+            command=["python", "server.py"],
         )
         assert spec.transport == "stdio"
         assert spec.command == ["python", "server.py"]
@@ -89,8 +98,10 @@ class TestMcpServerSpec:
 
     def test_http_spec(self):
         spec = McpServerSpec(
-            name="remote", description="Remote server",
-            transport="http", url="https://mcp.example.com/sse",
+            name="remote",
+            description="Remote server",
+            transport="http",
+            url="https://mcp.example.com/sse",
             headers={"Authorization": "Bearer tok"},
         )
         assert spec.transport == "http"
@@ -99,8 +110,10 @@ class TestMcpServerSpec:
 
     def test_allowed_tools(self):
         spec = McpServerSpec(
-            name="filtered", description="Filtered",
-            transport="stdio", command=["node", "srv"],
+            name="filtered",
+            description="Filtered",
+            transport="stdio",
+            command=["node", "srv"],
             allowed_tools=["search", "read"],
         )
         assert spec.allowed_tools == ["search", "read"]
@@ -135,12 +148,12 @@ class TestPluginManagerMcpCollection:
             encoding="utf-8",
         )
         (plugin_dir / "mcp_entry.py").write_text(
-            'from hermit.plugin.base import McpServerSpec, PluginContext\n'
-            'def register(ctx: PluginContext) -> None:\n'
-            '    ctx.add_mcp(McpServerSpec(\n'
+            "from hermit.plugin.base import McpServerSpec, PluginContext\n"
+            "def register(ctx: PluginContext) -> None:\n"
+            "    ctx.add_mcp(McpServerSpec(\n"
             '        name="demo", description="Demo", transport="stdio",\n'
             '        command=["echo", "hello"],\n'
-            '    ))\n',
+            "    ))\n",
             encoding="utf-8",
         )
 
@@ -174,12 +187,14 @@ class TestPluginManagerMcpCollection:
     def test_start_mcp_ignores_connection_failures(self, monkeypatch):
         """MCP connection failures should not abort the main process."""
         pm = PluginManager()
-        pm._all_mcp.append(McpServerSpec(
-            name="broken",
-            description="Broken MCP",
-            transport="http",
-            url="https://example.invalid/mcp",
-        ))
+        pm._all_mcp.append(
+            McpServerSpec(
+                name="broken",
+                description="Broken MCP",
+                transport="http",
+                url="https://example.invalid/mcp",
+            )
+        )
 
         def _boom(self, specs):
             raise RuntimeError("401 Unauthorized")
@@ -232,9 +247,9 @@ default = "https://default.example.com/mcp"
             encoding="utf-8",
         )
         (plugin_dir / "entry.py").write_text(
-            'from hermit.plugin.base import PluginContext\n'
-            'def register(ctx: PluginContext) -> None:\n'
-            '    pass\n',
+            "from hermit.plugin.base import PluginContext\n"
+            "def register(ctx: PluginContext) -> None:\n"
+            "    pass\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
@@ -307,7 +322,9 @@ disabled_builtin_plugins = ["github"]
                 "headers": {"Authorization": "Bearer {{ api_token }}"},
             },
             variables={
-                "api_token": PluginVariableSpec(name="api_token", setting="api_token", required=True),
+                "api_token": PluginVariableSpec(
+                    name="api_token", setting="api_token", required=True
+                ),
                 "optional_value": PluginVariableSpec(name="optional_value"),
             },
         )
@@ -315,7 +332,9 @@ disabled_builtin_plugins = ["github"]
         warnings: list[dict[str, object]] = []
         import hermit.plugin.config as plugin_config
 
-        monkeypatch.setattr(plugin_config.log, "warning", lambda *args, **kwargs: warnings.append(kwargs))
+        monkeypatch.setattr(
+            plugin_config.log, "warning", lambda *args, **kwargs: warnings.append(kwargs)
+        )
 
         vars_resolved, config_resolved = resolve_plugin_context(manifest, settings)
 
@@ -331,11 +350,15 @@ disabled_builtin_plugins = ["github"]
 class TestMcpLoaderPlugin:
     def test_parse_stdio_config(self, tmp_path: Path):
         from hermit.builtin.mcp_loader.mcp import _parse_server_entry
-        spec = _parse_server_entry("notion", {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-notion"],
-            "env": {"NOTION_API_KEY": "secret"},
-        })
+
+        spec = _parse_server_entry(
+            "notion",
+            {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-notion"],
+                "env": {"NOTION_API_KEY": "secret"},
+            },
+        )
         assert spec is not None
         assert spec.name == "notion"
         assert spec.transport == "stdio"
@@ -344,10 +367,14 @@ class TestMcpLoaderPlugin:
 
     def test_parse_http_config(self):
         from hermit.builtin.mcp_loader.mcp import _parse_server_entry
-        spec = _parse_server_entry("remote", {
-            "url": "https://mcp.example.com/sse",
-            "headers": {"Authorization": "Bearer tok"},
-        })
+
+        spec = _parse_server_entry(
+            "remote",
+            {
+                "url": "https://mcp.example.com/sse",
+                "headers": {"Authorization": "Bearer tok"},
+            },
+        )
         assert spec is not None
         assert spec.name == "remote"
         assert spec.transport == "http"
@@ -356,11 +383,13 @@ class TestMcpLoaderPlugin:
 
     def test_parse_invalid_entry(self):
         from hermit.builtin.mcp_loader.mcp import _parse_server_entry
+
         spec = _parse_server_entry("bad", {"nothing": True})
         assert spec is None
 
     def test_load_mcp_json(self, tmp_path: Path):
         from hermit.builtin.mcp_loader.mcp import _load_mcp_json
+
         config = {
             "mcpServers": {
                 "notion": {
@@ -377,11 +406,13 @@ class TestMcpLoaderPlugin:
 
     def test_load_mcp_json_missing_file(self, tmp_path: Path):
         from hermit.builtin.mcp_loader.mcp import _load_mcp_json
+
         data = _load_mcp_json(tmp_path / "nonexistent.json")
         assert data == {}
 
     def test_load_mcp_json_invalid_json(self, tmp_path: Path):
         from hermit.builtin.mcp_loader.mcp import _load_mcp_json
+
         bad_file = tmp_path / "bad.json"
         bad_file.write_text("not json", encoding="utf-8")
         data = _load_mcp_json(bad_file)
@@ -433,15 +464,16 @@ class TestMcpLoaderPlugin:
 
         base_dir = tmp_path / "home"
         base_dir.mkdir()
-        (base_dir / "mcp.json").write_text(json.dumps({
-            "mcpServers": {"srv": {"command": "old", "args": []}}
-        }), encoding="utf-8")
+        (base_dir / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"srv": {"command": "old", "args": []}}}), encoding="utf-8"
+        )
 
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
-        (project_dir / ".mcp.json").write_text(json.dumps({
-            "mcpServers": {"srv": {"command": "new", "args": ["--flag"]}}
-        }), encoding="utf-8")
+        (project_dir / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"srv": {"command": "new", "args": ["--flag"]}}}),
+            encoding="utf-8",
+        )
 
         monkeypatch.chdir(project_dir)
         settings = MagicMock()
@@ -455,11 +487,15 @@ class TestMcpLoaderPlugin:
 
     def test_allowed_tools_config(self):
         from hermit.builtin.mcp_loader.mcp import _parse_server_entry
-        spec = _parse_server_entry("filtered", {
-            "command": "node",
-            "args": ["server.js"],
-            "allowedTools": ["search", "read"],
-        })
+
+        spec = _parse_server_entry(
+            "filtered",
+            {
+                "command": "node",
+                "args": ["server.js"],
+                "allowedTools": ["search", "read"],
+            },
+        )
         assert spec is not None
         assert spec.allowed_tools == ["search", "read"]
 
@@ -473,10 +509,52 @@ class TestMcpClientManagerUnit:
         assert mgr.get_tool_specs() == []
         mgr.close_all_sync()
 
+    def test_get_tool_specs_rejects_missing_governance_metadata(self):
+        mgr = object.__new__(McpClientManager)
+        mgr._connections = {
+            "server": SimpleNamespace(
+                spec=McpServerSpec(name="server", description="Server", transport="stdio"),
+                tools=[{"name": "tool", "description": "desc", "input_schema": {"type": "object"}}],
+            )
+        }
+
+        with pytest.raises(ValueError, match="governance"):
+            mgr.get_tool_specs()
+
+    def test_get_tool_specs_applies_governance_metadata(self):
+        mgr = object.__new__(McpClientManager)
+        mgr._run_async = lambda coro, timeout=60: (coro.close(), "ok")[1]  # type: ignore[attr-defined]
+        mgr._connections = {
+            "server": SimpleNamespace(
+                spec=McpServerSpec(
+                    name="server",
+                    description="Server",
+                    transport="stdio",
+                    tool_governance={
+                        "tool": McpToolGovernance(
+                            action_class="network_read",
+                            risk_hint="low",
+                            requires_receipt=False,
+                            readonly=True,
+                        )
+                    },
+                ),
+                tools=[{"name": "tool", "description": "desc", "input_schema": {"type": "object"}}],
+            )
+        }
+
+        specs = mgr.get_tool_specs()
+
+        assert specs[0].name == "mcp__server__tool"
+        assert specs[0].action_class == "network_read"
+        assert specs[0].readonly is True
+        assert specs[0].requires_receipt is False
+
     def test_connect_skips_bad_transport(self):
         mgr = McpClientManager()
         spec = McpServerSpec(
-            name="bad", description="Bad transport",
+            name="bad",
+            description="Bad transport",
             transport="unknown",
         )
         mgr.connect_all_sync([spec])
@@ -486,7 +564,8 @@ class TestMcpClientManagerUnit:
     def test_connect_skips_stdio_without_command(self):
         mgr = McpClientManager()
         spec = McpServerSpec(
-            name="no-cmd", description="No command",
+            name="no-cmd",
+            description="No command",
             transport="stdio",
         )
         mgr.connect_all_sync([spec])
@@ -496,7 +575,8 @@ class TestMcpClientManagerUnit:
     def test_connect_skips_http_without_url(self):
         mgr = McpClientManager()
         spec = McpServerSpec(
-            name="no-url", description="No URL",
+            name="no-url",
+            description="No URL",
             transport="http",
         )
         mgr.connect_all_sync([spec])
@@ -517,6 +597,7 @@ class TestMcpClientManagerUnit:
 class TestMcpLoaderPluginDiscovery:
     def test_mcp_loader_is_discovered(self):
         from hermit.plugin.loader import discover_plugins
+
         builtin_dir = Path(__file__).parent.parent / "hermit" / "builtin"
         manifests = discover_plugins(builtin_dir)
         names = [m.name for m in manifests]

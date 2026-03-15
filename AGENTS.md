@@ -1,6 +1,6 @@
-# AGENT.md
+# AGENTS.md
 
-Collaboration notes for developing the Hermit project. Everything below reflects the current source tree.
+Instructions for Codex and other agentic tooling working in the Hermit repository. Everything below reflects the current source tree and should be treated as repository-scoped guidance.
 
 ## Project Skills
 
@@ -16,14 +16,14 @@ For this kind of work, the closing step must include local redeployment and veri
 
 ## Project Overview
 
-Hermit is a local-first AI agent runtime built for personal workflows.
+Hermit is a local-first governed agent kernel built for durable, inspectable, operator-trust-oriented workflows.
 
 Current core characteristics:
 
-- hand-written Anthropic Messages API tool loop
-- file-based long-lived state
-- a `plugin.toml`-driven plugin system
-- Feishu adapter, scheduler, webhook, MCP, long-term memory, and image memory
+- task-first kernel records and local ledger state
+- governed execution with approvals, decisions, permits, receipts, and rollback support
+- artifact-aware context and evidence-bound memory primitives
+- a `plugin.toml`-driven plugin system with CLI, Feishu, scheduler, webhook, and MCP surfaces
 
 ## Development Environment
 
@@ -63,6 +63,12 @@ Notes:
 - to enter the CLI, inspect config, or check auth, prefer `scripts/hermit-env.sh <env> ...`
 - when changing Python source, prefer `scripts/hermit-watch.sh <env>` or `make env-watch ENV=<env>` for watch-and-restart; this entrypoint manages `serve` and ensures the menubar companion is running
 - `hermit reload` should be treated only as a graceful config/plugin/tool reload; it is not general source hot reload
+
+Example direct service invocation inside the managed environment:
+
+```bash
+scripts/hermit-env.sh dev serve --adapter feishu
+```
 
 ## Directory Layout
 
@@ -106,8 +112,8 @@ Top-level commands:
 - `hermit startup-prompt`
 - `hermit run`
 - `hermit chat`
-- `hermit serve [adapter]`
-- `hermit reload [adapter]`
+- `hermit serve --adapter <adapter>`
+- `hermit reload --adapter <adapter>`
 - `hermit sessions`
 - `hermit plugin ...`
 - `hermit autostart ...`

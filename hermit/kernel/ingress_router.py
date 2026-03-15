@@ -5,12 +5,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from hermit.builtin.memory.engine import MemoryEngine
 from hermit.kernel.continuation import (
     has_ambiguous_followup_marker,
     has_branch_marker,
     has_continue_marker,
 )
+from hermit.kernel.memory_text import shares_topic, topic_tokens
 from hermit.kernel.models import ConversationRecord, TaskRecord
 
 _ARTIFACT_REF_RE = re.compile(r"\bartifact_[a-z0-9]{6,}\b", re.IGNORECASE)
@@ -286,7 +286,7 @@ class IngressRouter:
                 context_texts.append(note_text)
             if len(context_texts) >= 6:
                 break
-        query_tokens = {token for token in MemoryEngine._topic_tokens(text) if len(token) >= 2}
+        query_tokens = {token for token in topic_tokens(text) if len(token) >= 2}
         continue_marker_present = has_continue_marker(text)
         ambiguous_marker_present = has_ambiguous_followup_marker(text)
         if continue_marker_present:
@@ -298,13 +298,11 @@ class IngressRouter:
         for candidate_text in context_texts:
             if not candidate_text:
                 continue
-            if MemoryEngine._shares_topic(candidate_text, text):
+            if shares_topic(candidate_text, text):
                 score += 0.35
                 reasons.append("topic_overlap")
                 break
-            candidate_tokens = {
-                token for token in MemoryEngine._topic_tokens(candidate_text) if len(token) >= 2
-            }
+            candidate_tokens = {token for token in topic_tokens(candidate_text) if len(token) >= 2}
             if query_tokens & candidate_tokens:
                 score += 0.3
                 reasons.append("token_overlap")

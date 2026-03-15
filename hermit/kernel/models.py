@@ -161,7 +161,7 @@ class ReceiptRecord:
     witness_ref: str | None = None
     idempotency_key: str | None = None
     receipt_bundle_ref: str | None = None
-    proof_mode: str = "none"
+    proof_mode: str = "hash_only"
     signature: str | None = None
     rollback_supported: bool = False
     rollback_strategy: str | None = None

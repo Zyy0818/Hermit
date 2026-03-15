@@ -1,88 +1,73 @@
-# Providers and Profiles
+# Providers And Profiles
 
-This document focuses on the provider modes Hermit currently supports, the available auth sources, and how `config.toml` profiles work.
+This document explains the provider modes Hermit currently supports and how profile selection works in practice.
 
-## Currently Supported Providers
+Hermit's current provider layer is part of the runtime implementation. It should not be confused with the broader kernel thesis, even though both meet in the shared execution path.
 
-The current code supports three providers:
+## Supported Providers
+
+Hermit currently supports three providers:
 
 - `claude`
 - `codex`
 - `codex-oauth`
 
-The provider entrypoint is [`hermit/provider/services.py`](../hermit/provider/services.py).
+The provider entrypoint is built through `hermit/provider/services.py`.
 
-## 1. `claude`
+## `claude`
 
-This is the default provider.
-
-Typical use cases:
+Typical uses:
 
 - direct Anthropic API access
-- a Claude-compatible enterprise gateway / proxy
+- a Claude-compatible gateway
 
-### Direct Anthropic Access
-
-Simplest configuration:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-### Via a Compatible Gateway
+Direct access:
 
 ```bash
 HERMIT_PROVIDER=claude
-HERMIT_AUTH_TOKEN=your-bearer-token
+ANTHROPIC_API_KEY=...
+```
+
+Gateway usage:
+
+```bash
+HERMIT_PROVIDER=claude
+HERMIT_AUTH_TOKEN=...
 HERMIT_BASE_URL=https://your-gateway.example.com/llm/claude
-HERMIT_CUSTOM_HEADERS=X-Biz-Id: my-team
+HERMIT_CUSTOM_HEADERS=X-Biz-Id: hermit
 HERMIT_MODEL=claude-3-7-sonnet-latest
 ```
 
-Compatible aliases:
+Compatible aliases still exist for some Claude-specific environment variables.
 
-- `HERMIT_CLAUDE_AUTH_TOKEN` is equivalent to `HERMIT_AUTH_TOKEN`
-- `HERMIT_CLAUDE_BASE_URL` is equivalent to `HERMIT_BASE_URL`
-- `HERMIT_CLAUDE_HEADERS` is equivalent to `HERMIT_CUSTOM_HEADERS`
+## `codex`
 
-## 2. `codex`
+`codex` mode uses the OpenAI Responses API path. It is not the same thing as reusing local desktop OAuth tokens.
 
-This does not mean “call the local codex CLI.” It goes directly through the OpenAI Responses API.
-
-Most common configuration:
+Typical configuration:
 
 ```bash
 HERMIT_PROVIDER=codex
-HERMIT_OPENAI_API_KEY=sk-...
+OPENAI_API_KEY=...
 HERMIT_MODEL=gpt-5.4
 ```
 
-Optional fields:
+Optional:
 
 ```bash
 HERMIT_OPENAI_BASE_URL=https://api.openai.com/v1
 HERMIT_OPENAI_HEADERS=X-Project: hermit
 ```
 
-### One Common Misunderstanding
+## `codex-oauth`
 
-If `~/.codex/auth.json` exists locally but does not contain a usable OpenAI API key, `codex` mode will not automatically “borrow” the desktop login session.
+`codex-oauth` mode is the path that reuses OAuth state from:
 
-The current implementation fails immediately and tells you:
+```text
+~/.codex/auth.json
+```
 
-- `HERMIT_OPENAI_API_KEY` is required
-- or local `~/.codex/auth.json` must contain API-key-backed auth state
-
-## 3. `codex-oauth`
-
-This is the mode that actually reads OAuth tokens from `~/.codex/auth.json`.
-
-Typical use cases:
-
-- you are already signed into the local Codex / ChatGPT desktop environment
-- you want to reuse the existing access / refresh tokens directly
-
-Example:
+Typical configuration:
 
 ```bash
 HERMIT_PROVIDER=codex-oauth
@@ -92,29 +77,17 @@ HERMIT_MODEL=gpt-5.4
 Requirements:
 
 - `~/.codex/auth.json` must exist
-- it must contain both `access_token` and `refresh_token`
+- it must contain usable token state
 
-If the file is missing, Hermit fails immediately at startup.
+## Profiles
 
-## Model Resolution Logic
-
-After a provider is selected, there is one more detail in model resolution:
-
-- if you are in `codex` / `codex-oauth` mode but still request a model name starting with `claude`
-- Hermit will try to read the `model` field from `~/.codex/config.toml`
-- if it still cannot resolve one, it falls back to the default `gpt-5.4`
-
-In other words, `codex*` modes are not a good fit for keeping a Claude-style default model name around.
-
-## `config.toml` Profiles
-
-Profile file path:
+Profiles live in:
 
 ```text
 ~/.hermit/config.toml
 ```
 
-Most common format:
+Example:
 
 ```toml
 default_profile = "codex-local"
@@ -131,17 +104,25 @@ claude_base_url = "https://example.internal/claude"
 claude_headers = "X-Biz-Id: workbench"
 ```
 
-### How a Profile Is Selected
+Practical selection order:
 
-1. `default_profile`
-2. `HERMIT_PROFILE`
-3. `profiles resolve --name ...` only inspects; it does not write anything
+1. `HERMIT_PROFILE` if set
+2. otherwise `default_profile`
+3. values from the selected profile are applied
+4. shell and environment overrides still win on top
 
-Environment variables can still override profile values.
+Useful commands:
 
-## Recommended Configuration Examples
+```bash
+hermit profiles list
+hermit profiles resolve --name codex-local
+hermit auth status
+hermit config show
+```
 
-### Personal Machine, Direct Claude Access
+## Recommended Profile Shapes
+
+### Personal machine, direct Claude
 
 ```toml
 default_profile = "default"
@@ -151,9 +132,7 @@ provider = "claude"
 model = "claude-3-7-sonnet-latest"
 ```
 
-Then put `ANTHROPIC_API_KEY` in `~/.hermit/.env`.
-
-### Personal Machine, Reusing the Codex Login State
+### Personal machine, reuse Codex OAuth
 
 ```toml
 default_profile = "codex-local"
@@ -164,7 +143,7 @@ model = "gpt-5.4"
 max_turns = 60
 ```
 
-### Internal Team Network, Using a Claude-Compatible Gateway
+### Team environment, gateway-backed Claude
 
 ```toml
 default_profile = "work"
@@ -176,46 +155,25 @@ claude_base_url = "https://gateway.example.com/claude"
 claude_headers = "X-Biz-Id: hermit"
 ```
 
-Then inject the token through shell env or `~/.hermit/.env`.
+## What This Means Architecturally
 
-## Plugin Variables Also Come from `config.toml`
+The provider layer matters, but it is not Hermit's main differentiator.
 
-Besides `[profiles.*]`, the file also supports:
+Provider choice changes:
 
-```toml
-[plugins.github.variables]
-github_pat = "ghp_xxx"
-github_mcp_url = "https://api.githubcopilot.com/mcp/"
-```
+- model backend
+- auth source
+- request transport
 
-Plugin variables participate in template rendering when `plugin.toml` is loaded, for example:
+It does not change Hermit's bigger thesis around:
 
-```toml
-[config]
-url = "{{ github_mcp_url }}"
+- task-first work
+- governed execution
+- artifact-native context
+- receipts, proofs, and rollback-aware recovery
 
-[config.headers]
-Authorization = "Bearer {{ github_pat }}"
-```
+## Related Docs
 
-## Common Inspection Commands
-
-```bash
-hermit profiles list
-hermit profiles resolve --name codex-local
-hermit auth status
-hermit config show
-```
-
-The most practical troubleshooting order is usually:
-
-1. `hermit profiles list`
-2. `hermit profiles resolve --name ...`
-3. `hermit auth status`
-4. `hermit config show`
-
-## Facts Confirmed in This Review
-
-- `codex` is currently explicitly bound to the OpenAI Responses API
-- `codex-oauth` is the mode that reads tokens from `~/.codex/auth.json`
-- the profile + env layering is real supported behavior and should not be inferred only from tests
+- [configuration.md](./configuration.md)
+- [cli-and-operations.md](./cli-and-operations.md)
+- [architecture.md](./architecture.md)

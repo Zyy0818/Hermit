@@ -93,22 +93,57 @@ class KernelDispatchService:
             ingress = dict(attempt.context.get("ingress_metadata", {}) or {})
             if ingress.get("dispatch_mode") != "async":
                 continue
+            context = dict(attempt.context or {})
+            context["recovered_after_interrupt"] = True
+            context["interrupt_recovered_at"] = now
+            if getattr(attempt, "permit_id", None):
+                context["recovery_required"] = True
+                context["reentry_required"] = True
+                context["reentry_reason"] = "worker_interrupted"
+                context["reentry_boundary"] = "observation_resolution"
+                context["reentry_requested_at"] = now
+                store.update_step_attempt(
+                    attempt.step_attempt_id,
+                    status="blocked",
+                    context=context,
+                    waiting_reason="worker_interrupted_recovery_required",
+                    finished_at=None,
+                )
+                store.update_step(
+                    attempt.step_id,
+                    status="blocked",
+                    finished_at=None,
+                )
+                store.update_task_status(
+                    attempt.task_id,
+                    "blocked",
+                    payload={
+                        "result_preview": "worker_interrupted_recovery_required",
+                        "result_text": "worker_interrupted_recovery_required",
+                    },
+                )
+                continue
+            context["reentry_required"] = True
+            context["reentry_reason"] = "worker_interrupted"
+            context["reentry_boundary"] = "policy_reentry"
+            context["reentry_requested_at"] = now
             store.update_step_attempt(
                 attempt.step_attempt_id,
-                status="failed",
-                waiting_reason="worker_interrupted",
-                finished_at=now,
+                status="ready",
+                context=context,
+                waiting_reason="worker_interrupted_requeued",
+                finished_at=None,
             )
             store.update_step(
                 attempt.step_id,
-                status="failed",
-                finished_at=now,
+                status="ready",
+                finished_at=None,
             )
             store.update_task_status(
                 attempt.task_id,
-                "failed",
+                "queued",
                 payload={
-                    "result_preview": "worker_interrupted",
-                    "result_text": "worker_interrupted",
+                    "result_preview": "worker_interrupted_requeued",
+                    "result_text": "worker_interrupted_requeued",
                 },
             )

@@ -1,80 +1,67 @@
-# Hermit and OpenClaw Positioning Comparison
+# Hermit And OpenClaw Comparison
 
-This document is only a high-level positioning comparison. It is not intended to be a file-by-file or version-by-version implementation analysis of OpenClaw.
+This is a high-level positioning comparison, not a file-by-file implementation audit of OpenClaw.
 
-Constraints:
+The goal is to clarify category differences without freezing volatile external details into Hermit's docs.
 
-- conclusions about Hermit are based on the current repository source
-- conclusions about OpenClaw are limited to stable public positioning, without freezing volatile external implementation details into the document
+## Short Version
 
-## One-Sentence Conclusion
+Both projects sit near the local-first agent space. Hermit's center of gravity is more explicitly a governed task kernel.
 
-Both are local-first agent systems, but their design priorities are different:
+That is the key distinction to keep in mind.
 
-- Hermit is more runtime-first, centered on personal workflows and readable source
-- OpenClaw is more platform-first, with a broader channel surface and heavier operational overhead
+## Comparison Table
 
-## Hermit’s Current Real Positioning
+| Question | Hermit | OpenClaw-style local agents |
+| --- | --- | --- |
+| Primary unit of work | task-first durable work | often more session-first or interaction-first |
+| Execution model | increasingly governed | often optimized first for flexible agent behavior |
+| Authority model | approvals, permits, path grants, receipts | varies, but often less centered on first-class governance objects |
+| Context model | artifact-native direction | often more transcript-centric or runtime-centric |
+| Memory model | evidence-bound direction with beliefs and memory records | varies by implementation |
+| Operator surface | task inspection, proof, approval, rollback | varies; usually less centered on a kernel ledger |
+| Current product shape | alpha governed kernel in a local runtime | often positioned as local agent experience or runtime system |
 
-Based on the current repository, Hermit is centered on:
+## Where Hermit Is Sharper
 
-- `AgentRunner`
-- `AgentRuntime`
-- `PluginManager`
-- the `~/.hermit` file-based state directory
+Hermit is sharper when you care about:
 
-The surfaces currently implemented are:
+- task-first semantics
+- governed side effects
+- durable receipts
+- proof-oriented inspection
+- rollback-aware recovery
+- evidence-bound memory
 
-- CLI
-- Feishu adapter
-- scheduler
-- webhook
-- MCP
-- macOS companion
+In other words, Hermit is not mainly competing on "how many integrations exist" or "how polished the assistant feels." It is competing on execution law.
 
-## Hermit’s Strengths
+## Where OpenClaw-Class Systems May Feel More Familiar
 
-Hermit is a better fit if you care more about:
+A more runtime-oriented or assistant-oriented local agent may feel more familiar if you mainly want:
 
-- being able to understand the runtime in a relatively short time
-- keeping state on the local filesystem
-- extending private capabilities through plugins
-- building around a personal workflow instead of a full platform
+- a local agent experience first
+- broad interaction surfaces first
+- a lighter conceptual model
 
-## Hermit’s Tradeoffs
+Hermit asks the reader to care more about durable work and governance semantics. That is a strength for the right audience and extra weight for the wrong one.
 
-This design also comes with clear tradeoffs:
+## How To Choose
 
-- a lighter control plane
-- fewer built-in channels by default
-- less productized packaging than heavier platforms
-- some capabilities require writing your own plugins
+Choose Hermit when:
 
-## How It Differs from Heavier Platforms
+- you care about local inspectability
+- you want consequential work to pass through explicit authority boundaries
+- you want a task to remain legible after it completes
+- you care about receipts, proofs, and rollback semantics
 
-Platform-oriented systems usually emphasize:
+Choose a more runtime-first local agent when:
 
-- more channels
-- a fuller control console
-- a heavier gateway and operations layer
-- more standardized multi-tenant or team capabilities
+- you mainly want a helpful local assistant
+- governance semantics are not central
+- task durability and post-hoc inspection are not the primary value
 
-Hermit is not currently trying to compete head-on on those dimensions.
+## Important Note
 
-## When to Choose Hermit
+This comparison should stay stable. If an external project changes, Hermit's docs should not become stale because they overfit to implementation trivia.
 
-Hermit is a better choice when:
-
-- you want a personal agent runtime, not a product platform
-- you want to modify the provider, plugins, and state model yourself
-- you care more about local inspectability, recoverability, and auditability
-- you are willing to accept fewer default channels and a lighter control plane
-
-## Principles Behind This Documentation Update
-
-The previous version contained some descriptions that were more likely to drift as external products changed.
-
-After this update, the document keeps only:
-
-- conclusions that are stably true for the current Hermit codebase
-- the positioning comparison at the level of “light runtime vs heavy platform”
+That is why this document compares design priorities, not release-by-release details.

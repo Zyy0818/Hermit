@@ -262,7 +262,6 @@ def _resolved_config_snapshot(settings: Settings) -> dict[str, object]:
         "feishu": {
             "app_id_configured": bool(settings.feishu_app_id),
             "thread_progress": settings.feishu_thread_progress,
-            "reaction_enabled": settings.feishu_reaction_enabled,
         },
         "scheduler": {
             "enabled": settings.scheduler_enabled,
@@ -401,9 +400,13 @@ def _describe_env_source(key: str, env_file_keys: set[str]) -> str:
 
 
 def _format_preflight_item(item: _PreflightItem) -> str:
-    prefix = _t("cli.preflight.prefix.ok", "[OK]") if item.ok else _t(
-        "cli.preflight.prefix.missing",
-        "[MISSING]",
+    prefix = (
+        _t("cli.preflight.prefix.ok", "[OK]")
+        if item.ok
+        else _t(
+            "cli.preflight.prefix.missing",
+            "[MISSING]",
+        )
     )
     return f"  {prefix} {item.label}: {item.detail}"
 
@@ -949,9 +952,7 @@ def profiles_list() -> None:
             " provider={provider}{model_suffix}",
             provider=provider,
             model_suffix=(
-                _t("cli.profiles_list.model_suffix", " model={model}", model=model)
-                if model
-                else ""
+                _t("cli.profiles_list.model_suffix", " model={model}", model=model) if model else ""
             ),
         )
         typer.echo(f"{name}{marker}{suffix}")
@@ -1612,7 +1613,9 @@ def _render_memory_payload(payload: dict[str, Any]) -> str:
     if explanations:
         lines.append("Governance:")
         lines.extend([f"  - {item}" for item in explanations])
-    matched_signals = dict((inspection.get("structured_assertion", {}) or {}).get("matched_signals", {}) or {})
+    matched_signals = dict(
+        (inspection.get("structured_assertion", {}) or {}).get("matched_signals", {}) or {}
+    )
     if matched_signals:
         lines.append("Matched Signals:")
         for name, hits in sorted(matched_signals.items()):
@@ -1652,7 +1655,7 @@ def task_list(
     limit: int = typer.Option(
         20,
         help=_cli_t("cli.task.list.limit", "Maximum number of tasks to show."),
-    )
+    ),
 ) -> None:
     """List recent tasks from the kernel ledger."""
     store = _get_kernel_store()
@@ -1675,7 +1678,7 @@ def task_list(
 
 @task_app.command("show")
 def task_show(
-    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID."))
+    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID.")),
 ) -> None:
     """Show one task and its pending approvals."""
     store = _get_kernel_store()
@@ -1737,9 +1740,7 @@ def task_show(
 
     permits = store.list_execution_permits(task_id=task_id, limit=20)
     if permits:
-        typer.echo(
-            "\n" + _t("cli.task.show.permits", "Recent execution permits:")
-        )
+        typer.echo("\n" + _t("cli.task.show.permits", "Recent execution permits:"))
         for permit in permits:
             typer.echo(
                 _t(
@@ -1806,25 +1807,29 @@ def task_receipts(
 
 @task_app.command("explain")
 def task_explain(
-    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID."))
+    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID.")),
 ) -> None:
     """Explain why a task executed, under what authority, and what changed."""
     store = _get_kernel_store()
-    typer.echo(json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2))
+    typer.echo(
+        json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2)
+    )
 
 
 @task_app.command("case")
 def task_case(
-    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID."))
+    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID.")),
 ) -> None:
     """Show unified operator case view for one task."""
     store = _get_kernel_store()
-    typer.echo(json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2))
+    typer.echo(
+        json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2)
+    )
 
 
 @task_app.command("proof")
 def task_proof(
-    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID."))
+    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID.")),
 ) -> None:
     """Show proof summary for one task."""
     store = _get_kernel_store()
@@ -1855,7 +1860,9 @@ def task_proof_export(
 
 @task_app.command("rollback")
 def task_rollback(
-    receipt_id: str = typer.Argument(..., help=_cli_t("cli.task.rollback.receipt_id", "Receipt ID."))
+    receipt_id: str = typer.Argument(
+        ..., help=_cli_t("cli.task.rollback.receipt_id", "Receipt ID.")
+    ),
 ) -> None:
     """Execute a supported rollback for one receipt."""
     store = _get_kernel_store()
@@ -1917,7 +1924,7 @@ def task_approve(
     approval_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.task.common.approval_id", "Approval ID."),
-    )
+    ),
 ) -> None:
     """Approve once and resume a blocked task."""
     _task_resolution("approve_once", approval_id)
@@ -1928,7 +1935,7 @@ def task_approve_always_directory(
     approval_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.task.common.approval_id", "Approval ID."),
-    )
+    ),
 ) -> None:
     """Approve and always allow this directory for the current conversation."""
     _task_resolution("approve_always_directory", approval_id)
@@ -1954,7 +1961,7 @@ def task_resume(
     approval_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.task.resume.approval_id", "Approval ID to resume."),
-    )
+    ),
 ) -> None:
     """Resume a blocked task by approving its latest pending approval."""
     _task_resolution("approve_once", approval_id)
@@ -1984,7 +1991,7 @@ def _task_grant_list(
 
 
 def _task_grant_revoke(
-    grant_id: str = typer.Argument(..., help=_cli_t("cli.task.grant.grant_id", "Grant ID."))
+    grant_id: str = typer.Argument(..., help=_cli_t("cli.task.grant.grant_id", "Grant ID.")),
 ) -> None:
     """Revoke a path grant."""
     store = _get_kernel_store()
@@ -2019,7 +2026,7 @@ def task_grant_list(
 
 @task_grant_app.command("revoke")
 def task_grant_revoke(
-    grant_id: str = typer.Argument(..., help=_cli_t("cli.task.grant.grant_id", "Grant ID."))
+    grant_id: str = typer.Argument(..., help=_cli_t("cli.task.grant.grant_id", "Grant ID.")),
 ) -> None:
     """Revoke a path grant."""
     _task_grant_revoke(grant_id)
@@ -2034,7 +2041,10 @@ def memory_inspect(
     claim_text: Optional[str] = typer.Option(
         None,
         "--claim-text",
-        help=_cli_t("cli.memory.inspect.claim_text", "Inspect a raw claim without reading a stored memory record."),
+        help=_cli_t(
+            "cli.memory.inspect.claim_text",
+            "Inspect a raw claim without reading a stored memory record.",
+        ),
     ),
     category: str = typer.Option(
         "其他",
@@ -2085,7 +2095,9 @@ def memory_inspect(
             raise typer.Exit(1)
         payload = _memory_payload_from_record(record, settings=settings)
     else:
-        resolved_workspace_root = str(workspace_root.resolve()) if workspace_root else str(settings.base_dir)
+        resolved_workspace_root = (
+            str(workspace_root.resolve()) if workspace_root else str(settings.base_dir)
+        )
         inspection = governance.inspect_claim(
             category=category,
             claim_text=str(claim_text or ""),
@@ -2194,7 +2206,11 @@ def memory_status(
             superseded_links += 1
     payload = {
         "total_records": len(records),
-        "active_records": sum(1 for record in records if record.status == "active" and not governance.is_expired(record)),
+        "active_records": sum(
+            1
+            for record in records
+            if record.status == "active" and not governance.is_expired(record)
+        ),
         "expired_records": expired,
         "superseded_links": superseded_links,
         "by_status": by_status,
@@ -2420,7 +2436,6 @@ def schedule_list() -> None:
     """List all scheduled tasks."""
     import datetime
 
-
     store = _get_schedule_store()
     jobs = store.list_schedules()
     if not jobs:
@@ -2564,7 +2579,7 @@ def schedule_remove(
     job_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.schedule.common.job_id_remove", "Task ID to remove."),
-    )
+    ),
 ) -> None:
     """Remove a scheduled task."""
     store = _get_schedule_store()
@@ -2585,7 +2600,7 @@ def schedule_enable(
     job_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.schedule.common.job_id_enable", "Task ID to enable."),
-    )
+    ),
 ) -> None:
     """Enable a scheduled task."""
     store = _get_schedule_store()
@@ -2607,7 +2622,7 @@ def schedule_disable(
     job_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.schedule.common.job_id_disable", "Task ID to disable."),
-    )
+    ),
 ) -> None:
     """Disable a scheduled task."""
     store = _get_schedule_store()

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from hermit.builtin.memory.engine import MemoryEngine
+from hermit.kernel.memory_text import shares_topic, topic_tokens
 
 BRANCH_MARKERS = (
     "顺便",
@@ -106,10 +106,10 @@ def texts_overlap(text: str, candidate_text: str) -> bool:
     candidate = normalize_text(candidate_text)
     if not cleaned or not candidate:
         return False
-    if MemoryEngine._shares_topic(candidate, cleaned):
+    if shares_topic(candidate, cleaned):
         return True
-    query_tokens = {token for token in MemoryEngine._topic_tokens(cleaned) if len(token) >= 2}
-    candidate_tokens = {token for token in MemoryEngine._topic_tokens(candidate) if len(token) >= 2}
+    query_tokens = {token for token in topic_tokens(cleaned) if len(token) >= 2}
+    candidate_tokens = {token for token in topic_tokens(candidate) if len(token) >= 2}
     if query_tokens & candidate_tokens:
         return True
     if any(token in candidate for token in query_tokens):

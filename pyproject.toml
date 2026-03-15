@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hermit-agent"
 version = "0.2.3"
-description = "Hermit personal AI agent MVP."
+description = "Local-first governed agent kernel for durable and inspectable AI work."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -25,6 +25,13 @@ dependencies = [
   "typer>=0.15.2",
   "uvicorn>=0.34.0",
 ]
+
+[project.urls]
+Homepage = "https://heggria.github.io/Hermit/"
+Documentation = "https://heggria.github.io/Hermit/"
+Repository = "https://github.com/heggria/Hermit"
+Issues = "https://github.com/heggria/Hermit/issues"
+Changelog = "https://github.com/heggria/Hermit/releases"
 
 [project.optional-dependencies]
 dev = [
@@ -68,6 +75,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "hermit/main.py" = ["E402"]
+"build/lib/hermit/main.py" = ["E402"]
 
 [tool.setuptools.packages.find]
 include = ["hermit*"]

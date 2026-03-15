@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermit.core.tools import ToolRegistry, ToolSpec
+from hermit.core.tools import ToolGovernanceError, ToolRegistry, ToolSpec
 from hermit.plugin.base import (
     AdapterSpec,
     CommandSpec,
@@ -24,6 +24,11 @@ def _tool(name: str, handler=None) -> ToolSpec:
         description=f"{name} tool",
         input_schema={"type": "object", "properties": {}, "required": []},
         handler=handler or (lambda payload: {"ok": True}),
+        readonly=True,
+        action_class="read_local",
+        idempotent=True,
+        risk_hint="low",
+        requires_receipt=False,
     )
 
 
@@ -67,11 +72,20 @@ def test_plugin_manager_setup_commands_hooks_and_adapters(tmp_path: Path) -> Non
     pm.hooks.register(HookEvent.PRE_RUN, lambda prompt, **kwargs: f"{prompt} [string]")
     pm.hooks.register(
         HookEvent.PRE_RUN,
-        lambda prompt, **kwargs: {"prompt": f"{prompt} [dict]", "disable_tools": True, "readonly_only": True},
+        lambda prompt, **kwargs: {
+            "prompt": f"{prompt} [dict]",
+            "disable_tools": True,
+            "readonly_only": True,
+        },
     )
     pm.hooks.register(HookEvent.POST_RUN, lambda result, **kwargs: post_results.append(result))
-    pm.hooks.register(HookEvent.SESSION_START, lambda session_id: session_events.append(("start", session_id)))
-    pm.hooks.register(HookEvent.SESSION_END, lambda session_id, messages: session_events.append(("end", len(messages))))
+    pm.hooks.register(
+        HookEvent.SESSION_START, lambda session_id: session_events.append(("start", session_id))
+    )
+    pm.hooks.register(
+        HookEvent.SESSION_END,
+        lambda session_id, messages: session_events.append(("end", len(messages))),
+    )
 
     pm.setup_commands(FakeRunner())
     prompt, run_opts = pm.on_pre_run("hello", session_id="s1")
@@ -95,7 +109,6 @@ def test_plugin_manager_setup_tools_handles_duplicates() -> None:
     pm = PluginManager()
     registry = ToolRegistry()
     registry.register(_tool("echo"))
-    registry.register(_tool("delegate_researcher"))
 
     pm._all_tools.append(_tool("echo"))
     pm._all_subagents.append(
@@ -105,7 +118,21 @@ def test_plugin_manager_setup_tools_handles_duplicates() -> None:
     pm.setup_tools(registry)
 
     assert registry.get("echo").name == "echo"
-    assert registry.get("delegate_researcher").name == "delegate_researcher"
+    delegation = registry.get("delegate_researcher")
+    assert delegation.name == "delegate_researcher"
+    assert delegation.readonly is True
+    assert delegation.action_class == "delegate_reasoning"
+    assert delegation.requires_receipt is False
+
+
+def test_tool_spec_requires_explicit_governance_metadata_for_mutations() -> None:
+    with pytest.raises(ToolGovernanceError, match="action_class explicitly"):
+        ToolSpec(
+            name="mutate",
+            description="Mutate state",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            handler=lambda payload: payload,
+        )
 
 
 class _FakeSubAgent:
@@ -146,7 +173,10 @@ def test_run_subagent_supports_unavailable_success_and_error_paths(monkeypatch) 
         model="child-model",
     )
 
-    assert pm._run_subagent(spec, "hello") == "[Subagent 'researcher' unavailable: agent runner not configured]"
+    assert (
+        pm._run_subagent(spec, "hello")
+        == "[Subagent 'researcher' unavailable: agent runner not configured]"
+    )
 
     registry = ToolRegistry()
     registry.register(_tool("echo"))

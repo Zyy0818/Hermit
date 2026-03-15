@@ -91,9 +91,11 @@ class AgentRunner:
         cls, name: str, help_text: str, cli_only: bool = False
     ) -> Callable[[CommandHandler], CommandHandler]:
         """Decorator to register a core slash command."""
+
         def decorator(fn: CommandHandler) -> CommandHandler:
             cls._core_commands[name] = (fn, help_text, cli_only)
             return fn
+
         return decorator
 
     def __init__(
@@ -105,7 +107,9 @@ class AgentRunner:
         task_controller: TaskController | None = None,
     ) -> None:
         if task_controller is None:
-            raise ValueError("AgentRunner requires a TaskController; non-kernel runner mode has been removed.")
+            raise ValueError(
+                "AgentRunner requires a TaskController; non-kernel runner mode has been removed."
+            )
         self.agent = agent
         self.session_manager = session_manager
         self.pm = plugin_manager
@@ -124,7 +128,9 @@ class AgentRunner:
         if self._dispatch_service is None:
             from hermit.kernel.dispatch import KernelDispatchService
 
-            worker_count = int(getattr(getattr(self.pm, "settings", None), "kernel_dispatch_worker_count", 4) or 4)
+            worker_count = int(
+                getattr(getattr(self.pm, "settings", None), "kernel_dispatch_worker_count", 4) or 4
+            )
             self._dispatch_service = KernelDispatchService(self, worker_count=worker_count)
             self._dispatch_service.start()
 
@@ -139,7 +145,11 @@ class AgentRunner:
             self._observation_service = None
 
     def add_command(
-        self, name: str, handler: CommandHandler, help_text: str, cli_only: bool = False,
+        self,
+        name: str,
+        handler: CommandHandler,
+        help_text: str,
+        cli_only: bool = False,
     ) -> None:
         """Register a command on this runner instance (used by plugins)."""
         self._commands[name] = (handler, help_text, cli_only)
@@ -181,11 +191,7 @@ class AgentRunner:
         if now.tzinfo is None or now.utcoffset() is None:
             now = now.astimezone()
         offset = now.strftime("%z")
-        offset_label = (
-            f"UTC{offset[:3]}:{offset[3:]}"
-            if offset and len(offset) == 5
-            else "local"
-        )
+        offset_label = f"UTC{offset[:3]}:{offset[3:]}" if offset and len(offset) == 5 else "local"
         timezone_name = getattr(now.tzinfo, "key", None) or offset_label
         time_ctx = (
             f"<session_time>"
@@ -205,7 +211,12 @@ class AgentRunner:
             run_opts["planning_mode"] = True
             prompt = prompt + _t("kernel.planner.mode.prompt", runner=self)
         full_prompt = time_ctx + prompt
-        task_goal = _strip_internal_markup(text) or _strip_internal_markup(full_prompt) or text.strip() or full_prompt.strip()
+        task_goal = (
+            _strip_internal_markup(text)
+            or _strip_internal_markup(full_prompt)
+            or text.strip()
+            or full_prompt.strip()
+        )
         return session, full_prompt, run_opts, task_goal
 
     def _provider_input_compiler(self) -> ProviderInputCompiler:
@@ -227,8 +238,12 @@ class AgentRunner:
             return None
         return compiler.compile(task_context=task_ctx, final_prompt=prompt, raw_text=raw_text)
 
-    def _append_note_context(self, session_id: str, task_id: str, source_channel: str) -> TaskExecutionContext:
-        attempt = next(iter(self.task_controller.store.list_step_attempts(task_id=task_id, limit=1)), None)
+    def _append_note_context(
+        self, session_id: str, task_id: str, source_channel: str
+    ) -> TaskExecutionContext:
+        attempt = next(
+            iter(self.task_controller.store.list_step_attempts(task_id=task_id, limit=1)), None
+        )
         task = self.task_controller.store.get_task(task_id)
         return TaskExecutionContext(
             conversation_id=session_id,
@@ -237,8 +252,12 @@ class AgentRunner:
             step_attempt_id=attempt.step_attempt_id if attempt is not None else "",
             source_channel=source_channel,
             policy_profile=getattr(task, "policy_profile", "default"),
-            workspace_root=str((attempt.context if attempt is not None else {}).get("workspace_root", "") or ""),
-            ingress_metadata=dict((attempt.context if attempt is not None else {}).get("ingress_metadata", {}) or {}),
+            workspace_root=str(
+                (attempt.context if attempt is not None else {}).get("workspace_root", "") or ""
+            ),
+            ingress_metadata=dict(
+                (attempt.context if attempt is not None else {}).get("ingress_metadata", {}) or {}
+            ),
         )
 
     def _maybe_capture_planning_result(
@@ -310,7 +329,9 @@ class AgentRunner:
                     waiting_kind=str(getattr(result, "waiting_kind", "") or "awaiting_approval"),
                 )
         else:
-            planning_captured = self._maybe_capture_planning_result(task_ctx, result, readonly_only=readonly_only)
+            planning_captured = self._maybe_capture_planning_result(
+                task_ctx, result, readonly_only=readonly_only
+            )
             if not getattr(result, "status_managed_by_kernel", False) and not planning_captured:
                 self.task_controller.finalize_result(
                     task_ctx,
@@ -318,7 +339,9 @@ class AgentRunner:
                     result_preview=_result_preview(result.text or ""),
                     result_text=result.text or "",
                 )
-            self.pm.on_post_run(result, session_id=task_ctx.conversation_id, session=session, runner=self)
+            self.pm.on_post_run(
+                result, session_id=task_ctx.conversation_id, session=session, runner=self
+            )
         return result
 
     def enqueue_ingress(
@@ -341,15 +364,17 @@ class AgentRunner:
         )
         task_kind = "plan" if run_opts.get("readonly_only", False) else "respond"
         metadata = dict(ingress_metadata or {})
-        metadata.update({
-            "dispatch_mode": "async",
-            "entry_prompt": full_prompt,
-            "raw_text": text,
-            "notify": dict(notify or {}),
-            "source_ref": source_ref,
-            "disable_tools": bool(run_opts.get("disable_tools", False)),
-            "readonly_only": bool(run_opts.get("readonly_only", False)),
-        })
+        metadata.update(
+            {
+                "dispatch_mode": "async",
+                "entry_prompt": full_prompt,
+                "raw_text": text,
+                "notify": dict(notify or {}),
+                "source_ref": source_ref,
+                "disable_tools": bool(run_opts.get("disable_tools", False)),
+                "readonly_only": bool(run_opts.get("readonly_only", False)),
+            }
+        )
         ctx = self.task_controller.enqueue_task(
             conversation_id=session_id,
             goal=task_goal,
@@ -363,7 +388,9 @@ class AgentRunner:
             source_ref=source_ref or None,
         )
         if run_opts.get("planning_mode", False):
-            planning = PlanningService(self.task_controller.store, getattr(self.agent, "artifact_store", None))
+            planning = PlanningService(
+                self.task_controller.store, getattr(self.agent, "artifact_store", None)
+            )
             planning.set_pending_for_conversation(session_id, enabled=False)
             planning.enter_planning(ctx.task_id)
         self.wake_dispatcher()
@@ -377,6 +404,8 @@ class AgentRunner:
         approval_id: str,
         reason: str = "",
     ) -> DispatchResult:
+        from hermit.kernel.approvals import ApprovalService
+
         approval = self.task_controller.store.get_approval(approval_id)
         if approval is None:
             return DispatchResult(
@@ -385,13 +414,9 @@ class AgentRunner:
             )
 
         session = self.session_manager.get_or_create(session_id)
+        approvals = ApprovalService(self.task_controller.store)
         if action == "deny":
-            self.task_controller.store.resolve_approval(
-                approval_id,
-                status="denied",
-                resolved_by="user",
-                resolution={"status": "denied", "mode": "denied", "reason": reason},
-            )
+            approvals.deny(approval_id, resolved_by="user", reason=reason)
             text = _t("kernel.runner.approval_denied", runner=self)
             messages = list(session.messages)
             messages.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
@@ -399,13 +424,10 @@ class AgentRunner:
             self.session_manager.save(session)
             return DispatchResult(text=text, is_command=True)
 
-        resolution_mode = "always_directory" if action == "approve_always_directory" else "once"
-        self.task_controller.store.resolve_approval(
-            approval_id,
-            status="granted",
-            resolved_by="user",
-            resolution={"status": "granted", "mode": resolution_mode},
-        )
+        if action == "approve_always_directory":
+            approvals.approve_always_directory(approval_id, resolved_by="user")
+        else:
+            approvals.approve_once(approval_id, resolved_by="user")
         self.task_controller.enqueue_resume(approval.step_attempt_id)
         self.wake_dispatcher()
         text = _t(
@@ -434,7 +456,9 @@ class AgentRunner:
 
         metadata = dict(task_ctx.ingress_metadata or {})
         execution_mode = str(
-            self.task_controller.store.get_step_attempt(step_attempt_id).context.get("execution_mode", "run")  # type: ignore[union-attr]
+            self.task_controller.store.get_step_attempt(step_attempt_id).context.get(
+                "execution_mode", "run"
+            )  # type: ignore[union-attr]
             if self.task_controller.store.get_step_attempt(step_attempt_id) is not None
             else "run"
         )
@@ -453,13 +477,17 @@ class AgentRunner:
                 compiled_input = self._compile_provider_input(
                     task_ctx=task_ctx,
                     prompt=str(metadata.get("entry_prompt", "") or ""),
-                    raw_text=str(metadata.get("raw_text", "") or str(metadata.get("entry_prompt", "") or "")),
+                    raw_text=str(
+                        metadata.get("raw_text", "") or str(metadata.get("entry_prompt", "") or "")
+                    ),
                 )
                 if hasattr(self.task_controller, "update_attempt_phase"):
                     self.task_controller.update_attempt_phase(step_attempt_id, phase="executing")
                 result = self.agent.run(
                     str(metadata.get("entry_prompt", "") or ""),
-                    compiled_messages=compiled_input.messages if compiled_input is not None else None,
+                    compiled_messages=compiled_input.messages
+                    if compiled_input is not None
+                    else None,
                     message_history=None if compiled_input is not None else list(session.messages),
                     on_tool_call=on_tool_call,
                     on_tool_start=on_tool_start,
@@ -526,7 +554,11 @@ class AgentRunner:
         self.pm.hooks.fire(
             "dispatch_result",
             source=str(task_ctx.ingress_metadata.get("source_ref", "") or task_ctx.source_channel),
-            title=str(task_ctx.ingress_metadata.get("title", "") or task_ctx.ingress_metadata.get("schedule_job_name", "") or task_ctx.task_id),
+            title=str(
+                task_ctx.ingress_metadata.get("title", "")
+                or task_ctx.ingress_metadata.get("schedule_job_name", "")
+                or task_ctx.task_id
+            ),
             result_text=result.text or "",
             success=success,
             error=None if success else (result.text or ""),
@@ -573,7 +605,9 @@ class AgentRunner:
         logs_dir.mkdir(parents=True, exist_ok=True)
         atomic_write(
             history_path,
-            json.dumps({"records": [item.to_dict() for item in history]}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {"records": [item.to_dict() for item in history]}, ensure_ascii=False, indent=2
+            ),
         )
         timestamp = datetime.datetime.fromtimestamp(record.started_at).strftime("%Y%m%d_%H%M%S")
         log_name = f"{timestamp}_{record.job_id}.log"
@@ -628,7 +662,8 @@ class AgentRunner:
             )
 
         agent_result = self.handle(
-            session_id, text,
+            session_id,
+            text,
             on_tool_call=on_tool_call,
             on_tool_start=on_tool_start,
         )
@@ -645,7 +680,9 @@ class AgentRunner:
         on_tool_start: Optional[ToolStartCallback] = None,
     ) -> AgentResult:
         """Process a single user message within a session."""
-        source_channel = self.task_controller.source_from_session(session_id) if self.task_controller else "chat"
+        source_channel = (
+            self.task_controller.source_from_session(session_id) if self.task_controller else "chat"
+        )
         session, prompt, run_opts, task_goal = self._prepare_prompt_context(
             session_id,
             text,
@@ -672,7 +709,9 @@ class AgentRunner:
             if ingress.mode == "append_note":
                 normalized = None
                 try:
-                    append_ctx = self._append_note_context(session_id, ingress.task_id or "", source_channel)
+                    append_ctx = self._append_note_context(
+                        session_id, ingress.task_id or "", source_channel
+                    )
                     normalized = self._provider_input_compiler().normalize_ingress(
                         task_context=append_ctx,
                         raw_text=text,
@@ -702,7 +741,11 @@ class AgentRunner:
                     execution_status="note_appended",
                     status_managed_by_kernel=True,
                 )
-        parent_task_id = getattr(ingress, "parent_task_id", _AUTO_PARENT) if ingress is not None else _AUTO_PARENT
+        parent_task_id = (
+            getattr(ingress, "parent_task_id", _AUTO_PARENT)
+            if ingress is not None
+            else _AUTO_PARENT
+        )
         ingress_metadata: dict[str, object] = {}
         if ingress is not None:
             ingress_metadata.update(
@@ -715,7 +758,9 @@ class AgentRunner:
                 }
             )
             if getattr(ingress, "anchor_task_id", None):
-                ingress_metadata["continuation_anchor"] = dict(getattr(ingress, "continuation_anchor", {}) or {})
+                ingress_metadata["continuation_anchor"] = dict(
+                    getattr(ingress, "continuation_anchor", {}) or {}
+                )
 
         task_ctx = None
         if self.task_controller is not None:
@@ -731,15 +776,21 @@ class AgentRunner:
                 ingress_metadata=ingress_metadata,
             )
             if run_opts.get("planning_mode", False):
-                planning = PlanningService(self.task_controller.store, getattr(self.agent, "artifact_store", None))
+                planning = PlanningService(
+                    self.task_controller.store, getattr(self.agent, "artifact_store", None)
+                )
                 planning.set_pending_for_conversation(session_id, enabled=False)
                 planning.enter_planning(task_ctx.task_id)
 
-        compiled_input = self._compile_provider_input(
-            task_ctx=task_ctx,
-            prompt=prompt,
-            raw_text=text,
-        ) if task_ctx is not None else None
+        compiled_input = (
+            self._compile_provider_input(
+                task_ctx=task_ctx,
+                prompt=prompt,
+                raw_text=text,
+            )
+            if task_ctx is not None
+            else None
+        )
         if task_ctx is not None and hasattr(self.task_controller, "update_attempt_phase"):
             self.task_controller.update_attempt_phase(task_ctx.step_attempt_id, phase="executing")
         result = self.agent.run(
@@ -753,8 +804,8 @@ class AgentRunner:
             task_context=task_ctx,
         )
 
-        session.total_input_tokens      += result.input_tokens
-        session.total_output_tokens     += result.output_tokens
+        session.total_input_tokens += result.input_tokens
+        session.total_output_tokens += result.output_tokens
         session.total_cache_read_tokens += result.cache_read_tokens
         session.total_cache_creation_tokens += result.cache_creation_tokens
 
@@ -767,7 +818,9 @@ class AgentRunner:
                 if hasattr(self.task_controller, "mark_suspended"):
                     self.task_controller.mark_suspended(
                         task_ctx,
-                        waiting_kind=str(getattr(result, "waiting_kind", "") or "awaiting_approval"),
+                        waiting_kind=str(
+                            getattr(result, "waiting_kind", "") or "awaiting_approval"
+                        ),
                     )
                 else:
                     self.task_controller.mark_blocked(task_ctx)
@@ -816,7 +869,11 @@ class AgentRunner:
         on_tool_start: Optional[ToolStartCallback] = None,
     ) -> AgentResult:
         resume_attempt = getattr(self.task_controller, "resume_attempt", None)
-        task_ctx = resume_attempt(step_attempt_id) if callable(resume_attempt) else self.task_controller.context_for_attempt(step_attempt_id)
+        task_ctx = (
+            resume_attempt(step_attempt_id)
+            if callable(resume_attempt)
+            else self.task_controller.context_for_attempt(step_attempt_id)
+        )
         session = self.session_manager.get_or_create(task_ctx.conversation_id)
         if hasattr(self.task_controller, "update_attempt_phase"):
             self.task_controller.update_attempt_phase(task_ctx.step_attempt_id, phase="executing")
@@ -837,7 +894,9 @@ class AgentRunner:
                 if hasattr(self.task_controller, "mark_suspended"):
                     self.task_controller.mark_suspended(
                         task_ctx,
-                        waiting_kind=str(getattr(result, "waiting_kind", "") or "awaiting_approval"),
+                        waiting_kind=str(
+                            getattr(result, "waiting_kind", "") or "awaiting_approval"
+                        ),
                     )
                 else:
                     self.task_controller.mark_blocked(task_ctx)
@@ -850,7 +909,9 @@ class AgentRunner:
                     result_preview=_result_preview(result.text or ""),
                     result_text=result.text or "",
                 )
-            self.pm.on_post_run(result, session_id=task_ctx.conversation_id, session=session, runner=self)
+            self.pm.on_post_run(
+                result, session_id=task_ctx.conversation_id, session=session, runner=self
+            )
         return result
 
     def reset_session(self, session_id: str) -> None:
@@ -926,33 +987,45 @@ class AgentRunner:
                 text=_t("kernel.runner.task_kernel_unavailable", runner=self),
                 is_command=True,
             )
-        planning = PlanningService(store, getattr(self.agent, "artifact_store", None)) if hasattr(store, "ensure_conversation") else None
+        planning = (
+            PlanningService(store, getattr(self.agent, "artifact_store", None))
+            if hasattr(store, "ensure_conversation")
+            else None
+        )
         get_latest_task = getattr(store, "get_last_task_for_conversation", None)
         latest_task = get_latest_task(session_id) if callable(get_latest_task) else None
         resolved_target = target_id or (latest_task.task_id if latest_task is not None else "")
 
         if action == "plan_enter":
             if planning is None:
-                return DispatchResult(text=_t("kernel.runner.task_kernel_unavailable", runner=self), is_command=True)
+                return DispatchResult(
+                    text=_t("kernel.runner.task_kernel_unavailable", runner=self), is_command=True
+                )
             if resolved_target:
                 planning.enter_planning(resolved_target)
             else:
                 planning.set_pending_for_conversation(session_id, enabled=True)
-            plans_dir = getattr(getattr(self.agent, "artifact_store", None), "root_dir", "kernel artifact store")
+            plans_dir = getattr(
+                getattr(self.agent, "artifact_store", None), "root_dir", "kernel artifact store"
+            )
             return DispatchResult(
                 _t("kernel.planner.entered", runner=self, plans_hint=plans_dir),
                 is_command=True,
             )
         if action == "plan_exit":
             if planning is None:
-                return DispatchResult(text=_t("kernel.runner.task_kernel_unavailable", runner=self), is_command=True)
+                return DispatchResult(
+                    text=_t("kernel.runner.task_kernel_unavailable", runner=self), is_command=True
+                )
             planning.set_pending_for_conversation(session_id, enabled=False)
             if resolved_target:
                 planning.exit_planning(resolved_target)
             return DispatchResult(_t("kernel.planner.closed", runner=self), is_command=True)
         if action == "plan_confirm":
             if planning is None:
-                return DispatchResult(text=_t("kernel.runner.task_kernel_unavailable", runner=self), is_command=True)
+                return DispatchResult(
+                    text=_t("kernel.runner.task_kernel_unavailable", runner=self), is_command=True
+                )
             if not resolved_target:
                 return DispatchResult(
                     _t("kernel.planner.confirm_missing_plan", runner=self),
@@ -967,7 +1040,10 @@ class AgentRunner:
                 )
             planning.confirm_selected_plan(plan_ctx, actor="user")
             latest_attempt = self.task_controller.store.get_step_attempt(plan_ctx.step_attempt_id)
-            if latest_attempt is not None and str(latest_attempt.status or "") == "awaiting_plan_confirmation":
+            if (
+                latest_attempt is not None
+                and str(latest_attempt.status or "") == "awaiting_plan_confirmation"
+            ):
                 self.task_controller.store.update_step(plan_ctx.step_id, status="succeeded")
                 self.task_controller.store.update_step_attempt(
                     plan_ctx.step_attempt_id,
@@ -980,7 +1056,8 @@ class AgentRunner:
                 status="running",
                 workspace_root=plan_ctx.workspace_root,
                 ingress_metadata={
-                    "selected_plan_ref": planning.state_for_task(resolved_target).selected_plan_ref or "",
+                    "selected_plan_ref": planning.state_for_task(resolved_target).selected_plan_ref
+                    or "",
                     "plan_status": "executing",
                     "planning_required": True,
                 },
@@ -1005,43 +1082,63 @@ class AgentRunner:
 
         if action == "task_list":
             payload = [task.__dict__ for task in store.list_tasks(limit=20)]
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "case":
             from hermit.kernel.supervision import SupervisionService
 
             payload = SupervisionService(store).build_task_case(target_id)
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "task_events":
             payload = store.list_events(task_id=target_id, limit=100)
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "task_receipts":
-            payload = [receipt.__dict__ for receipt in store.list_receipts(task_id=target_id, limit=50)]
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            payload = [
+                receipt.__dict__ for receipt in store.list_receipts(task_id=target_id, limit=50)
+            ]
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "task_proof":
             from hermit.kernel.proofs import ProofService
 
             payload = ProofService(store).build_proof_summary(target_id)
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "task_proof_export":
             from hermit.kernel.proofs import ProofService
 
             payload = ProofService(store).export_task_proof(target_id)
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "rollback":
             from hermit.kernel.rollbacks import RollbackService
 
             payload = RollbackService(store).execute(target_id)
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "projection_rebuild":
             from hermit.kernel.projections import ProjectionService
 
             payload = ProjectionService(store).rebuild_task(target_id)
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "projection_rebuild_all":
             from hermit.kernel.projections import ProjectionService
 
             payload = ProjectionService(store).rebuild_all()
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "grant_list":
             payload = [
                 grant.__dict__
@@ -1051,7 +1148,9 @@ class AgentRunner:
                     limit=50,
                 )
             ]
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "grant_revoke":
             grant = store.get_path_grant(target_id)
             if grant is None:
@@ -1072,12 +1171,17 @@ class AgentRunner:
             )
         if action == "schedule_list":
             payload = [job.to_dict() for job in store.list_schedules()]
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "schedule_history":
             payload = [
-                record.to_dict() for record in store.list_schedule_history(job_id=target_id or None, limit=10)
+                record.to_dict()
+                for record in store.list_schedule_history(job_id=target_id or None, limit=10)
             ]
-            return DispatchResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True)
+            return DispatchResult(
+                text=json.dumps(payload, ensure_ascii=False, indent=2), is_command=True
+            )
         if action == "schedule_enable":
             job = store.update_schedule(target_id, enabled=True)
             message = (
@@ -1107,16 +1211,32 @@ class AgentRunner:
             is_command=True,
         )
 
-    @staticmethod
-    def _pending_disambiguation_text(ingress: object) -> str:
+    def _pending_disambiguation_text(self, ingress: object) -> str:
         candidates = list(getattr(ingress, "candidates", []) or [])
         if not candidates:
-            return "I couldn't determine which task to continue. Please switch focus first."
-        lines = ["I couldn't determine which task to continue. Try one of these commands:"]
+            return _t(
+                "kernel.runner.pending_disambiguation.none",
+                runner=self,
+                default="I couldn't determine which task to continue. Please switch focus first.",
+            )
+        lines = [
+            _t(
+                "kernel.runner.pending_disambiguation.intro",
+                runner=self,
+                default="I couldn't determine which task to continue. Try one of these commands:",
+            )
+        ]
         for item in candidates[:3]:
             task_id = str(dict(item).get("task_id", "") or "").strip()
             if task_id:
-                lines.append(f"- 切到任务 {task_id}")
+                lines.append(
+                    _t(
+                        "kernel.runner.pending_disambiguation.item",
+                        runner=self,
+                        default="- switch task {task_id}",
+                        task_id=task_id,
+                    )
+                )
         return "\n".join(lines)
 
     def _resolve_approval(
@@ -1129,6 +1249,8 @@ class AgentRunner:
         on_tool_call: Optional[ToolCallback] = None,
         on_tool_start: Optional[ToolStartCallback] = None,
     ) -> DispatchResult:
+        from hermit.kernel.approvals import ApprovalService
+
         approval = self.task_controller.store.get_approval(approval_id)
         if approval is None:
             return DispatchResult(
@@ -1137,13 +1259,9 @@ class AgentRunner:
             )
 
         session = self.session_manager.get_or_create(session_id)
+        approvals = ApprovalService(self.task_controller.store)
         if action == "deny":
-            self.task_controller.store.resolve_approval(
-                approval_id,
-                status="denied",
-                resolved_by="user",
-                resolution={"status": "denied", "mode": "denied", "reason": reason},
-            )
+            approvals.deny(approval_id, resolved_by="user", reason=reason)
             text = _t("kernel.runner.approval_denied", runner=self)
             messages = list(session.messages)
             messages.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
@@ -1152,19 +1270,9 @@ class AgentRunner:
             return DispatchResult(text=text, is_command=True)
 
         if action == "approve_always_directory":
-            self.task_controller.store.resolve_approval(
-                approval_id,
-                status="granted",
-                resolved_by="user",
-                resolution={"status": "granted", "mode": "always_directory"},
-            )
+            approvals.approve_always_directory(approval_id, resolved_by="user")
         else:
-            self.task_controller.store.resolve_approval(
-                approval_id,
-                status="granted",
-                resolved_by="user",
-                resolution={"status": "granted", "mode": "once"},
-            )
+            approvals.approve_once(approval_id, resolved_by="user")
         task_ctx = self.task_controller.context_for_attempt(approval.step_attempt_id)
         result = self.agent.resume(
             step_attempt_id=approval.step_attempt_id,
@@ -1183,7 +1291,9 @@ class AgentRunner:
                 if hasattr(self.task_controller, "mark_suspended"):
                     self.task_controller.mark_suspended(
                         task_ctx,
-                        waiting_kind=str(getattr(result, "waiting_kind", "") or "awaiting_approval"),
+                        waiting_kind=str(
+                            getattr(result, "waiting_kind", "") or "awaiting_approval"
+                        ),
                     )
                 else:
                     self.task_controller.mark_blocked(task_ctx)
@@ -1207,6 +1317,7 @@ class AgentRunner:
 # ------------------------------------------------------------------
 # Core slash commands (always available, not from plugins)
 # ------------------------------------------------------------------
+
 
 @AgentRunner.register_command("/new", "kernel.runner.command.new.help")
 def _cmd_new(runner: AgentRunner, session_id: str, _text: str) -> DispatchResult:
@@ -1259,5 +1370,10 @@ def _cmd_task(runner: AgentRunner, session_id: str, text: str) -> DispatchResult
         )
     action = parts[1]
     target_id = parts[2].strip()
-    mapped_action = {"approve": "approve_once", "deny": "deny", "case": "case", "rollback": "rollback"}[action]
+    mapped_action = {
+        "approve": "approve_once",
+        "deny": "deny",
+        "case": "case",
+        "rollback": "rollback",
+    }[action]
     return runner._dispatch_control_action(session_id, action=mapped_action, target_id=target_id)

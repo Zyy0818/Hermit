@@ -30,9 +30,29 @@ class SubagentSpec:
     model: str = ""
 
 
+@dataclass(frozen=True)
+class McpToolGovernance:
+    action_class: str
+    risk_hint: str
+    requires_receipt: bool
+    readonly: bool = False
+    supports_preview: bool = False
+
+    def __post_init__(self) -> None:
+        action_class = str(self.action_class or "").strip()
+        if not action_class:
+            raise ValueError("MCP tool governance must declare action_class.")
+        risk_hint = str(self.risk_hint or "").strip()
+        if not risk_hint:
+            raise ValueError("MCP tool governance must declare risk_hint.")
+        if self.readonly and self.requires_receipt:
+            raise ValueError("Readonly MCP tools cannot require receipts.")
+
+
 @dataclass
 class McpServerSpec:
     """Describes an MCP server to connect to."""
+
     name: str
     description: str
     transport: str  # "stdio" | "http"
@@ -41,11 +61,13 @@ class McpServerSpec:
     url: Optional[str] = None
     headers: Optional[dict[str, str]] = None
     allowed_tools: Optional[List[str]] = None
+    tool_governance: dict[str, McpToolGovernance] = field(default_factory=dict)
 
 
 @dataclass
 class CommandSpec:
     """Describes a slash command registered by a plugin."""
+
     name: str
     help_text: str
     handler: Callable
@@ -66,6 +88,7 @@ class PluginVariableSpec:
 @dataclass
 class AdapterSpec:
     """Describes an adapter that bridges an external messaging platform to Hermit."""
+
     name: str
     description: str
     factory: Callable[..., AdapterProtocol]
@@ -123,7 +146,10 @@ class PluginContext:
         self.commands: list[CommandSpec] = []
 
     def add_hook(
-        self, event: HookEvent, handler: Callable, priority: int = 0,
+        self,
+        event: HookEvent,
+        handler: Callable,
+        priority: int = 0,
     ) -> None:
         self._hooks.register(event, handler, priority)
 

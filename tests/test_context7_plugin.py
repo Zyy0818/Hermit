@@ -35,7 +35,7 @@ mcp = "mcp:register"
     )
     (plugin_dir / "mcp.py").write_text(
         """
-from hermit.plugin.base import McpServerSpec, PluginContext
+from hermit.plugin.base import McpServerSpec, McpToolGovernance, PluginContext
 
 
 def register(ctx: PluginContext) -> None:
@@ -45,6 +45,20 @@ def register(ctx: PluginContext) -> None:
             description="Context7 docs",
             transport="http",
             url="https://mcp.context7.com/mcp",
+            tool_governance={
+                "resolve-library-id": McpToolGovernance(
+                    action_class="network_read",
+                    risk_hint="low",
+                    requires_receipt=False,
+                    readonly=True,
+                ),
+                "query-docs": McpToolGovernance(
+                    action_class="network_read",
+                    risk_hint="low",
+                    requires_receipt=False,
+                    readonly=True,
+                ),
+            },
         )
     )
 """.strip()
@@ -83,6 +97,7 @@ def _make_pm(tmp_path, monkeypatch):
 
 # ── 1. Plugin discovery ────────────────────────────────────────────────────
 
+
 def test_context7_plugin_is_discovered(tmp_path, monkeypatch):
     pm = _make_pm(tmp_path, monkeypatch)
     names = [m.name for m in pm.manifests]
@@ -103,6 +118,7 @@ def test_context7_plugin_has_mcp_entry(tmp_path, monkeypatch):
 
 # ── 2. McpServerSpec registered ───────────────────────────────────────────
 
+
 def test_context7_mcp_spec_registered(tmp_path, monkeypatch):
     pm = _make_pm(tmp_path, monkeypatch)
     specs = {s.name: s for s in pm.mcp_specs}
@@ -118,6 +134,7 @@ def test_context7_mcp_spec_transport(tmp_path, monkeypatch):
 
 
 # ── 3. Skill registered ───────────────────────────────────────────────────
+
 
 def test_context7_skill_discovered(tmp_path, monkeypatch):
     pm = _make_pm(tmp_path, monkeypatch)
@@ -143,11 +160,12 @@ def test_context7_skill_appears_in_system_prompt(tmp_path, monkeypatch):
 
 # ── 4. Optional live MCP integration ──────────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def mcp_manager():
     if not LIVE_MCP:
         pytest.skip("Set HERMIT_RUN_LIVE_MCP_TESTS=1 to run live MCP tests")
-    from hermit.plugin.base import McpServerSpec
+    from hermit.plugin.base import McpServerSpec, McpToolGovernance
     from hermit.plugin.mcp_client import McpClientManager
 
     mgr = McpClientManager()
@@ -156,6 +174,20 @@ def mcp_manager():
         description="Context7 docs",
         transport="http",
         url="https://mcp.context7.com/mcp",
+        tool_governance={
+            "resolve-library-id": McpToolGovernance(
+                action_class="network_read",
+                risk_hint="low",
+                requires_receipt=False,
+                readonly=True,
+            ),
+            "query-docs": McpToolGovernance(
+                action_class="network_read",
+                risk_hint="low",
+                requires_receipt=False,
+                readonly=True,
+            ),
+        },
     )
     mgr.connect_all_sync([spec])
     yield mgr
@@ -178,15 +210,18 @@ def test_mcp_tools_have_expected_names(mcp_manager):
 
 # ── 5. Real tool calls ────────────────────────────────────────────────────
 
+
 def test_resolve_library_id(mcp_manager):
     """resolve-library-id should return a Context7-compatible library ID."""
     tools = {t.name: t for t in mcp_manager.get_tool_specs()}
     resolve = tools["mcp__context7__resolve-library-id"]
 
-    result = resolve.handler({
-        "libraryName": "pydantic-settings",
-        "query": "how to load config from .env file with pydantic-settings",
-    })
+    result = resolve.handler(
+        {
+            "libraryName": "pydantic-settings",
+            "query": "how to load config from .env file with pydantic-settings",
+        }
+    )
 
     # Result should contain a library ID like /pydantic/pydantic-settings
     assert isinstance(result, str), f"Expected str, got {type(result)}"
@@ -199,10 +234,12 @@ def test_query_docs(mcp_manager):
     tools = {t.name: t for t in mcp_manager.get_tool_specs()}
     query = tools["mcp__context7__query-docs"]
 
-    result = query.handler({
-        "libraryId": "/pydantic/pydantic-settings",
-        "query": "load configuration from .env file",
-    })
+    result = query.handler(
+        {
+            "libraryId": "/pydantic/pydantic-settings",
+            "query": "load configuration from .env file",
+        }
+    )
 
     assert isinstance(result, str), f"Expected str, got {type(result)}"
     assert len(result) > 50, "Too-short response — likely an error"

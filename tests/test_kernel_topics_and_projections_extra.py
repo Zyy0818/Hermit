@@ -30,9 +30,18 @@ def test_clean_topic_text_strips_metadata_and_blank_lines() -> None:
 def test_append_item_deduplicates_adjacent_signatures() -> None:
     items: list[dict[str, Any]] = []
 
-    _append_item(items, {"kind": "tool.progressed", "text": "正在执行", "phase": "running", "progress_percent": 20})
-    _append_item(items, {"kind": "tool.progressed", "text": "正在执行", "phase": "running", "progress_percent": 20})
-    _append_item(items, {"kind": "tool.progressed", "text": "已完成", "phase": "done", "progress_percent": 100})
+    _append_item(
+        items,
+        {"kind": "tool.progressed", "text": "正在执行", "phase": "running", "progress_percent": 20},
+    )
+    _append_item(
+        items,
+        {"kind": "tool.progressed", "text": "正在执行", "phase": "running", "progress_percent": 20},
+    )
+    _append_item(
+        items,
+        {"kind": "tool.progressed", "text": "已完成", "phase": "done", "progress_percent": 100},
+    )
 
     assert items == [
         {"kind": "tool.progressed", "text": "正在执行", "phase": "running", "progress_percent": 20},
@@ -46,8 +55,16 @@ def test_build_task_topic_covers_approval_denial_and_cancelled_state() -> None:
             {"event_seq": 1, "event_type": "task.created", "payload": {"goal": "先看看日志"}},
             {"event_seq": 2, "event_type": "approval.requested", "payload": {}},
             {"event_seq": 3, "event_type": "approval.denied", "payload": {}},
-            {"event_seq": 4, "event_type": "tool.status.changed", "payload": {"status": "paused", "topic_summary": "等待进一步指令"}},
-            {"event_seq": 5, "event_type": "task.note.appended", "payload": {"raw_text": "改成只检查最近一天日志"}},
+            {
+                "event_seq": 4,
+                "event_type": "tool.status.changed",
+                "payload": {"status": "paused", "topic_summary": "等待进一步指令"},
+            },
+            {
+                "event_seq": 5,
+                "event_type": "task.note.appended",
+                "payload": {"raw_text": "改成只检查最近一天日志"},
+            },
             {"event_seq": 6, "event_type": "task.cancelled", "payload": {}},
         ],
         initial={"current_hint": "Task is running.", "items": [{"kind": "seed", "text": "seed"}]},
@@ -67,7 +84,11 @@ def test_build_task_topic_covers_approval_denial_and_cancelled_state() -> None:
 
 def test_build_task_topic_keeps_only_last_20_items() -> None:
     events = [
-        {"event_seq": index, "event_type": "task.note.appended", "payload": {"raw_text": f"note-{index}"}}
+        {
+            "event_seq": index,
+            "event_type": "task.note.appended",
+            "payload": {"raw_text": f"note-{index}"},
+        }
         for index in range(1, 26)
     ]
 
@@ -81,8 +102,12 @@ def test_build_task_topic_keeps_only_last_20_items() -> None:
 def test_projection_service_verify_ensure_and_rebuild_all(tmp_path: Path) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
-    first = controller.start_task(conversation_id="chat-1", goal="A", source_channel="chat", kind="respond")
-    second = controller.start_task(conversation_id="chat-2", goal="B", source_channel="chat", kind="respond")
+    first = controller.start_task(
+        conversation_id="chat-1", goal="A", source_channel="chat", kind="respond"
+    )
+    second = controller.start_task(
+        conversation_id="chat-2", goal="B", source_channel="chat", kind="respond"
+    )
     service = ProjectionService(store)
 
     missing = service.verify_projection(first.task_id)
@@ -113,10 +138,14 @@ def test_projection_service_rebuild_task_raises_for_missing_task(tmp_path: Path)
         service.rebuild_task("task-missing")
 
 
-def test_projection_service_tool_input_and_history_handle_missing_invalid_and_valid_artifacts(tmp_path: Path) -> None:
+def test_projection_service_tool_input_and_history_handle_missing_invalid_and_valid_artifacts(
+    tmp_path: Path,
+) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
-    ctx = controller.start_task(conversation_id="chat-1", goal="A", source_channel="chat", kind="respond")
+    ctx = controller.start_task(
+        conversation_id="chat-1", goal="A", source_channel="chat", kind="respond"
+    )
     artifacts = ArtifactStore(tmp_path / "artifacts")
     service = ProjectionService(store)
 
@@ -181,14 +210,20 @@ def test_projection_service_tool_input_and_history_handle_missing_invalid_and_va
     ]
 
 
-def test_projection_service_ensure_uses_cached_payload_when_valid(monkeypatch, tmp_path: Path) -> None:
+def test_projection_service_ensure_uses_cached_payload_when_valid(
+    monkeypatch, tmp_path: Path
+) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     service = ProjectionService(store)
     cached_payload = {"task": {"task_id": "task-1"}}
 
     monkeypatch.setattr(service, "verify_projection", lambda task_id: {"valid": True})
     monkeypatch.setattr(store, "get_projection_cache", lambda task_id: {"payload": cached_payload})
-    monkeypatch.setattr(service, "rebuild_task", lambda task_id: (_ for _ in ()).throw(AssertionError("should not rebuild")))
+    monkeypatch.setattr(
+        service,
+        "rebuild_task",
+        lambda task_id: (_ for _ in ()).throw(AssertionError("should not rebuild")),
+    )
 
     assert service.ensure_task_projection("task-1") == cached_payload
 
@@ -197,7 +232,9 @@ def test_projection_service_context_pack_and_rollbacks_are_included(tmp_path: Pa
     store = KernelStore(tmp_path / "kernel" / "state.db")
     artifacts = ArtifactStore(tmp_path / "artifacts")
     controller = TaskController(store)
-    ctx = controller.start_task(conversation_id="chat-1", goal="A", source_channel="chat", kind="respond")
+    ctx = controller.start_task(
+        conversation_id="chat-1", goal="A", source_channel="chat", kind="respond"
+    )
     artifact_uri, artifact_hash = artifacts.store_json({"kind": "context.pack/v3"})
     store.create_artifact(
         task_id=ctx.task_id,
@@ -238,7 +275,9 @@ def test_projection_service_context_pack_and_rollbacks_are_included(tmp_path: Pa
 def test_projection_service_includes_terminal_outcome_summary(tmp_path: Path) -> None:
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
-    ctx = controller.start_task(conversation_id="chat-1", goal="查询北京天气", source_channel="chat", kind="respond")
+    ctx = controller.start_task(
+        conversation_id="chat-1", goal="查询北京天气", source_channel="chat", kind="respond"
+    )
     controller.finalize_result(
         ctx,
         status="succeeded",
@@ -259,7 +298,9 @@ def test_conversation_projection_strips_internal_tags_from_recent_notes(tmp_path
 
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
-    ctx = controller.start_task(conversation_id="oc_1", goal="你好", source_channel="feishu", kind="respond")
+    ctx = controller.start_task(
+        conversation_id="oc_1", goal="你好", source_channel="feishu", kind="respond"
+    )
     store.append_event(
         event_type="task.note.appended",
         entity_type="task",
@@ -281,7 +322,9 @@ def test_conversation_projection_strips_internal_tags_from_recent_notes(tmp_path
     assert "<feishu_msg_id>" not in payload["summary"]
 
 
-def test_conversation_projection_exposes_recent_terminal_continuation_candidates(tmp_path: Path) -> None:
+def test_conversation_projection_exposes_recent_terminal_continuation_candidates(
+    tmp_path: Path,
+) -> None:
     from hermit.kernel.conversation_projection import ConversationProjectionService
 
     store = KernelStore(tmp_path / "kernel" / "state.db")
@@ -319,7 +362,9 @@ def test_conversation_projection_exposes_recent_terminal_continuation_candidates
     assert payload["continuation_candidates"][1]["task_id"] == older.task_id
 
 
-def test_conversation_projection_exposes_focus_open_tasks_and_pending_ingresses(tmp_path: Path) -> None:
+def test_conversation_projection_exposes_focus_open_tasks_and_pending_ingresses(
+    tmp_path: Path,
+) -> None:
     from hermit.kernel.conversation_projection import ConversationProjectionService
 
     store = KernelStore(tmp_path / "kernel" / "state.db")
@@ -337,7 +382,9 @@ def test_conversation_projection_exposes_focus_open_tasks_and_pending_ingresses(
         source_channel="feishu",
         kind="respond",
     )
-    store.set_conversation_focus("oc_focus_projection", task_id=first.task_id, reason="manual_test_focus")
+    store.set_conversation_focus(
+        "oc_focus_projection", task_id=first.task_id, reason="manual_test_focus"
+    )
     store.create_ingress(
         conversation_id="oc_focus_projection",
         source_channel="feishu",
@@ -359,21 +406,29 @@ def test_conversation_projection_exposes_focus_open_tasks_and_pending_ingresses(
     assert payload["pending_ingress_count"] == 1
     assert len(payload["open_tasks"]) == 2
     assert payload["open_tasks"][0]["task_id"] == second.task_id
-    assert any(item["task_id"] == first.task_id and item["is_focus"] for item in payload["open_tasks"])
+    assert any(
+        item["task_id"] == first.task_id and item["is_focus"] for item in payload["open_tasks"]
+    )
     assert payload["ingress_metrics"]["total"] >= 2
     assert payload["ingress_metrics"]["resolution_counts"]["append_note"] >= 1
-    assert payload["ingress_metrics"]["shadow_disagreement_count"] >= 1
+    assert payload["ingress_metrics"]["shadow_disagreement_count"] == 0
     assert payload["recent_ingresses"][0]["ingress_id"] == decision.ingress_id
-    assert payload["recent_ingresses"][0]["shadow_match_actual"] is False
+    assert payload["recent_ingresses"][0]["shadow_match_actual"] is None
 
 
-def test_conversation_projection_cache_refreshes_on_focus_and_ingress_updates(tmp_path: Path) -> None:
+def test_conversation_projection_cache_refreshes_on_focus_and_ingress_updates(
+    tmp_path: Path,
+) -> None:
     from hermit.kernel.conversation_projection import ConversationProjectionService
 
     store = KernelStore(tmp_path / "kernel" / "state.db")
     controller = TaskController(store)
-    first = controller.start_task(conversation_id="chat-cache", goal="Inspect first", source_channel="chat", kind="respond")
-    second = controller.start_task(conversation_id="chat-cache", goal="Inspect second", source_channel="chat", kind="respond")
+    first = controller.start_task(
+        conversation_id="chat-cache", goal="Inspect first", source_channel="chat", kind="respond"
+    )
+    second = controller.start_task(
+        conversation_id="chat-cache", goal="Inspect second", source_channel="chat", kind="respond"
+    )
     service = ConversationProjectionService(store, ArtifactStore(tmp_path / "artifacts"))
 
     initial = service.ensure("chat-cache")

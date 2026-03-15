@@ -378,6 +378,10 @@ class TaskController:
             successor_context["supersedes_step_attempt_id"] = step_attempt_id
             successor_context["reentered_via"] = "input_dirty_approval"
             successor_context["recompile_required"] = True
+            successor_context["reentry_required"] = True
+            successor_context["reentry_boundary"] = "policy_recompile"
+            successor_context["reentry_reason"] = "input_dirty"
+            successor_context["reentry_requested_at"] = time.time()
             successor = self.store.create_step_attempt(
                 task_id=attempt.task_id,
                 step_id=attempt.step_id,
@@ -424,6 +428,8 @@ class TaskController:
             )
         context["execution_mode"] = "resume"
         context["phase"] = "authorized_pre_exec"
+        context["reentry_required"] = False
+        context["reentry_resolved_at"] = time.time()
         self.store.update_step(attempt.step_id, status="ready", finished_at=None)
         self.store.update_step_attempt(
             step_attempt_id,
@@ -478,15 +484,6 @@ class TaskController:
             conversation_id=conversation_id, limit=10
         )
         pending_approval = self.store.get_latest_pending_approval(conversation_id)
-        shadow_binding = self._legacy_shadow_binding(
-            normalized_text=normalized,
-            open_tasks=open_tasks,
-            explicit_task_ref=explicit_task_ref,
-            reply_to_task_id=reply_to_task_id,
-            pending_approval_task_id=pending_approval.task_id
-            if pending_approval is not None
-            else None,
-        )
         if self._is_chat_only_message(normalized):
             self.store.update_ingress(
                 ingress.ingress_id,
@@ -500,7 +497,6 @@ class TaskController:
                     confidence=None,
                     margin=None,
                     reason_codes=["chat_only_message"],
-                    shadow_binding=shadow_binding,
                 ),
             )
             return IngressDecision(
@@ -525,7 +521,6 @@ class TaskController:
                     confidence=None,
                     margin=None,
                     reason_codes=["explicit_new_task_marker"],
-                    shadow_binding=shadow_binding,
                 ),
             )
             return IngressDecision(
@@ -567,7 +562,6 @@ class TaskController:
                     confidence=binding.confidence,
                     margin=binding.margin,
                     reason_codes=list(binding.reason_codes),
-                    shadow_binding=shadow_binding,
                     candidates=self._serialize_binding_candidates(binding),
                 ),
             )
@@ -611,7 +605,6 @@ class TaskController:
                     confidence=binding.confidence,
                     margin=binding.margin,
                     reason_codes=list(binding.reason_codes),
-                    shadow_binding=shadow_binding,
                     candidates=self._serialize_binding_candidates(binding),
                 ),
             )
@@ -642,7 +635,6 @@ class TaskController:
                     confidence=binding.confidence,
                     margin=binding.margin,
                     reason_codes=list(binding.reason_codes),
-                    shadow_binding=shadow_binding,
                     candidates=self._serialize_binding_candidates(binding),
                 ),
             )
@@ -675,7 +667,6 @@ class TaskController:
                     confidence=binding.confidence,
                     margin=binding.margin,
                     reason_codes=["matched_terminal_task"],
-                    shadow_binding=shadow_binding,
                 ),
             )
             return IngressDecision(
@@ -713,7 +704,6 @@ class TaskController:
                         confidence=None,
                         margin=None,
                         reason_codes=["planning_confirmation_gate"],
-                        shadow_binding=shadow_binding,
                     ),
                 )
                 return IngressDecision(
@@ -741,7 +731,6 @@ class TaskController:
                 confidence=binding.confidence,
                 margin=binding.margin,
                 reason_codes=list(binding.reason_codes),
-                shadow_binding=shadow_binding,
                 candidates=self._serialize_binding_candidates(binding),
             ),
         )
@@ -1005,6 +994,53 @@ class TaskController:
             )
 
     def resume_attempt(self, step_attempt_id: str) -> TaskExecutionContext:
+        attempt = self.store.get_step_attempt(step_attempt_id)
+        if attempt is None:
+            raise KeyError(
+                self._t(
+                    "kernel.controller.error.unknown_step_attempt",
+                    default="Unknown step attempt: {step_attempt_id}",
+                    step_attempt_id=step_attempt_id,
+                )
+            )
+        context = dict(attempt.context or {})
+        if bool(context.get("input_dirty")) and (
+            str(attempt.waiting_reason or "") == "awaiting_approval"
+            or str(attempt.status or "") == "awaiting_approval"
+            or str(context.get("phase", "") or "") == "awaiting_approval"
+        ):
+            return self.enqueue_resume(step_attempt_id)
+        if bool(context.get("recovery_required")):
+            snapshot = dict(context.get("runtime_snapshot", {}) or {})
+            payload = dict(snapshot.get("payload", {}) or {})
+            context["execution_mode"] = "resume"
+            context["phase"] = (
+                "observing"
+                if str(payload.get("suspend_kind", "") or "") == "observing"
+                else "authorized_pre_exec"
+            )
+            context["reentry_required"] = False
+            context["recovery_required"] = False
+            context["reentry_resolved_at"] = time.time()
+            self.store.update_step_attempt(
+                step_attempt_id,
+                context=context,
+                waiting_reason="reentry_resumed",
+            )
+            self.store.append_event(
+                event_type="step_attempt.reentry_resumed",
+                entity_type="step_attempt",
+                entity_id=step_attempt_id,
+                task_id=attempt.task_id,
+                step_id=attempt.step_id,
+                actor="kernel",
+                payload={
+                    "step_attempt_id": step_attempt_id,
+                    "reentry_reason": context.get("reentry_reason") or "worker_interrupted",
+                    "reentry_boundary": context.get("reentry_boundary") or "observation_resolution",
+                    "phase": context["phase"],
+                },
+            )
         return self.context_for_attempt(step_attempt_id)
 
     def resolve_text_command(self, conversation_id: str, text: str) -> tuple[str, str, str] | None:
@@ -1115,77 +1151,6 @@ class TaskController:
             parent_task_id=binding.parent_task_id if binding.parent_task_id is not None else None,
         )
 
-    def _legacy_shadow_binding(
-        self,
-        *,
-        normalized_text: str,
-        open_tasks: list[Any],
-        explicit_task_ref: str | None,
-        reply_to_task_id: str | None,
-        pending_approval_task_id: str | None,
-    ) -> BindingDecision:
-        cleaned = self._normalize_ingress_text(normalized_text)
-        if self._is_chat_only_message(cleaned):
-            return BindingDecision(
-                resolution="chat_only",
-                confidence=0.95,
-                margin=0.95,
-                reason_codes=["legacy_chat_only_message"],
-            )
-        if self._is_explicit_new_task_message(cleaned):
-            return BindingDecision(
-                resolution="start_new_root",
-                confidence=0.95,
-                margin=0.95,
-                reason_codes=["legacy_explicit_new_task_marker"],
-            )
-        if explicit_task_ref:
-            return BindingDecision(
-                resolution="append_note",
-                chosen_task_id=explicit_task_ref,
-                confidence=1.0,
-                margin=1.0,
-                reason_codes=["legacy_explicit_task_ref"],
-            )
-        if reply_to_task_id:
-            return BindingDecision(
-                resolution="append_note",
-                chosen_task_id=reply_to_task_id,
-                confidence=1.0,
-                margin=1.0,
-                reason_codes=["legacy_reply_target"],
-            )
-        if pending_approval_task_id and self.ingress_router._looks_like_approval_followup(cleaned):
-            return BindingDecision(
-                resolution="append_note",
-                chosen_task_id=pending_approval_task_id,
-                confidence=0.98,
-                margin=0.98,
-                reason_codes=["legacy_pending_approval_correlation"],
-            )
-        latest_open = open_tasks[0] if open_tasks else None
-        if latest_open is None:
-            return BindingDecision(
-                resolution="start_new_root",
-                confidence=0.2,
-                margin=0.2,
-                reason_codes=["legacy_no_open_tasks"],
-            )
-        if self._looks_like_task_followup(cleaned, task_id=latest_open.task_id):
-            return BindingDecision(
-                resolution="append_note",
-                chosen_task_id=latest_open.task_id,
-                confidence=0.85,
-                margin=0.85,
-                reason_codes=["legacy_latest_open_followup"],
-            )
-        return BindingDecision(
-            resolution="start_new_root",
-            confidence=0.4,
-            margin=0.4,
-            reason_codes=["legacy_latest_open_no_match"],
-        )
-
     @staticmethod
     def _binding_snapshot(
         *,
@@ -1219,7 +1184,6 @@ class TaskController:
         confidence: float | None,
         margin: float | None,
         reason_codes: list[str] | None,
-        shadow_binding: BindingDecision | None,
         candidates: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         rationale = dict(base or {})
@@ -1233,22 +1197,6 @@ class TaskController:
             candidates=candidates,
         )
         rationale["actual_binding"] = actual_binding
-        if shadow_binding is not None:
-            shadow_payload = self._binding_snapshot(
-                resolution=shadow_binding.resolution,
-                chosen_task_id=shadow_binding.chosen_task_id,
-                parent_task_id=shadow_binding.parent_task_id,
-                confidence=shadow_binding.confidence,
-                margin=shadow_binding.margin,
-                reason_codes=list(shadow_binding.reason_codes),
-                candidates=self._serialize_binding_candidates(shadow_binding),
-            )
-            shadow_payload["match_actual"] = (
-                shadow_payload["resolution"] == actual_binding["resolution"]
-                and shadow_payload["chosen_task_id"] == actual_binding["chosen_task_id"]
-                and shadow_payload["parent_task_id"] == actual_binding["parent_task_id"]
-            )
-            rationale["shadow_binding"] = shadow_payload
         return rationale
 
     @staticmethod

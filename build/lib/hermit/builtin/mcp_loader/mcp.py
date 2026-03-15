@@ -28,7 +28,7 @@ from typing import Any
 
 import structlog
 
-from hermit.plugin.base import McpServerSpec, PluginContext
+from hermit.plugin.base import McpServerSpec, McpToolGovernance, PluginContext
 
 log = structlog.get_logger()
 
@@ -45,6 +45,7 @@ def _load_mcp_json(path: Path) -> dict[str, Any]:
 
 
 def _parse_server_entry(name: str, entry: dict[str, Any]) -> McpServerSpec | None:
+    tool_governance = _parse_tool_governance(entry.get("toolGovernance"))
     if "command" in entry:
         cmd = entry["command"]
         args = entry.get("args", [])
@@ -56,6 +57,7 @@ def _parse_server_entry(name: str, entry: dict[str, Any]) -> McpServerSpec | Non
             command=command,
             env=entry.get("env"),
             allowed_tools=entry.get("allowedTools"),
+            tool_governance=tool_governance,
         )
     elif "url" in entry:
         return McpServerSpec(
@@ -65,10 +67,33 @@ def _parse_server_entry(name: str, entry: dict[str, Any]) -> McpServerSpec | Non
             url=entry["url"],
             headers=entry.get("headers"),
             allowed_tools=entry.get("allowedTools"),
+            tool_governance=tool_governance,
         )
     else:
         log.warning("mcp_config_skip", server=name, reason="no 'command' or 'url'")
         return None
+
+
+def _parse_tool_governance(raw: Any) -> dict[str, McpToolGovernance]:
+    if not isinstance(raw, dict):
+        return {}
+    parsed: dict[str, McpToolGovernance] = {}
+    for tool_name, payload in raw.items():
+        if not isinstance(payload, dict):
+            continue
+        action_class = payload.get("actionClass", payload.get("action_class", ""))
+        risk_hint = payload.get("riskHint", payload.get("risk_hint", ""))
+        requires_receipt = payload.get("requiresReceipt", payload.get("requires_receipt", False))
+        readonly = payload.get("readonly", False)
+        supports_preview = payload.get("supportsPreview", payload.get("supports_preview", False))
+        parsed[str(tool_name)] = McpToolGovernance(
+            action_class=str(action_class or ""),
+            risk_hint=str(risk_hint or ""),
+            requires_receipt=bool(requires_receipt),
+            readonly=bool(readonly),
+            supports_preview=bool(supports_preview),
+        )
+    return parsed
 
 
 def register(ctx: PluginContext) -> None:

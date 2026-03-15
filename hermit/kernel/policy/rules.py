@@ -25,7 +25,11 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="deny",
-                reasons=[PolicyReason("readonly_profile", "Readonly policy profile forbids side effects.", "error")],
+                reasons=[
+                    PolicyReason(
+                        "readonly_profile", "Readonly policy profile forbids side effects.", "error"
+                    )
+                ],
                 obligations=PolicyObligations(require_receipt=False),
                 risk_level=request.risk_hint,
             )
@@ -47,9 +51,43 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="allow",
-                reasons=[PolicyReason("readonly_network", "Readonly network access is auto-allowed.")],
+                reasons=[
+                    PolicyReason("readonly_network", "Readonly network access is auto-allowed.")
+                ],
                 obligations=PolicyObligations(require_receipt=request.requires_receipt),
                 risk_level=request.risk_hint or "low",
+            )
+        )
+        return outcomes
+
+    if request.action_class == "delegate_reasoning":
+        outcomes.append(
+            RuleOutcome(
+                verdict="allow",
+                reasons=[
+                    PolicyReason(
+                        "delegate_reasoning",
+                        "Internal delegated reasoning is readonly context gathering.",
+                    )
+                ],
+                obligations=PolicyObligations(require_receipt=False),
+                risk_level=request.risk_hint or "low",
+            )
+        )
+        return outcomes
+
+    if request.action_class == "approval_resolution":
+        outcomes.append(
+            RuleOutcome(
+                verdict="allow_with_receipt",
+                reasons=[
+                    PolicyReason(
+                        "approval_resolution",
+                        "Approval resolution is a governed kernel action and must emit a receipt.",
+                    )
+                ],
+                obligations=PolicyObligations(require_receipt=True),
+                risk_level=request.risk_hint or "medium",
             )
         )
         return outcomes
@@ -58,7 +96,12 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="allow_with_receipt",
-                reasons=[PolicyReason("scheduler_mutation", "Scheduler mutations are allowed with a durable receipt.")],
+                reasons=[
+                    PolicyReason(
+                        "scheduler_mutation",
+                        "Scheduler mutations are allowed with a durable receipt.",
+                    )
+                ],
                 obligations=PolicyObligations(require_receipt=True),
                 risk_level=request.risk_hint or "medium",
             )
@@ -72,7 +115,12 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
             outcomes.append(
                 RuleOutcome(
                     verdict="allow_with_receipt",
-                    reasons=[PolicyReason("attachment_ingest_adapter", "Adapter-owned attachment ingestion is allowed with receipt.")],
+                    reasons=[
+                        PolicyReason(
+                            "attachment_ingest_adapter",
+                            "Adapter-owned attachment ingestion is allowed with receipt.",
+                        )
+                    ],
                     obligations=PolicyObligations(require_receipt=True),
                     risk_level=request.risk_hint or "medium",
                 )
@@ -81,7 +129,13 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
             outcomes.append(
                 RuleOutcome(
                     verdict="deny",
-                    reasons=[PolicyReason("attachment_ingest_denied", "Attachment ingestion is reserved for adapter-owned ingress.", "error")],
+                    reasons=[
+                        PolicyReason(
+                            "attachment_ingest_denied",
+                            "Attachment ingestion is reserved for adapter-owned ingress.",
+                            "error",
+                        )
+                    ],
                     obligations=PolicyObligations(require_receipt=False),
                     risk_level=request.risk_hint or "high",
                 )
@@ -94,20 +148,31 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
     grant_ref = str(request.context.get("path_grant_ref", "") or "").strip()
     planning_required = bool(request.context.get("planning_required", False))
     selected_plan_ref = str(request.context.get("selected_plan_ref", "") or "").strip()
-    if planning_required and not selected_plan_ref and request.action_class in {
-        "write_local",
-        "patch_file",
-        "execute_command",
-        "network_write",
-        "credentialed_api_call",
-        "publication",
-        "vcs_mutation",
-        "external_mutation",
-    }:
+    if (
+        planning_required
+        and not selected_plan_ref
+        and request.action_class
+        in {
+            "write_local",
+            "patch_file",
+            "execute_command",
+            "network_write",
+            "credentialed_api_call",
+            "publication",
+            "vcs_mutation",
+            "external_mutation",
+        }
+    ):
         outcomes.append(
             RuleOutcome(
                 verdict="approval_required",
-                reasons=[PolicyReason("plan_required", "Selected execution plan is required before high-risk execution.", "warning")],
+                reasons=[
+                    PolicyReason(
+                        "plan_required",
+                        "Selected execution plan is required before high-risk execution.",
+                        "warning",
+                    )
+                ],
                 obligations=PolicyObligations(
                     require_receipt=True,
                     require_preview=False,
@@ -123,11 +188,21 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
             )
         )
         return outcomes
-    if request.action_class in {"write_local", "patch_file"} and sensitive_paths and outside_workspace:
+    if (
+        request.action_class in {"write_local", "patch_file"}
+        and sensitive_paths
+        and outside_workspace
+    ):
         outcomes.append(
             RuleOutcome(
                 verdict="deny",
-                reasons=[PolicyReason("protected_path", "Protected system or credential paths cannot be allowlisted.", "error")],
+                reasons=[
+                    PolicyReason(
+                        "protected_path",
+                        "Protected system or credential paths cannot be allowlisted.",
+                        "error",
+                    )
+                ],
                 obligations=PolicyObligations(require_receipt=False),
                 normalized_constraints={"denied_paths": sensitive_paths},
                 risk_level="critical",
@@ -139,7 +214,11 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="approval_required",
-                reasons=[PolicyReason("sensitive_path", "Sensitive path mutation requires approval.", "warning")],
+                reasons=[
+                    PolicyReason(
+                        "sensitive_path", "Sensitive path mutation requires approval.", "warning"
+                    )
+                ],
                 obligations=PolicyObligations(
                     require_receipt=True,
                     require_preview=True,
@@ -160,7 +239,11 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="allow_with_receipt",
-                reasons=[PolicyReason("path_grant", "Existing path grant allows this out-of-workspace write.")],
+                reasons=[
+                    PolicyReason(
+                        "path_grant", "Existing path grant allows this out-of-workspace write."
+                    )
+                ],
                 obligations=PolicyObligations(
                     require_receipt=True,
                     require_preview=request.supports_preview,
@@ -178,7 +261,13 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="approval_required",
-                reasons=[PolicyReason("outside_workspace_write", "Writing outside the task workspace requires explicit approval.", "warning")],
+                reasons=[
+                    PolicyReason(
+                        "outside_workspace_write",
+                        "Writing outside the task workspace requires explicit approval.",
+                        "warning",
+                    )
+                ],
                 obligations=PolicyObligations(
                     require_receipt=True,
                     require_preview=request.supports_preview,
@@ -201,12 +290,20 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict=verdict,
-                reasons=[PolicyReason("workspace_mutation", "Workspace mutation requires preview before execution.", "warning")],
+                reasons=[
+                    PolicyReason(
+                        "workspace_mutation",
+                        "Workspace mutation requires preview before execution.",
+                        "warning",
+                    )
+                ],
                 obligations=PolicyObligations(
                     require_receipt=True,
                     require_preview=request.supports_preview,
                     require_approval=not request.supports_preview,
-                    approval_risk_level=(request.risk_hint or "high") if not request.supports_preview else None,
+                    approval_risk_level=(request.risk_hint or "high")
+                    if not request.supports_preview
+                    else None,
                 ),
                 normalized_constraints={"allowed_paths": target_paths},
                 approval_packet=(
@@ -228,7 +325,11 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
             outcomes.append(
                 RuleOutcome(
                     verdict="deny",
-                    reasons=[PolicyReason("dangerous_shell", "Dangerous shell pattern is denied.", "error")],
+                    reasons=[
+                        PolicyReason(
+                            "dangerous_shell", "Dangerous shell pattern is denied.", "error"
+                        )
+                    ],
                     risk_level="critical",
                 )
             )
@@ -237,7 +338,9 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
             outcomes.append(
                 RuleOutcome(
                     verdict="approval_required",
-                    reasons=[PolicyReason("git_push", "Git push requires explicit approval.", "warning")],
+                    reasons=[
+                        PolicyReason("git_push", "Git push requires explicit approval.", "warning")
+                    ],
                     obligations=PolicyObligations(
                         require_receipt=True,
                         require_preview=True,
@@ -256,7 +359,13 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
             outcomes.append(
                 RuleOutcome(
                     verdict="approval_required",
-                    reasons=[PolicyReason("mutable_shell", "Shell command has side effects and requires approval.", "warning")],
+                    reasons=[
+                        PolicyReason(
+                            "mutable_shell",
+                            "Shell command has side effects and requires approval.",
+                            "warning",
+                        )
+                    ],
                     obligations=PolicyObligations(
                         require_receipt=True,
                         require_preview=True,
@@ -282,11 +391,21 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
                 )
             )
 
-    if request.action_class in {"network_write", "credentialed_api_call", "publication", "vcs_mutation", "external_mutation"}:
+    if request.action_class in {
+        "network_write",
+        "credentialed_api_call",
+        "publication",
+        "vcs_mutation",
+        "external_mutation",
+    }:
         outcomes.append(
             RuleOutcome(
                 verdict="approval_required",
-                reasons=[PolicyReason("external_mutation", "External mutation requires approval.", "warning")],
+                reasons=[
+                    PolicyReason(
+                        "external_mutation", "External mutation requires approval.", "warning"
+                    )
+                ],
                 obligations=PolicyObligations(
                     require_receipt=True,
                     require_preview=request.supports_preview,
@@ -306,18 +425,45 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="allow",
-                reasons=[PolicyReason("ephemeral_ui_mutation", "Ephemeral UI feedback is allowed without approval.")],
+                reasons=[
+                    PolicyReason(
+                        "ephemeral_ui_mutation",
+                        "Ephemeral UI feedback is allowed without approval.",
+                    )
+                ],
                 obligations=PolicyObligations(require_receipt=False),
                 risk_level=request.risk_hint or "low",
             )
         )
+        return outcomes
+
+    if request.action_class == "rollback":
+        outcomes.append(
+            RuleOutcome(
+                verdict="allow_with_receipt",
+                reasons=[
+                    PolicyReason(
+                        "rollback",
+                        "Rollback execution is a governed kernel action and must emit a receipt.",
+                    )
+                ],
+                obligations=PolicyObligations(require_receipt=True),
+                risk_level=request.risk_hint or "high",
+            )
+        )
+        return outcomes
 
     if request.action_class in {"memory_write"}:
         if request.actor.get("kind") == "kernel" and request.context.get("evidence_refs"):
             outcomes.append(
                 RuleOutcome(
                     verdict="allow_with_receipt",
-                    reasons=[PolicyReason("memory_write_evidence_bound", "Evidence-bound kernel memory write allowed with receipt.")],
+                    reasons=[
+                        PolicyReason(
+                            "memory_write_evidence_bound",
+                            "Evidence-bound kernel memory write allowed with receipt.",
+                        )
+                    ],
                     obligations=PolicyObligations(
                         require_receipt=True,
                         require_evidence=True,
@@ -329,7 +475,13 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="approval_required",
-                reasons=[PolicyReason("memory_write", "Durable memory writes require evidence and approval.", "warning")],
+                reasons=[
+                    PolicyReason(
+                        "memory_write",
+                        "Durable memory writes require evidence and approval.",
+                        "warning",
+                    )
+                ],
                 obligations=PolicyObligations(
                     require_receipt=True,
                     require_approval=True,
@@ -349,7 +501,13 @@ def evaluate_rules(request: ActionRequest) -> list[RuleOutcome]:
         outcomes.append(
             RuleOutcome(
                 verdict="approval_required",
-                reasons=[PolicyReason("unknown_mutation", "Unclassified mutable action defaulted to approval.", "warning")],
+                reasons=[
+                    PolicyReason(
+                        "unknown_mutation",
+                        "Unclassified mutable action defaulted to approval.",
+                        "warning",
+                    )
+                ],
                 obligations=PolicyObligations(
                     require_receipt=True,
                     require_approval=True,

@@ -5,45 +5,33 @@ from pathlib import Path
 from hermit.config import Settings
 from hermit.i18n import resolve_locale, tr
 
-DEFAULT_CONTEXT_TEMPLATE = """# Hermit Context
 
-## Identity
-- You are an AI agent optimized for personal-use workflows.
+def _context_template(locale: str) -> str:
+    lines = [
+        tr("prompt.context.template.title", locale=locale),
+        "",
+        tr("prompt.context.template.identity_heading", locale=locale),
+        tr("prompt.context.template.identity_line_1", locale=locale),
+        "",
+        tr("prompt.context.template.goals_heading", locale=locale),
+        tr("prompt.context.template.goals_line_1", locale=locale),
+        "",
+        tr("prompt.context.template.working_style_heading", locale=locale),
+        tr("prompt.context.template.working_style.line_1", locale=locale),
+        tr("prompt.context.template.working_style.line_2", locale=locale),
+        tr("prompt.context.template.working_style.line_3", locale=locale),
+        "",
+        tr("prompt.context.template.self_config_heading", locale=locale),
+        tr("prompt.context.template.self_config.line_1", locale=locale),
+        tr("prompt.context.template.self_config.line_2", locale=locale),
+        tr("prompt.context.template.self_config.line_3", locale=locale),
+        tr("prompt.context.template.self_config.line_4", locale=locale),
+    ]
+    return "\n".join(lines).strip() + "\n"
 
-## Long-Term Goals
-- Help the user complete research, coding, configuration, and automation tasks.
 
-## Working Style
-- Prefer reusing existing configuration, rules, and skills.
-- Read the current state first before changing Hermit's own configuration, and keep edits minimal.
-- Do not write API keys, passwords, or tokens into `memory/memories.md`, `context.md`, or public docs.
-
-## Self-Configuration Conventions
-- Store long-term preferences and background in `context.md`
-- Store hard constraints in `rules/*.md`
-- Store reusable workflows in `skills/*/SKILL.md`
-- Keep sensitive configuration only in `.env`
-"""
-
-_ZH_CONTEXT_TEMPLATE = """# Hermit Context
-
-## 身份
-- 你是一个偏个人使用场景的 AI Agent。
-
-## 长期目标
-- 帮用户完成研究、编码、配置和自动化任务。
-
-## 工作方式
-- 优先复用已有配置、rules、skills。
-- 修改自身配置前先读取现状，再做最小改动。
-- 不要把 API Key、密码、令牌写入 `memory/memories.md`、`context.md` 或公开文档。
-
-## 自我配置约定
-- 长期偏好与背景信息写入 `context.md`
-- 强约束写入 `rules/*.md`
-- 可复用工作流写入 `skills/*/SKILL.md`
-- 敏感配置仅保存在 `.env`
-"""
+DEFAULT_CONTEXT_TEMPLATE = _context_template("en-US")
+_ZH_CONTEXT_TEMPLATE = _context_template("zh-CN")
 
 
 def default_context_template(locale: str | None = None) -> str:

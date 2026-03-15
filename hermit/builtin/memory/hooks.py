@@ -14,6 +14,7 @@ from hermit.kernel.artifacts import ArtifactStore
 from hermit.kernel.context import TaskExecutionContext, WorkingStateSnapshot
 from hermit.kernel.context_compiler import ContextCompiler
 from hermit.kernel.memory_governance import MemoryGovernanceService
+from hermit.kernel.memory_text import is_duplicate, shares_topic
 from hermit.kernel.planning import PlanningService
 from hermit.plugin.base import HookEvent, PluginContext
 from hermit.provider.services import StructuredExtractionService, build_provider
@@ -163,8 +164,7 @@ def _inject_relevant_memory(
         runner=runner,
     )
     if compiler_result is None:
-        categories = _knowledge_categories(engine, settings)
-        relevant = engine.retrieval_prompt(prompt, categories=categories, limit=5, char_budget=900)
+        relevant = ""
     else:
         relevant = compiler_result["retrieval_prompt"]
     if not relevant:
@@ -172,12 +172,14 @@ def _inject_relevant_memory(
     return f"<relevant_memory>\n{relevant}\n</relevant_memory>\n\n{prompt}"
 
 
-def _knowledge_categories(engine: MemoryEngine, settings: Any | None) -> Dict[str, List[MemoryEntry]]:
+def _knowledge_categories(
+    engine: MemoryEngine, settings: Any | None
+) -> Dict[str, List[MemoryEntry]]:
     if settings is None:
-        return engine.load()
+        return {}
     kernel_db_path = getattr(settings, "kernel_db_path", None)
     if not kernel_db_path:
-        return engine.load()
+        return {}
     from hermit.kernel.knowledge import MemoryRecordService
     from hermit.kernel.store import KernelStore
 
@@ -211,7 +213,11 @@ def _compile_context_pack(
     store = KernelStore(Path(kernel_db_path))
     try:
         task_id = ""
-        if runner is not None and conversation_id and getattr(runner, "task_controller", None) is not None:
+        if (
+            runner is not None
+            and conversation_id
+            and getattr(runner, "task_controller", None) is not None
+        ):
             active_task = runner.task_controller.active_task_for_conversation(conversation_id)
             if active_task is not None:
                 task_id = active_task.task_id
@@ -232,12 +238,18 @@ def _compile_context_pack(
             working_state=WorkingStateSnapshot(
                 goal_summary=query[:400],
                 planning_mode=bool(planning_state.planning_mode) if planning_state else False,
-                candidate_plan_refs=list(planning_state.candidate_plan_refs) if planning_state else [],
-                selected_plan_ref=str(planning_state.selected_plan_ref or "") if planning_state else "",
+                candidate_plan_refs=list(planning_state.candidate_plan_refs)
+                if planning_state
+                else [],
+                selected_plan_ref=str(planning_state.selected_plan_ref or "")
+                if planning_state
+                else "",
                 plan_status=str(planning_state.plan_status or "none") if planning_state else "none",
             ),
             beliefs=store.list_beliefs(status="active", limit=200),
-            memories=store.list_memory_records(status="active", conversation_id=conversation_id, limit=500),
+            memories=store.list_memory_records(
+                status="active", conversation_id=conversation_id, limit=500
+            ),
             query=query,
         )
         if artifact_store is not None and pack.artifact_uri is not None:
@@ -259,7 +271,11 @@ def _compile_context_pack(
                     entity_id=task_id,
                     task_id=task_id,
                     actor="kernel",
-                    payload={"artifact_ref": artifact.artifact_id, "pack_hash": pack.pack_hash, "kind": "context.pack/v3"},
+                    payload={
+                        "artifact_ref": artifact.artifact_id,
+                        "pack_hash": pack.pack_hash,
+                        "kind": "context.pack/v3",
+                    },
                 )
         return {
             "pack": pack,
@@ -268,6 +284,7 @@ def _compile_context_pack(
         }
     finally:
         store.close()
+
 
 def _save_memories(
     engine: MemoryEngine,
@@ -315,7 +332,12 @@ def _checkpoint_memories(
 
     should_checkpoint, reason = _should_checkpoint(delta)
     if not should_checkpoint:
-        log.info("memory_checkpoint_skipped", session_id=session_id, reason=reason, pending_messages=len(delta))
+        log.info(
+            "memory_checkpoint_skipped",
+            session_id=session_id,
+            reason=reason,
+            pending_messages=len(delta),
+        )
         return
 
     try:
@@ -343,7 +365,11 @@ def _checkpoint_memories(
         new_entries=new_entries,
         mode="checkpoint",
     ):
-        log.info("memory_checkpoint_skipped", session_id=session_id, reason="kernel_promotion_unavailable")
+        log.info(
+            "memory_checkpoint_skipped",
+            session_id=session_id,
+            reason="kernel_promotion_unavailable",
+        )
         return
     _mark_messages_processed(settings.session_state_file, session_id, len(messages))
     log.info(
@@ -381,7 +407,9 @@ def _extract_and_save(
         new_entries=new_entries,
         mode="session_end",
     ):
-        log.info("memory_promoted", mode="session_end", new=len(new_entries), keywords=len(used_keywords))
+        log.info(
+            "memory_promoted", mode="session_end", new=len(new_entries), keywords=len(used_keywords)
+        )
         return
     log.info("memory_save_skipped", session_id=session_id, reason="kernel_promotion_unavailable")
 
@@ -748,7 +776,9 @@ def _extract_memory_payload(
 ) -> Dict[str, Any]:
     transcript = _format_transcript(messages)
     if len(transcript.strip()) < 20:
-        log.info("memory_extraction_empty", reason="short_transcript", transcript_chars=len(transcript))
+        log.info(
+            "memory_extraction_empty", reason="short_transcript", transcript_chars=len(transcript)
+        )
         return {"used_keywords": set(), "new_entries": []}
 
     existing = _knowledge_categories(engine, settings)
@@ -774,7 +804,9 @@ def _extract_memory_payload(
         max_tokens=max_tokens,
     )
     if not data:
-        log.info("memory_extraction_empty", reason="no_provider_data", transcript_chars=len(transcript))
+        log.info(
+            "memory_extraction_empty", reason="no_provider_data", transcript_chars=len(transcript)
+        )
         return {"used_keywords": set(), "new_entries": []}
 
     used_keywords: Set[str] = set(data.get("used_keywords", []))
@@ -782,11 +814,13 @@ def _extract_memory_payload(
     for item in data.get("new_memories", []):
         content = item.get("content", "").strip()
         if content:
-            new_entries.append(MemoryEntry(
-                category=item.get("category", "其他"),
-                content=content,
-                confidence=_infer_confidence(content),
-            ))
+            new_entries.append(
+                MemoryEntry(
+                    category=item.get("category", "其他"),
+                    content=content,
+                    confidence=_infer_confidence(content),
+                )
+            )
     log.info(
         "memory_extraction_result",
         used_keywords=len(used_keywords),
@@ -825,9 +859,9 @@ def _consolidate_category_entries(category: str, entries: List[MemoryEntry]) -> 
 def _should_merge_entries(left: MemoryEntry, right: MemoryEntry) -> bool:
     if left.category != right.category:
         return False
-    if MemoryEngine._is_duplicate([left], right.content):
+    if is_duplicate([left], right.content):
         return True
-    return MemoryEngine._shares_topic(left.content, right.content)
+    return shares_topic(left.content, right.content)
 
 
 def _infer_confidence(content: str) -> float:
@@ -844,7 +878,9 @@ def _should_checkpoint(messages: List[Dict[str, Any]]) -> Tuple[bool, str]:
     assistant_text = _collect_role_text(messages, "assistant")
     transcript = _format_transcript(messages)
     meaningful_count = sum(1 for msg in messages if _message_text(msg).strip())
-    user_count = sum(1 for msg in messages if msg.get("role") == "user" and _message_text(msg).strip())
+    user_count = sum(
+        1 for msg in messages if msg.get("role") == "user" and _message_text(msg).strip()
+    )
 
     if _EXPLICIT_MEMORY_RE.search(user_text):
         return True, "explicit_memory_signal"
@@ -947,9 +983,7 @@ def _message_text(msg: Dict[str, Any]) -> str:
 
 
 def _collect_role_text(messages: List[Dict[str, Any]], role: str) -> str:
-    return "\n".join(
-        _message_text(msg) for msg in messages if msg.get("role") == role
-    ).strip()
+    return "\n".join(_message_text(msg) for msg in messages if msg.get("role") == role).strip()
 
 
 def _parse_json(text: str) -> Any:
