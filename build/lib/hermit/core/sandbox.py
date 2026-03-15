@@ -247,7 +247,20 @@ class CommandSandbox:
                 self._jobs.pop(job_id, None)
             return payload
 
-        if job.proc.poll() is None:
+        running = job.proc.poll() is None
+        if running and self._should_briefly_wait_for_completion(
+            job,
+            matched_progress=matched_progress,
+            ready_progress=ready_progress,
+            failure_progress=failure_progress,
+        ):
+            try:
+                job.proc.wait(timeout=min(self.budget.observation_poll_interval, 0.05))
+            except subprocess.TimeoutExpired:
+                pass
+            running = job.proc.poll() is None
+
+        if running:
             if now >= job.deadline.hard_at:
                 self._terminate_job(job, force=True)
                 stdout, stderr = self._output_text(job)
@@ -618,6 +631,24 @@ class CommandSandbox:
             completed_at - job.created_at < _COARSE_OBSERVATION_GRACE_SECONDS
             and now - completed_at < _COARSE_OBSERVATION_GRACE_SECONDS
         )
+
+    def _should_briefly_wait_for_completion(
+        self,
+        job: _ObservedProcess,
+        *,
+        matched_progress: dict[str, Any] | None,
+        ready_progress: dict[str, Any] | None,
+        failure_progress: dict[str, Any] | None,
+    ) -> bool:
+        if not job.coarse_observation_emitted:
+            return False
+        if (
+            matched_progress is not None
+            or ready_progress is not None
+            or failure_progress is not None
+        ):
+            return False
+        return not self._has_observation_output(job)
 
     def _store_terminal_result(
         self,

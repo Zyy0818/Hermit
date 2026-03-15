@@ -231,3 +231,21 @@ def test_command_sandbox_coarse_observation_only_extends_completion_once(
     repeated = sandbox.poll(ticket["job_id"])
     assert repeated["status"] == "completed"
     assert repeated["result"]["returncode"] == 0
+
+
+def test_command_sandbox_second_poll_briefly_waits_for_edge_completion(tmp_path) -> None:
+    sandbox = CommandSandbox(mode="l0", cwd=tmp_path, timeout_seconds=0.05)
+    command = f'{sys.executable} -u -c "import time; time.sleep(0.11)"'
+
+    result = sandbox.run({"command": command, "display_name": "Edge Task"})
+
+    assert "_hermit_observation" in result
+    ticket = result["_hermit_observation"]
+
+    observing = sandbox.poll(ticket["job_id"])
+    assert observing["status"] == "observing"
+    assert observing["progress"]["phase"] == "running"
+
+    completed = sandbox.poll(ticket["job_id"])
+    assert completed["status"] == "completed"
+    assert completed["result"]["returncode"] == 0
