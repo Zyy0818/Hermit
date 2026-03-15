@@ -22,7 +22,7 @@ Status legend:
 | Artifact-native context is the default runtime path | `implemented` | `hermit/kernel/context_compiler.py`, `hermit/kernel/provider_input.py`, `hermit/kernel/artifacts.py` | `tests/test_context_compiler.py`, `tests/test_kernel_coverage_boost.py` |
 | Memory writes are evidence-bound and kernel-backed | `implemented` | `hermit/kernel/knowledge.py`, `hermit/kernel/memory_governance.py`, `hermit/builtin/memory/hooks.py` | `tests/test_memory_governance.py`, `tests/test_memory_hooks.py`, CLI `memory export` |
 | Verifiable profile exposes proof coverage and exportable bundles | `implemented` | `hermit/kernel/proofs.py`, `hermit/kernel/store_ledger.py`, `hermit/main.py` | `tests/test_task_kernel.py`, CLI `task proof-export` |
-| Signed proofs / inclusion proofs | `implemented` | `hermit/kernel/proofs.py`, `hermit/kernel/store_ledger.py` | `tests/test_kernel_store_tasks_support.py`, CLI `task claim-status` |
+| Signed proofs and inclusion proofs are available | `implemented` | `hermit/kernel/proofs.py`, `hermit/kernel/store_ledger.py` | `tests/test_kernel_store_tasks_support.py`, CLI `task claim-status` |
 
 ## Current Hard-Cut Boundaries
 

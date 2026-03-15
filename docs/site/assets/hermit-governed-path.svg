@@ -1,0 +1,70 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="760" rx="28" fill="#F4EFE6"/>
+  <rect x="28" y="28" width="1144" height="704" rx="24" fill="#FBF8F2" stroke="#D9CFC0"/>
+
+  <rect x="64" y="62" width="176" height="34" rx="17" fill="#E7DDD0"/>
+  <text x="88" y="84" fill="#6E5B4B" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">
+    GOVERNED PATH
+  </text>
+
+  <text x="64" y="146" fill="#1F1B17" font-size="40" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    What happens between prompt and proof
+  </text>
+  <text x="64" y="188" fill="#6E5B4B" font-size="19" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    Hermit turns one task into a visible execution path with approvals, receipts, and rollback.
+  </text>
+
+  <rect x="82" y="270" width="176" height="114" rx="24" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <text x="109" y="319" fill="#A35F3F" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">INGRESS</text>
+  <text x="109" y="355" fill="#1F1B17" font-size="26" font-family="Georgia, Times New Roman, serif" font-weight="700">CLI / Chat</text>
+  <text x="109" y="382" fill="#4D4136" font-size="16" font-family="Avenir Next, Segoe UI, Arial, sans-serif">Feishu / Scheduler</text>
+
+  <rect x="298" y="270" width="188" height="114" rx="24" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <text x="325" y="319" fill="#A35F3F" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">KERNEL</text>
+  <text x="325" y="355" fill="#1F1B17" font-size="26" font-family="Georgia, Times New Roman, serif" font-weight="700">Task -&gt; Step</text>
+  <text x="325" y="382" fill="#4D4136" font-size="16" font-family="Avenir Next, Segoe UI, Arial, sans-serif">StepAttempt and history</text>
+
+  <rect x="526" y="248" width="212" height="158" rx="28" fill="#FBF1E6" stroke="#C98C69" stroke-width="1.5"/>
+  <text x="554" y="302" fill="#A35F3F" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">GOVERNANCE</text>
+  <text x="554" y="340" fill="#1F1B17" font-size="28" font-family="Georgia, Times New Roman, serif" font-weight="700">Policy gate</text>
+  <text x="554" y="372" fill="#4D4136" font-size="16" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    <tspan x="554" dy="0">approval</tspan>
+    <tspan x="640" dy="0">decision</tspan>
+    <tspan x="554" dy="24">scoped authority</tspan>
+  </text>
+
+  <rect x="778" y="270" width="166" height="114" rx="24" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <text x="805" y="319" fill="#A35F3F" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">EXECUTION</text>
+  <text x="805" y="355" fill="#1F1B17" font-size="26" font-family="Georgia, Times New Roman, serif" font-weight="700">Tools run</text>
+  <text x="805" y="382" fill="#4D4136" font-size="16" font-family="Avenir Next, Segoe UI, Arial, sans-serif">inside the granted scope</text>
+
+  <rect x="984" y="270" width="134" height="114" rx="24" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <text x="1011" y="319" fill="#A35F3F" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">EVIDENCE</text>
+  <text x="1011" y="355" fill="#1F1B17" font-size="25" font-family="Georgia, Times New Roman, serif" font-weight="700">Receipt</text>
+  <text x="1011" y="382" fill="#4D4136" font-size="16" font-family="Avenir Next, Segoe UI, Arial, sans-serif">proof</text>
+
+  <path d="M258 327H298" stroke="#B9A998" stroke-width="4" stroke-linecap="round"/>
+  <path d="M486 327H526" stroke="#B9A998" stroke-width="4" stroke-linecap="round"/>
+  <path d="M738 327H778" stroke="#B9A998" stroke-width="4" stroke-linecap="round"/>
+  <path d="M944 327H984" stroke="#B9A998" stroke-width="4" stroke-linecap="round"/>
+
+  <rect x="118" y="470" width="964" height="182" rx="28" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <text x="152" y="522" fill="#1F1B17" font-size="31" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    What the operator can inspect after the run
+  </text>
+
+  <rect x="152" y="552" width="182" height="66" rx="20" fill="#F7F1E8"/>
+  <text x="177" y="590" fill="#1F1B17" font-size="19" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Task state</text>
+
+  <rect x="354" y="552" width="182" height="66" rx="20" fill="#F7F1E8"/>
+  <text x="379" y="590" fill="#1F1B17" font-size="19" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Approvals</text>
+
+  <rect x="556" y="552" width="182" height="66" rx="20" fill="#F7F1E8"/>
+  <text x="581" y="590" fill="#1F1B17" font-size="19" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Receipts</text>
+
+  <rect x="758" y="552" width="182" height="66" rx="20" fill="#F7F1E8"/>
+  <text x="783" y="590" fill="#1F1B17" font-size="19" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Proof bundles</text>
+
+  <rect x="960" y="552" width="88" height="66" rx="20" fill="#ECF0E4"/>
+  <text x="978" y="590" fill="#4F6A3D" font-size="19" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Rollback</text>
+</svg>

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+from hermit.kernel.claim_manifest import CLAIM_ROWS
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -45,3 +48,12 @@ def test_conformance_matrix_tracks_exit_criteria_and_claim_boundary() -> None:
     assert "No direct model-to-tool execution bypass" in matrix
     assert "Input drift / witness drift / approval drift use durable re-entry" in matrix
     assert "The repo can now gate and surface claims through code" in matrix
+
+
+def test_conformance_matrix_rows_match_claim_manifest() -> None:
+    matrix = _read("docs/kernel-conformance-matrix-v0.1.md")
+    rows = re.findall(r"^\| ([^|]+) \| `([^`]+)` \|", matrix, re.MULTILINE)
+    observed = {label: status for label, status in rows}
+
+    for row in CLAIM_ROWS:
+        assert observed[row["label"]] == row["status"]

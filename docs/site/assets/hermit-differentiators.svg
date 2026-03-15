@@ -1,0 +1,71 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="760" rx="28" fill="#F4EFE6"/>
+  <rect x="28" y="28" width="1144" height="704" rx="24" fill="#FBF8F2" stroke="#D9CFC0"/>
+
+  <rect x="64" y="62" width="126" height="34" rx="17" fill="#E7DDD0"/>
+  <text x="91" y="84" fill="#6E5B4B" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">
+    WHY HERMIT
+  </text>
+
+  <text x="64" y="146" fill="#1F1B17" font-size="42" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    Not just an agent wrapper.
+  </text>
+  <text x="64" y="194" fill="#1F1B17" font-size="42" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    A governed local-first runtime.
+  </text>
+  <text x="64" y="236" fill="#6E5B4B" font-size="19" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    Hermit brings approval, evidence, and rollback into the same operator-facing loop.
+  </text>
+
+  <rect x="64" y="292" width="510" height="174" rx="26" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <rect x="90" y="320" width="116" height="30" rx="15" fill="#F1E4D7"/>
+  <text x="113" y="340" fill="#A35F3F" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">
+    CONTROL
+  </text>
+  <text x="90" y="388" fill="#1F1B17" font-size="29" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    Approval before side effects
+  </text>
+  <text x="90" y="424" fill="#4D4136" font-size="17" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    <tspan x="90" dy="0">The model proposes work.</tspan>
+    <tspan x="90" dy="24">The kernel decides what needs approval, and the operator can intervene early.</tspan>
+  </text>
+
+  <rect x="626" y="292" width="510" height="174" rx="26" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <rect x="652" y="320" width="120" height="30" rx="15" fill="#F3E9D7"/>
+  <text x="677" y="340" fill="#A17A28" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">
+    EVIDENCE
+  </text>
+  <text x="652" y="388" fill="#1F1B17" font-size="29" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    Receipts and proof after execution
+  </text>
+  <text x="652" y="424" fill="#4D4136" font-size="17" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    <tspan x="652" dy="0">Important actions leave durable evidence.</tspan>
+    <tspan x="652" dy="24">You inspect what happened instead of trusting a transcript plus tool log.</tspan>
+  </text>
+
+  <rect x="64" y="500" width="510" height="174" rx="26" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <rect x="90" y="528" width="118" height="30" rx="15" fill="#E2E8DA"/>
+  <text x="116" y="548" fill="#5D7A46" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">
+    RECOVERY
+  </text>
+  <text x="90" y="596" fill="#1F1B17" font-size="29" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    Rollback-aware by design
+  </text>
+  <text x="90" y="632" fill="#4D4136" font-size="17" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    <tspan x="90" dy="0">Supported receipts can roll back.</tspan>
+    <tspan x="90" dy="24">Recovery is designed into the execution path, not left for cleanup later.</tspan>
+  </text>
+
+  <rect x="626" y="500" width="510" height="174" rx="26" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <rect x="652" y="528" width="120" height="30" rx="15" fill="#E9E0F2"/>
+  <text x="675" y="548" fill="#75608F" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">
+    CONTEXT
+  </text>
+  <text x="652" y="596" fill="#1F1B17" font-size="29" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    Artifact-native context and memory
+  </text>
+  <text x="652" y="632" fill="#4D4136" font-size="17" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    <tspan x="652" dy="0">Context comes from artifacts, task state, beliefs, and governed memory.</tspan>
+    <tspan x="652" dy="24">That is where Hermit feels more like a kernel than a wrapper.</tspan>
+  </text>
+</svg>

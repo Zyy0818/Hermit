@@ -270,7 +270,7 @@ Current implementation:
 - real rollback support for selected actions
 - kernel-first hard gates for builtin, delegation, and MCP tool governance
 - mixed runtime and kernel-era surfaces
-- an explicit [kernel conformance matrix](./kernel-conformance-matrix-v0.1.md) that marks what is implemented vs partial vs planned
+- an explicit [kernel conformance matrix](./kernel-conformance-matrix-v0.1.md) plus claim gate surfaces that are checked against machine-readable claim rows
 
 Target architecture:
 

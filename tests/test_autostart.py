@@ -24,7 +24,7 @@ def _write_plist(path: Path, label: str, args: list[str]) -> None:
     <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        {''.join(f'<string>{arg}</string>' for arg in args)}
+        {"".join(f"<string>{arg}</string>" for arg in args)}
     </array>
 </dict>
 </plist>
@@ -33,7 +33,7 @@ def _write_plist(path: Path, label: str, args: list[str]) -> None:
     )
 
 
-def test_existing_adapters_detects_current_and_legacy_plists(tmp_path, monkeypatch) -> None:
+def test_existing_adapters_detects_current_managed_plists(tmp_path, monkeypatch) -> None:
     launch_agents_dir = tmp_path / "LaunchAgents"
     launch_agents_dir.mkdir()
     monkeypatch.setattr(autostart, "_LAUNCH_AGENTS_DIR", launch_agents_dir)
@@ -44,28 +44,21 @@ def test_existing_adapters_detects_current_and_legacy_plists(tmp_path, monkeypat
         ["/usr/local/bin/hermit", "serve", "feishu"],
     )
     _write_plist(
-        launch_agents_dir / "com.moltforge.serve.plist",
-        "com.moltforge.serve",
-        ["/usr/local/bin/moltforge", "serve", "slack"],
+        launch_agents_dir / "com.hermit.serve.slack.plist",
+        "com.hermit.serve.slack",
+        ["/usr/local/bin/hermit", "serve", "slack"],
     )
 
     assert autostart.existing_adapters() == ["feishu", "slack"]
 
 
-def test_enable_replaces_legacy_plist_for_same_adapter(tmp_path, monkeypatch) -> None:
+def test_enable_writes_managed_plist_for_same_adapter(tmp_path, monkeypatch) -> None:
     launch_agents_dir = tmp_path / "LaunchAgents"
     launch_agents_dir.mkdir()
     log_dir = tmp_path / "logs"
     exe = tmp_path / "bin" / "hermit"
     exe.parent.mkdir()
     exe.write_text("#!/bin/sh\n", encoding="utf-8")
-
-    legacy_plist = launch_agents_dir / "com.moltforge.serve.plist"
-    _write_plist(
-        legacy_plist,
-        "com.moltforge.serve",
-        ["/usr/local/bin/moltforge", "serve", "feishu"],
-    )
 
     monkeypatch.setattr(autostart, "_LAUNCH_AGENTS_DIR", launch_agents_dir)
     monkeypatch.setattr(autostart.sys, "platform", "darwin")
@@ -88,8 +81,7 @@ def test_enable_replaces_legacy_plist_for_same_adapter(tmp_path, monkeypatch) ->
 
     message = autostart.enable(adapter="feishu", log_dir=log_dir)
 
-    assert "Removed legacy LaunchAgents" in message
-    assert not legacy_plist.exists()
+    assert "Removed legacy LaunchAgents" not in message
     assert (launch_agents_dir / "com.hermit.serve.feishu.plist").exists()
     assert ("load", str(launch_agents_dir / "com.hermit.serve.feishu.plist")) in calls
 
@@ -133,20 +125,12 @@ def test_autostart_helper_functions_cover_edge_cases(tmp_path, monkeypatch) -> N
     launch_agents_dir = tmp_path / "LaunchAgents"
     launch_agents_dir.mkdir()
     monkeypatch.setattr(autostart, "_LAUNCH_AGENTS_DIR", launch_agents_dir)
-    _write_plist(
-        launch_agents_dir / "com.moltforge.serve.feishu.plist",
-        "com.moltforge.serve.feishu",
-        ["/usr/local/bin/hermit", "serve", "--adapter", "feishu"],
+    assert (
+        autostart._adapter_from_program_arguments(["hermit", "serve", "--adapter", "slack"])
+        == "slack"
     )
-
-    assert autostart._legacy_plist_paths() == [launch_agents_dir / "com.moltforge.serve.feishu.plist"]
-    assert autostart._adapter_from_program_arguments(["hermit", "serve", "--adapter", "slack"]) == "slack"
     assert autostart._adapter_from_program_arguments(["hermit", "serve", "discord"]) == "discord"
     assert autostart._adapter_from_program_arguments([]) is None
-    assert autostart._legacy_labels_for_adapter("feishu") == [
-        "com.moltforge.serve",
-        "com.moltforge.serve.feishu",
-    ]
 
 
 def test_find_executable_prefers_venv_binary_then_path(tmp_path, monkeypatch) -> None:
@@ -179,27 +163,9 @@ def test_plist_program_arguments_handles_invalid_payloads(tmp_path) -> None:
     assert autostart._plist_program_arguments(scalar_plist) == []
 
 
-def test_cleanup_legacy_plists_skips_other_adapters(tmp_path, monkeypatch) -> None:
-    launch_agents_dir = tmp_path / "LaunchAgents"
-    launch_agents_dir.mkdir()
-    matching = launch_agents_dir / "com.moltforge.serve.plist"
-    other = launch_agents_dir / "com.moltforge.serve.slack.plist"
-    _write_plist(matching, "com.moltforge.serve", ["/usr/local/bin/hermit", "serve", "feishu"])
-    _write_plist(other, "com.moltforge.serve.slack", ["/usr/local/bin/hermit", "serve", "slack"])
-
-    calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(autostart, "_LAUNCH_AGENTS_DIR", launch_agents_dir)
-    monkeypatch.setattr(autostart, "_launchctl", lambda *args: calls.append(args) or type("R", (), {"returncode": 0, "stderr": ""})())
-
-    removed = autostart._cleanup_legacy_plists("feishu")
-
-    assert removed == [matching]
-    assert matching.exists() is False
-    assert other.exists() is True
-    assert ("remove", "com.moltforge.serve.feishu") in calls
-
-
-def test_enable_handles_non_macos_missing_executable_and_load_failure(tmp_path, monkeypatch) -> None:
+def test_enable_handles_non_macos_missing_executable_and_load_failure(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(autostart.sys, "platform", "linux")
     assert autostart.enable() == "Auto-start via launchd is only supported on macOS."
 
@@ -220,7 +186,6 @@ def test_enable_handles_non_macos_missing_executable_and_load_failure(tmp_path, 
 
     monkeypatch.setattr(autostart, "_LAUNCH_AGENTS_DIR", launch_agents_dir)
     monkeypatch.setattr(autostart, "_find_executable", lambda: exe)
-    monkeypatch.setattr(autostart, "_cleanup_legacy_plists", lambda adapter: [])
     monkeypatch.setattr(autostart, "_launchctl", lambda *args: _Result(returncode=1, stderr="boom"))
 
     assert "launchctl load failed" in autostart.enable(log_dir=tmp_path / "logs")
@@ -283,11 +248,13 @@ def test_disable_and_status_cover_loaded_unloaded_and_missing_cases(tmp_path, mo
             self.returncode = returncode
             self.stderr = stderr
 
-    unload_failure = iter([
-        _Result(returncode=0),   # status() list
-        _Result(returncode=0),   # disable() list
-        _Result(returncode=1, stderr="cannot unload"),
-    ])
+    unload_failure = iter(
+        [
+            _Result(returncode=0),  # status() list
+            _Result(returncode=0),  # disable() list
+            _Result(returncode=1, stderr="cannot unload"),
+        ]
+    )
     monkeypatch.setattr(autostart, "_launchctl", lambda *args: next(unload_failure))
 
     status_text = autostart.status("feishu")

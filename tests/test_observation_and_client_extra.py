@@ -45,28 +45,32 @@ def test_build_lark_client_uses_settings_and_environment(monkeypatch: pytest.Mon
         SimpleNamespace(feishu_app_id="app-1", feishu_app_secret="secret-1")
     )
 
-    monkeypatch.delenv("HERMIT_FEISHU_APP_ID", raising=False)
-    monkeypatch.delenv("HERMIT_FEISHU_APP_SECRET", raising=False)
-    monkeypatch.setenv("FEISHU_APP_ID", "legacy-app")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "legacy-secret")
-    monkeypatch.setattr(config_mod, "get_settings", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setenv("HERMIT_FEISHU_APP_ID", "env-app")
+    monkeypatch.setenv("HERMIT_FEISHU_APP_SECRET", "env-secret")
+    monkeypatch.setattr(
+        config_mod, "get_settings", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     env_client = feishu_client.build_lark_client(None)
 
     assert settings_client == {"app_id": "app-1", "app_secret": "secret-1"}
-    assert env_client == {"app_id": "legacy-app", "app_secret": "legacy-secret"}
-    assert calls == [("app-1", "secret-1"), ("legacy-app", "legacy-secret")]
+    assert env_client == {"app_id": "env-app", "app_secret": "env-secret"}
+    assert calls == [("app-1", "secret-1"), ("env-app", "env-secret")]
 
     monkeypatch.delenv("HERMIT_FEISHU_APP_ID", raising=False)
     monkeypatch.delenv("HERMIT_FEISHU_APP_SECRET", raising=False)
-    monkeypatch.delenv("FEISHU_APP_ID", raising=False)
-    monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
     with pytest.raises(RuntimeError, match="Feishu credentials not configured"):
         feishu_client.build_lark_client(None)
 
 
 def test_observation_progress_and_ticket_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
     progress = ObservationProgress.from_dict(
-        {"phase": "running", "summary": "Working", "detail": "step", "progress_percent": "bad", "ready": 1}
+        {
+            "phase": "running",
+            "summary": "Working",
+            "detail": "step",
+            "progress_percent": "bad",
+            "ready": 1,
+        }
     )
     ticket = ObservationTicket(
         observer_kind="sandbox",
@@ -109,7 +113,9 @@ def test_observation_service_ticks_and_resumes_completed_attempts() -> None:
     )
 
     class ToolExecutor:
-        def poll_observation(self, step_attempt_id: str, now: float | None = None) -> ObservationPollResult | None:
+        def poll_observation(
+            self, step_attempt_id: str, now: float | None = None
+        ) -> ObservationPollResult | None:
             poll_calls.append(step_attempt_id)
             return ObservationPollResult(ticket=ticket, should_resume=True)
 
@@ -154,17 +160,26 @@ def test_observation_service_loop_and_tick_cover_skip_paths(monkeypatch) -> None
     service = ObservationService(runner, budget=SimpleNamespace(observation_poll_interval=0.01))
 
     tick_calls: list[str] = []
-    monkeypatch.setattr(service, "_tick", lambda: tick_calls.append("tick") or (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        service,
+        "_tick",
+        lambda: tick_calls.append("tick") or (_ for _ in ()).throw(RuntimeError("boom")),
+    )
     monkeypatch.setattr(service._stop, "wait", lambda interval: next(wait_states))
 
     service._loop()
     assert tick_calls == ["tick"]
 
     poll_calls: list[str] = []
-    attempts = [SimpleNamespace(step_attempt_id="attempt-1"), SimpleNamespace(step_attempt_id="attempt-2")]
+    attempts = [
+        SimpleNamespace(step_attempt_id="attempt-1"),
+        SimpleNamespace(step_attempt_id="attempt-2"),
+    ]
 
     class ToolExecutor:
-        def poll_observation(self, step_attempt_id: str, now: float | None = None) -> ObservationPollResult | None:
+        def poll_observation(
+            self, step_attempt_id: str, now: float | None = None
+        ) -> ObservationPollResult | None:
             poll_calls.append(step_attempt_id)
             if step_attempt_id == "attempt-1":
                 return ObservationPollResult(ticket=None, should_resume=False)
@@ -173,12 +188,16 @@ def test_observation_service_loop_and_tick_cover_skip_paths(monkeypatch) -> None
     skip_runner = SimpleNamespace(
         task_controller=SimpleNamespace(
             store=SimpleNamespace(list_step_attempts=lambda status, limit: attempts),
-            enqueue_resume=lambda step_attempt_id: (_ for _ in ()).throw(AssertionError("should not resume")),
+            enqueue_resume=lambda step_attempt_id: (_ for _ in ()).throw(
+                AssertionError("should not resume")
+            ),
         ),
         agent=SimpleNamespace(tool_executor=ToolExecutor()),
         wake_dispatcher=lambda: (_ for _ in ()).throw(AssertionError("should not wake")),
     )
-    skip_service = ObservationService(skip_runner, budget=SimpleNamespace(observation_poll_interval=0.01))
+    skip_service = ObservationService(
+        skip_runner, budget=SimpleNamespace(observation_poll_interval=0.01)
+    )
     skip_service._resuming.add("attempt-2")
 
     skip_service._tick()

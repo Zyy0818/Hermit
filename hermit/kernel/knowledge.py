@@ -169,9 +169,6 @@ class MemoryRecordService:
             "duplicate_count": duplicate_count,
         }
 
-    def render_mirror(self, path: Path | None = None) -> None:
-        self.export_mirror(path)
-
     def export_mirror(self, path: Path | None = None) -> Path | None:
         mirror = path or self.mirror_path
         if mirror is None:

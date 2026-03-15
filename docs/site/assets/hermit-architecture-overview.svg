@@ -1,0 +1,67 @@
+<svg width="1200" height="820" viewBox="0 0 1200 820" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="820" rx="28" fill="#F4EFE6"/>
+  <rect x="28" y="28" width="1144" height="764" rx="24" fill="#FBF8F2" stroke="#D9CFC0"/>
+
+  <rect x="64" y="62" width="158" height="34" rx="17" fill="#E7DDD0"/>
+  <text x="89" y="84" fill="#6E5B4B" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">
+    ARCHITECTURE
+  </text>
+
+  <text x="64" y="146" fill="#1F1B17" font-size="40" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    One kernel, multiple operator surfaces
+  </text>
+  <text x="64" y="188" fill="#6E5B4B" font-size="19" font-family="Avenir Next, Segoe UI, Arial, sans-serif">
+    Hermit's center of gravity is the task kernel, not any single chat or adapter surface.
+  </text>
+
+  <rect x="64" y="246" width="1072" height="118" rx="28" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <text x="96" y="294" fill="#1F1B17" font-size="31" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    Operator surfaces
+  </text>
+
+  <rect x="96" y="314" width="118" height="32" rx="16" fill="#F2E6DA"/>
+  <text x="133" y="335" fill="#A35F3F" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">CLI</text>
+  <rect x="230" y="314" width="118" height="32" rx="16" fill="#F2E6DA"/>
+  <text x="263" y="335" fill="#A35F3F" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Chat</text>
+  <rect x="364" y="314" width="118" height="32" rx="16" fill="#F2E6DA"/>
+  <text x="392" y="335" fill="#A35F3F" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Feishu</text>
+  <rect x="498" y="314" width="136" height="32" rx="16" fill="#F2E6DA"/>
+  <text x="525" y="335" fill="#A35F3F" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Scheduler</text>
+  <rect x="650" y="314" width="136" height="32" rx="16" fill="#F2E6DA"/>
+  <text x="684" y="335" fill="#A35F3F" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Webhook</text>
+  <rect x="802" y="314" width="162" height="32" rx="16" fill="#F2E6DA"/>
+  <text x="835" y="335" fill="#A35F3F" font-size="15" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">More adapters</text>
+
+  <path d="M600 364V422" stroke="#BEAF9D" stroke-width="4" stroke-linecap="round"/>
+
+  <rect x="164" y="422" width="872" height="222" rx="32" fill="#FFFDFC" stroke="#C98C69" stroke-width="1.5"/>
+  <text x="198" y="476" fill="#A35F3F" font-size="14" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">
+    TASK KERNEL
+  </text>
+  <text x="198" y="516" fill="#1F1B17" font-size="34" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    The governed center
+  </text>
+
+  <rect x="198" y="548" width="210" height="72" rx="22" fill="#F7F1E8"/>
+  <text x="225" y="589" fill="#1F1B17" font-size="20" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Task controller</text>
+
+  <rect x="430" y="548" width="164" height="72" rx="22" fill="#F7F1E8"/>
+  <text x="468" y="589" fill="#1F1B17" font-size="20" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Context</text>
+
+  <rect x="616" y="548" width="164" height="72" rx="22" fill="#F7F1E8"/>
+  <text x="657" y="589" fill="#1F1B17" font-size="20" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Policy</text>
+
+  <rect x="802" y="548" width="198" height="72" rx="22" fill="#F7F1E8"/>
+  <text x="834" y="589" fill="#1F1B17" font-size="20" font-family="Avenir Next, Segoe UI, Arial, sans-serif" font-weight="700">Execution layer</text>
+
+  <path d="M408 584H430" stroke="#BEAF9D" stroke-width="4" stroke-linecap="round"/>
+  <path d="M594 584H616" stroke="#BEAF9D" stroke-width="4" stroke-linecap="round"/>
+  <path d="M780 584H802" stroke="#BEAF9D" stroke-width="4" stroke-linecap="round"/>
+
+  <path d="M600 644V694" stroke="#BEAF9D" stroke-width="4" stroke-linecap="round"/>
+
+  <rect x="64" y="694" width="1072" height="84" rx="26" fill="#FFFDFC" stroke="#D8CCBC"/>
+  <text x="94" y="742" fill="#1F1B17" font-size="30" font-family="Georgia, Times New Roman, serif" font-weight="700">
+    Durable layer: ledger, receipts, proof, rollback, memory
+  </text>
+</svg>

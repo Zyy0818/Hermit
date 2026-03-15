@@ -9,6 +9,7 @@ import logging
 import os
 import threading
 import time
+import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -250,7 +251,17 @@ def _patch_lark_runtime(ws_client_module: Any) -> None:
     _LARK_RUNTIME_PATCHED = True
 
 
-with suppress(Exception):
+with suppress(Exception), warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"websockets\.InvalidStatusCode is deprecated",
+        category=DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"websockets\.legacy is deprecated.*",
+        category=DeprecationWarning,
+    )
     from lark_oapi.ws import client as _lark_ws_client_module
 
     _patch_lark_receive_loop(_lark_ws_client_module)
@@ -281,12 +292,11 @@ class FeishuAdapter:
     def __init__(self, settings: Any = None) -> None:
         self._settings = settings
         self._app_id = str(
-            getattr(settings, "feishu_app_id", None)
-            or os.environ.get("HERMIT_FEISHU_APP_ID", os.environ.get("FEISHU_APP_ID", ""))
+            getattr(settings, "feishu_app_id", None) or os.environ.get("HERMIT_FEISHU_APP_ID", "")
         )
         self._app_secret = str(
             getattr(settings, "feishu_app_secret", None)
-            or os.environ.get("HERMIT_FEISHU_APP_SECRET", os.environ.get("FEISHU_APP_SECRET", ""))
+            or os.environ.get("HERMIT_FEISHU_APP_SECRET", "")
         )
         self._client: Any = None
         self._ws_client: Any = None
@@ -311,10 +321,7 @@ class FeishuAdapter:
 
     async def start(self, runner: AgentRunner) -> None:
         if not self._app_id or not self._app_secret:
-            raise RuntimeError(
-                "Set HERMIT_FEISHU_APP_ID/HERMIT_FEISHU_APP_SECRET "
-                "(legacy FEISHU_APP_ID/FEISHU_APP_SECRET also supported)"
-            )
+            raise RuntimeError("Set HERMIT_FEISHU_APP_ID/HERMIT_FEISHU_APP_SECRET.")
 
         global _ACTIVE_ADAPTER
         self._runner = runner

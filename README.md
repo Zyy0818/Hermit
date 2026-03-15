@@ -21,6 +21,20 @@ If you want an agent you can inspect, interrupt, approve, audit, and recover loc
 
 Docs site: [heggria.github.io/Hermit](https://heggria.github.io/Hermit/)
 
+## What You Notice Immediately
+
+```mermaid
+flowchart TB
+    A["Approval before side effects"] --> B["Receipts and proof after execution"]
+    B --> C["Rollback-aware recovery"]
+    C --> D["Artifact-native context and governed memory"]
+
+    style A fill:#f5efe6,stroke:#a35f3f,color:#1f1b17,stroke-width:2px
+    style B fill:#f7f1e8,stroke:#a17a28,color:#1f1b17,stroke-width:2px
+    style C fill:#eef2e7,stroke:#5d7a46,color:#1f1b17,stroke-width:2px
+    style D fill:#efe9f6,stroke:#75608f,color:#1f1b17,stroke-width:2px
+```
+
 ## Install In One Command
 
 macOS:
@@ -64,6 +78,24 @@ If you want a recording-ready walkthrough, start with [docs/demo-flows.md](./doc
 Real CLI example from this repository's task kernel:
 
 ![Hermit task show, proof, and rollback demo](./docs/site/assets/task-proof-rollback-demo.png)
+
+The mechanics behind that demo are not "model called tool, trust the log." They are a governed path:
+
+```mermaid
+flowchart LR
+    A["CLI / Chat / Feishu / Scheduler / Webhook"] --> B["Task -> Step -> StepAttempt"]
+    B --> C["Policy + Approval + Scoped authority"]
+    C --> D["Tool execution"]
+    D --> E["Receipt + Proof"]
+    E --> F["Rollback when supported"]
+
+    style A fill:#f5efe6,stroke:#a35f3f,color:#1f1b17,stroke-width:2px
+    style B fill:#fbf8f2,stroke:#c9b8a4,color:#1f1b17,stroke-width:2px
+    style C fill:#f8ecdf,stroke:#c98c69,color:#1f1b17,stroke-width:2px
+    style D fill:#fbf8f2,stroke:#c9b8a4,color:#1f1b17,stroke-width:2px
+    style E fill:#fbf8f2,stroke:#c9b8a4,color:#1f1b17,stroke-width:2px
+    style F fill:#eef2e7,stroke:#5d7a46,color:#1f1b17,stroke-width:2px
+```
 
 ## Why People Star It
 
@@ -209,33 +241,29 @@ These commands matter because a task does not end at tool execution; it ends wit
 
 ## Architecture At A Glance
 
-```text
-CLI / Chat / Feishu / Scheduler / Webhook
-                  |
-                  v
-             Task Controller
-                  |
-                  v
-        Task -> Step -> StepAttempt
-                  |
-                  v
-       Context Compiler + Policy Engine
-                  |
-      +-----------+------------+
-      |                        |
-      v                        v
- Approval / Decision       Capability Grant
-      |                        |
-      +-----------+------------+
-                  |
-                  v
-              Tool Executor
-                  |
-                  v
-        Artifact / Receipt / Proof / Rollback
-                  |
-                  v
-             Kernel Ledger + Projections
+```mermaid
+flowchart TB
+    subgraph S["Operator surfaces"]
+        A["CLI"]
+        B["Chat"]
+        C["Feishu"]
+        D["Scheduler"]
+        E["Webhook"]
+    end
+
+    S --> K["Task kernel"]
+    K --> T["Task controller"]
+    K --> X["Context compiler"]
+    K --> P["Policy engine"]
+    K --> R["Execution layer"]
+    R --> L["Ledger + Projections + Receipts + Proof + Rollback + Memory"]
+
+    style K fill:#f8ecdf,stroke:#c98c69,color:#1f1b17,stroke-width:2px
+    style T fill:#fbf8f2,stroke:#c9b8a4,color:#1f1b17
+    style X fill:#fbf8f2,stroke:#c9b8a4,color:#1f1b17
+    style P fill:#fbf8f2,stroke:#c9b8a4,color:#1f1b17
+    style R fill:#fbf8f2,stroke:#c9b8a4,color:#1f1b17
+    style L fill:#f5efe6,stroke:#a35f3f,color:#1f1b17,stroke-width:2px
 ```
 
 The current repo still contains runtime-era layers and operational surfaces. But the architectural center of gravity is shifting toward the task kernel and its governance law.

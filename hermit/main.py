@@ -668,8 +668,8 @@ def _build_serve_preflight(
     )
 
     if adapter == "feishu":
-        app_id_key = _resolve_env_key("HERMIT_FEISHU_APP_ID", "FEISHU_APP_ID")
-        app_secret_key = _resolve_env_key("HERMIT_FEISHU_APP_SECRET", "FEISHU_APP_SECRET")
+        app_id_key = _resolve_env_key("HERMIT_FEISHU_APP_ID")
+        app_secret_key = _resolve_env_key("HERMIT_FEISHU_APP_SECRET")
         if app_id_key or settings.feishu_app_id:
             items.append(
                 _PreflightItem(
@@ -689,7 +689,7 @@ def _build_serve_preflight(
             errors.append(
                 _t(
                     "cli.preflight.error.feishu_app_id_missing",
-                    "Missing Feishu App ID. Set `HERMIT_FEISHU_APP_ID` (legacy `FEISHU_APP_ID` is also supported).",
+                    "Missing Feishu App ID. Set `HERMIT_FEISHU_APP_ID`.",
                 )
             )
             items.append(
@@ -698,7 +698,7 @@ def _build_serve_preflight(
                     ok=False,
                     detail=_t(
                         "cli.preflight.item.feishu_app_id.detail.missing",
-                        "HERMIT_FEISHU_APP_ID / FEISHU_APP_ID not found",
+                        "HERMIT_FEISHU_APP_ID not found",
                     ),
                 )
             )
@@ -725,7 +725,7 @@ def _build_serve_preflight(
             errors.append(
                 _t(
                     "cli.preflight.error.feishu_app_secret_missing",
-                    "Missing Feishu App Secret. Set `HERMIT_FEISHU_APP_SECRET` (legacy `FEISHU_APP_SECRET` is also supported).",
+                    "Missing Feishu App Secret. Set `HERMIT_FEISHU_APP_SECRET`.",
                 )
             )
             items.append(
@@ -737,7 +737,7 @@ def _build_serve_preflight(
                     ok=False,
                     detail=_t(
                         "cli.preflight.item.feishu_app_secret.detail.missing",
-                        "HERMIT_FEISHU_APP_SECRET / FEISHU_APP_SECRET not found",
+                        "HERMIT_FEISHU_APP_SECRET not found",
                     ),
                 )
             )

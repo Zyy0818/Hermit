@@ -315,32 +315,16 @@ def test_build_task_topic_card_hides_duplicate_terminal_summary_and_start_item()
     assert "有什么可以帮你的吗" in elements[0]["content"]
 
 
-def test_feishu_adapter_accepts_legacy_env_names(monkeypatch) -> None:
+def test_feishu_adapter_reads_hermit_env_names(monkeypatch) -> None:
     from hermit.builtin.feishu.adapter import FeishuAdapter
 
-    monkeypatch.delenv("HERMIT_FEISHU_APP_ID", raising=False)
-    monkeypatch.delenv("HERMIT_FEISHU_APP_SECRET", raising=False)
-    monkeypatch.setenv("FEISHU_APP_ID", "legacy-app-id")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "legacy-app-secret")
+    monkeypatch.setenv("HERMIT_FEISHU_APP_ID", "app-id")
+    monkeypatch.setenv("HERMIT_FEISHU_APP_SECRET", "app-secret")
 
     adapter = FeishuAdapter()
 
-    assert adapter._app_id == "legacy-app-id"
-    assert adapter._app_secret == "legacy-app-secret"
-
-
-def test_feishu_adapter_prefers_hermit_env_names(monkeypatch) -> None:
-    from hermit.builtin.feishu.adapter import FeishuAdapter
-
-    monkeypatch.setenv("HERMIT_FEISHU_APP_ID", "preferred-app-id")
-    monkeypatch.setenv("HERMIT_FEISHU_APP_SECRET", "preferred-app-secret")
-    monkeypatch.setenv("FEISHU_APP_ID", "legacy-app-id")
-    monkeypatch.setenv("FEISHU_APP_SECRET", "legacy-app-secret")
-
-    adapter = FeishuAdapter()
-
-    assert adapter._app_id == "preferred-app-id"
-    assert adapter._app_secret == "preferred-app-secret"
+    assert adapter._app_id == "app-id"
+    assert adapter._app_secret == "app-secret"
 
 
 def test_feishu_adapter_reads_credentials_from_settings(monkeypatch) -> None:
@@ -348,8 +332,6 @@ def test_feishu_adapter_reads_credentials_from_settings(monkeypatch) -> None:
 
     monkeypatch.delenv("HERMIT_FEISHU_APP_ID", raising=False)
     monkeypatch.delenv("HERMIT_FEISHU_APP_SECRET", raising=False)
-    monkeypatch.delenv("FEISHU_APP_ID", raising=False)
-    monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
 
     settings = type(
         "Settings",
