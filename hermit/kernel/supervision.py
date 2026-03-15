@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermit.kernel.claims import task_claim_status
 from hermit.kernel.conversation_projection import ConversationProjectionService
 from hermit.kernel.models import IngressRecord, TaskRecord
 from hermit.kernel.projections import ProjectionService
@@ -20,6 +21,7 @@ class SupervisionService:
         cached = self.projections.ensure_task_projection(task_id)
         task = self.store.get_task(task_id)
         proof = cached["proof"]
+        claims = cached.get("claims") or task_claim_status(self.store, task_id, proof_summary=proof)
         latest_receipt = proof.get("latest_receipt")
         latest_decision = proof.get("latest_decision")
         latest_permit = proof.get("latest_permit")
@@ -32,6 +34,7 @@ class SupervisionService:
             latest_grant = grant.__dict__ if grant is not None else None
         target_paths = list((latest_permit or {}).get("constraints", {}).get("target_paths", []))
         latest_memory = cached["knowledge"][0] if cached["knowledge"] else None
+        reentry = self._reentry_observability(task_id)
         rollback = None
         if latest_receipt and latest_receipt.get("receipt_id"):
             record = self.store.get_rollback_for_receipt(str(latest_receipt["receipt_id"]))
@@ -63,6 +66,8 @@ class SupervisionService:
                 },
                 "outcome": latest_receipt,
                 "proof": proof["chain_verification"],
+                "claims": claims,
+                "reentry": reentry,
                 "knowledge": {
                     "latest_memory": latest_memory,
                     "recent_beliefs": cached["beliefs"][:5],
@@ -104,7 +109,9 @@ class SupervisionService:
                     "reason": str(conversation_projection.get("focus_reason", "") or ""),
                 },
                 "open_tasks": list(conversation_projection.get("open_tasks", []) or []),
-                "pending_ingress_count": int(conversation_projection.get("pending_ingress_count", 0) or 0),
+                "pending_ingress_count": int(
+                    conversation_projection.get("pending_ingress_count", 0) or 0
+                ),
                 "metrics": dict(conversation_projection.get("ingress_metrics", {}) or {}),
                 "recent_ingresses": self._serialize_ingress_list(
                     self.store.list_ingresses(conversation_id=task.conversation_id, limit=5)
@@ -127,7 +134,9 @@ class SupervisionService:
             },
         }
 
-    def _recent_related_ingresses(self, *, conversation_id: str, task_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    def _recent_related_ingresses(
+        self, *, conversation_id: str, task_id: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
         related: list[dict[str, Any]] = []
         for ingress in self.store.list_ingresses(conversation_id=conversation_id, limit=50):
             relation = ""
@@ -147,7 +156,6 @@ class SupervisionService:
 
     def _serialize_ingress(self, ingress: IngressRecord, *, relation: str = "") -> dict[str, Any]:
         rationale = dict(ingress.rationale or {})
-        shadow = dict(rationale.get("shadow_binding", {}) or {})
         payload = {
             "ingress_id": ingress.ingress_id,
             "status": ingress.status,
@@ -165,13 +173,52 @@ class SupervisionService:
             "margin": ingress.margin,
             "reason_codes": list(rationale.get("reason_codes", []) or []),
             "resolved_by": str(rationale.get("resolved_by", "") or ""),
-            "shadow_match_actual": shadow.get("match_actual") if shadow else None,
             "created_at": ingress.created_at,
             "updated_at": ingress.updated_at,
         }
         if relation:
             payload["relation"] = relation
         return payload
+
+    def _reentry_observability(self, task_id: str) -> dict[str, Any]:
+        attempts = self.store.list_step_attempts(task_id=task_id, limit=20)
+        recent: list[dict[str, Any]] = []
+        required_count = 0
+        resolved_count = 0
+        for attempt in attempts:
+            context = dict(attempt.context or {})
+            if bool(context.get("reentry_required")):
+                required_count += 1
+            if context.get("reentry_resolved_at"):
+                resolved_count += 1
+            if len(recent) >= 5:
+                continue
+            if not (
+                context.get("reentry_reason")
+                or context.get("reentry_boundary")
+                or context.get("reentered_via")
+                or context.get("recovery_required")
+            ):
+                continue
+            recent.append(
+                {
+                    "step_attempt_id": attempt.step_attempt_id,
+                    "status": attempt.status,
+                    "phase": str(context.get("phase", "") or ""),
+                    "reentry_reason": str(context.get("reentry_reason", "") or ""),
+                    "reentry_boundary": str(context.get("reentry_boundary", "") or ""),
+                    "reentered_via": str(context.get("reentered_via", "") or ""),
+                    "reentry_required": bool(context.get("reentry_required")),
+                    "recovery_required": bool(context.get("recovery_required")),
+                    "reentry_requested_at": context.get("reentry_requested_at"),
+                    "reentry_resolved_at": context.get("reentry_resolved_at"),
+                }
+            )
+        return {
+            "required_count": required_count,
+            "resolved_count": resolved_count,
+            "recent_attempts": recent,
+        }
 
     @staticmethod
     def _trim(text: str, limit: int) -> str:

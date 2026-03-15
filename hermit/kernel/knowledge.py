@@ -170,18 +170,26 @@ class MemoryRecordService:
         }
 
     def render_mirror(self, path: Path | None = None) -> None:
+        self.export_mirror(path)
+
+    def export_mirror(self, path: Path | None = None) -> Path | None:
         mirror = path or self.mirror_path
         if mirror is None:
-            return
+            return None
         engine = MemoryEngine(mirror)
         categories: dict[str, list[MemoryEntry]] = {}
         for record in self.store.list_memory_records(status="active", limit=1000):
             categories.setdefault(record.category, []).append(self._entry_from_memory(record))
         engine.save(categories)
+        return mirror
 
-    def active_categories(self, *, conversation_id: str | None = None) -> dict[str, list[MemoryEntry]]:
+    def active_categories(
+        self, *, conversation_id: str | None = None
+    ) -> dict[str, list[MemoryEntry]]:
         categories: dict[str, list[MemoryEntry]] = {}
-        for record in self.store.list_memory_records(status="active", conversation_id=conversation_id, limit=1000):
+        for record in self.store.list_memory_records(
+            status="active", conversation_id=conversation_id, limit=1000
+        ):
             categories.setdefault(record.category, []).append(self._entry_from_memory(record))
         return categories
 

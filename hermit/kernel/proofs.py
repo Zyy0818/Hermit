@@ -223,11 +223,10 @@ class ProofService:
         )
         if proof_payload["proof_mode"] == _PROOF_MODE_SIGNED_WITH_INCLUSION_PROOF:
             for receipt in receipts:
-                if str(receipt.signature or "").strip():
-                    self.store.update_receipt_proof_fields(
-                        receipt.receipt_id,
-                        proof_mode=_PROOF_MODE_SIGNED_WITH_INCLUSION_PROOF,
-                    )
+                self.store.update_receipt_proof_fields(
+                    receipt.receipt_id,
+                    proof_mode=_PROOF_MODE_SIGNED_WITH_INCLUSION_PROOF,
+                )
         signature_meta = self._signature_metadata(proof_payload, artifact_kind="proof.bundle")
         if signature_meta is not None:
             proof_payload["signature"] = signature_meta

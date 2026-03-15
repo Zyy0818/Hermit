@@ -31,6 +31,8 @@ Several boundaries are intentionally stricter than older runtime-era Hermit:
 - delegation tools and MCP tools no longer rely on name-based governance inference
 - approval grant and deny transitions now create decision + receipt records with proof bundles
 - dispatcher restart recovery no longer forces interrupted async governed attempts into terminal failure by default
+- operator surfaces now expose claim status and durable re-entry summaries directly from cached task projections
+- proof export can upgrade to signed bundles plus receipt inclusion proofs when local signing is configured
 
 This does not mean the full `v0.1` target is shipped. It means the repo now prefers refusing ambiguous execution over preserving permissive legacy behavior.
 

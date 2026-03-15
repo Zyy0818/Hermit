@@ -540,7 +540,7 @@ def test_memory_services_support_duplicate_promotion_and_mirror_render(tmp_path:
         )
         beliefs.supersede(belief.belief_id, ["旧约定"])
         beliefs.contradict(belief.belief_id, ["belief-2"])
-        memories.render_mirror()
+        exported = memories.export_mirror()
         categories = memories.active_categories()
         memories.invalidate(promoted.memory_id)
         beliefs.invalidate(belief.belief_id)
@@ -550,6 +550,7 @@ def test_memory_services_support_duplicate_promotion_and_mirror_render(tmp_path:
 
         assert duplicate.memory_id == promoted.memory_id
         assert categories["项目约定"][0].content == "默认工作目录固定到 /repo"
+        assert exported == mirror
         assert "默认工作目录固定到 /repo" in mirror.read_text(encoding="utf-8")
         assert refreshed_belief is not None and refreshed_belief.status == "invalidated"
         assert refreshed_belief.supersedes == ["旧约定"]

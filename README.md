@@ -134,6 +134,8 @@ Current state, stated plainly:
 - **Verifiable execution** has strong primitives, but should still be treated as in-progress
 - **Kernel-first hard cut** is now real for tool governance: builtin tools, plugin tools, delegation tools, and MCP tools must declare explicit governance metadata instead of relying on name-based inference
 - **Approval resolution is part of the ledger**: grant and deny transitions now emit decision + receipt records with proof bundles, while `approval.consumed` remains an event-only transition
+- **Claimability is surfaced in the product**: CLI/operator views now expose kernel claim status, durable re-entry state, and proof readiness instead of requiring manual source inspection
+- **Signed proofs are available as an opt-in profile**: when a local proof signing secret is configured, proof export upgrades to signed bundles with receipt inclusion proofs
 - the **`v0.1` kernel spec** is the target architecture, not a claim that every surface is already fully migrated
 - the repo now keeps an explicit [kernel conformance matrix](./docs/kernel-conformance-matrix-v0.1.md) so exit-criteria claims are grounded in concrete code paths and tests
 

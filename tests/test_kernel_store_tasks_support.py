@@ -15,7 +15,9 @@ def test_store_support_json_loads_handles_empty_and_invalid() -> None:
     assert _UNSET is not None
 
 
-def test_kernel_store_task_flow_covers_conversations_tasks_steps_attempts_and_events(tmp_path: Path) -> None:
+def test_kernel_store_task_flow_covers_conversations_tasks_steps_attempts_and_events(
+    tmp_path: Path,
+) -> None:
     store = KernelStore(tmp_path / "state.db")
 
     conversation = store.ensure_conversation("conv-1", source_channel="chat", source_ref="thread-1")
@@ -56,7 +58,9 @@ def test_kernel_store_task_flow_covers_conversations_tasks_steps_attempts_and_ev
     assert fetched_task is not None
     assert fetched_task.title == "Task One"
     assert store.get_last_task_for_conversation("conv-1").task_id == task_two.task_id
-    assert [task.task_id for task in store.list_tasks(conversation_id="conv-1", limit=10)][0] == task_two.task_id
+    assert [task.task_id for task in store.list_tasks(conversation_id="conv-1", limit=10)][
+        0
+    ] == task_two.task_id
 
     store.update_task_status(task_one.task_id, "blocked")
     blocked_tasks = store.list_tasks(status="blocked", limit=10)
@@ -197,3 +201,67 @@ def test_proof_service_detects_tampered_event_chain(tmp_path: Path) -> None:
     proof = ProofService(store).verify_task_chain(task.task_id)
     assert proof["valid"] is False
     assert proof["broken_at_event_id"] == tampered_event_id
+
+
+def test_proof_service_exports_signed_bundles_and_inclusion_proofs(tmp_path: Path) -> None:
+    store = KernelStore(tmp_path / "state.db")
+    store.ensure_conversation("conv-signed", source_channel="chat")
+    task = store.create_task(
+        conversation_id="conv-signed",
+        title="Signed Proof Task",
+        goal="Export signed proof bundle",
+        source_channel="chat",
+    )
+    step = store.create_step(task_id=task.task_id, kind="respond")
+    first_attempt = store.create_step_attempt(task_id=task.task_id, step_id=step.step_id)
+    second_attempt = store.create_step_attempt(task_id=task.task_id, step_id=step.step_id)
+    first_receipt = store.create_receipt(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=first_attempt.step_attempt_id,
+        action_type="write_local",
+        input_refs=[],
+        environment_ref=None,
+        policy_result={"decision": "allow"},
+        approval_ref=None,
+        output_refs=[],
+        result_summary="first",
+        result_code="succeeded",
+    )
+    second_receipt = store.create_receipt(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=second_attempt.step_attempt_id,
+        action_type="write_local",
+        input_refs=[],
+        environment_ref=None,
+        policy_result={"decision": "allow"},
+        approval_ref=None,
+        output_refs=[],
+        result_summary="second",
+        result_code="succeeded",
+    )
+
+    service = ProofService(store, signing_secret="proof-secret", signing_key_id="test-key")
+    export = service.export_task_proof(task.task_id)
+
+    assert export["proof_mode"] == "signed_with_inclusion_proof"
+    assert export["receipt_merkle_root"]
+    assert export["signature"]["key_id"] == "test-key"
+    assert set(export["receipt_inclusion_proofs"]) == {
+        first_receipt.receipt_id,
+        second_receipt.receipt_id,
+    }
+    summary = service.build_proof_summary(task.task_id)
+    assert summary["proof_mode"] == "signed_with_inclusion_proof"
+    assert summary["proof_coverage"]["signature_coverage"]["signed_receipts"] == 2
+    assert summary["proof_coverage"]["inclusion_proof_coverage"]["proved_receipts"] == 2
+    refreshed_first = store.get_receipt(first_receipt.receipt_id)
+    refreshed_second = store.get_receipt(second_receipt.receipt_id)
+    assert (
+        refreshed_first is not None and refreshed_first.proof_mode == "signed_with_inclusion_proof"
+    )
+    assert (
+        refreshed_second is not None
+        and refreshed_second.proof_mode == "signed_with_inclusion_proof"
+    )

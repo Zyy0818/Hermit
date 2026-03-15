@@ -181,9 +181,10 @@ def test_memory_mirror_exports_scope_and_retention_metadata(tmp_path: Path) -> N
             supersedes=["旧约定"],
         )
 
-        MemoryRecordService(store, mirror_path=mirror).render_mirror()
+        exported = MemoryRecordService(store, mirror_path=mirror).export_mirror()
 
         raw = mirror.read_text(encoding="utf-8")
+        assert exported == mirror
         assert '"scope_kind":"workspace"' in raw
         assert '"scope_ref":"/repo"' in raw
         assert '"retention_class":"project_convention"' in raw

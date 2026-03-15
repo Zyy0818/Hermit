@@ -128,6 +128,7 @@ def test_projection_service_verify_ensure_and_rebuild_all(tmp_path: Path) -> Non
     assert set(rebuilt["rebuilt_tasks"]) == {first.task_id, second.task_id}
     assert valid["valid"] is True and valid["reason"] == "ok"
     assert ensured["task"]["task_id"] == first.task_id
+    assert ensured["claims"]["repository"]["profiles"]["core"]["claimable"] is True
     assert stale["valid"] is False and stale["reason"] == "stale"
 
 
@@ -411,9 +412,9 @@ def test_conversation_projection_exposes_focus_open_tasks_and_pending_ingresses(
     )
     assert payload["ingress_metrics"]["total"] >= 2
     assert payload["ingress_metrics"]["resolution_counts"]["append_note"] >= 1
-    assert payload["ingress_metrics"]["shadow_disagreement_count"] == 0
+    assert "shadow_disagreement_count" not in payload["ingress_metrics"]
     assert payload["recent_ingresses"][0]["ingress_id"] == decision.ingress_id
-    assert payload["recent_ingresses"][0]["shadow_match_actual"] is None
+    assert "shadow_match_actual" not in payload["recent_ingresses"][0]
 
 
 def test_conversation_projection_cache_refreshes_on_focus_and_ingress_updates(

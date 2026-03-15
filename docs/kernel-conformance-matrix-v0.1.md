@@ -12,17 +12,17 @@ Status legend:
 
 | Spec exit criterion | Status | Primary implementation | Regression coverage / operator surface |
 | --- | --- | --- | --- |
-| Every ingress is task-first and durable | `partial` | `hermit/kernel/controller.py`, `hermit/kernel/ingress_router.py`, `hermit/kernel/store_tasks.py` | `tests/test_kernel_dispatch_and_controller_extra.py`, `tests/test_runner_extra.py` |
+| Every ingress is task-first and durable | `implemented` | `hermit/kernel/controller.py`, `hermit/kernel/ingress_router.py`, `hermit/kernel/store_tasks.py` | `tests/test_kernel_dispatch_and_controller_extra.py`, `tests/test_runner_extra.py`, CLI `task case` |
 | Durable truth is event-backed and append-only | `implemented` | `hermit/kernel/store.py`, `hermit/kernel/store_tasks.py`, `hermit/kernel/store_ledger.py` | `tests/test_task_kernel.py`, `tests/test_kernel_topics_and_projections_extra.py` |
 | No direct model-to-tool execution bypass | `implemented` | `hermit/core/tools.py`, `hermit/plugin/manager.py`, `hermit/plugin/mcp_client.py`, `hermit/builtin/github/mcp.py` | `tests/test_plugin_manager_extra.py`, `tests/test_mcp.py`, `tests/test_main_mcp_helpers.py` |
 | Effectful execution uses scoped authority and approval packets | `implemented` | `hermit/kernel/executor.py`, `hermit/kernel/approvals.py`, `hermit/kernel/contracts.py`, `hermit/kernel/policy/rules.py` | `tests/test_task_kernel.py`, `tests/test_feishu_dispatcher.py` |
 | Important actions emit receipts | `implemented` | `hermit/kernel/receipts.py`, `hermit/kernel/approvals.py`, `hermit/kernel/proofs.py` | `tests/test_task_kernel.py`, CLI `task proof-export` |
-| Uncertain outcomes re-enter via observation or reconciliation | `partial` | `hermit/kernel/executor.py`, `hermit/kernel/observation.py`, `hermit/kernel/dispatch.py` | `tests/test_observation_and_client_extra.py`, `tests/test_tools.py` |
-| Input drift / witness drift / approval drift use durable re-entry | `partial` | `hermit/kernel/controller.py`, `hermit/kernel/executor.py`, `hermit/kernel/dispatch.py` | `tests/test_task_kernel.py`, `tests/test_kernel_dispatch_and_controller_extra.py` |
+| Uncertain outcomes re-enter via observation or reconciliation | `implemented` | `hermit/kernel/executor.py`, `hermit/kernel/observation.py`, `hermit/kernel/dispatch.py` | `tests/test_observation_and_client_extra.py`, `tests/test_tools.py`, CLI `task case` |
+| Input drift / witness drift / approval drift use durable re-entry | `implemented` | `hermit/kernel/controller.py`, `hermit/kernel/executor.py`, `hermit/kernel/dispatch.py` | `tests/test_task_kernel.py`, `tests/test_kernel_dispatch_and_controller_extra.py`, CLI `task show` |
 | Artifact-native context is the default runtime path | `implemented` | `hermit/kernel/context_compiler.py`, `hermit/kernel/provider_input.py`, `hermit/kernel/artifacts.py` | `tests/test_context_compiler.py`, `tests/test_kernel_coverage_boost.py` |
-| Memory writes are evidence-bound and kernel-backed | `partial` | `hermit/kernel/knowledge.py`, `hermit/kernel/memory_governance.py`, `hermit/builtin/memory/hooks.py` | `tests/test_memory_governance.py`, `tests/test_memory_hooks.py` |
+| Memory writes are evidence-bound and kernel-backed | `implemented` | `hermit/kernel/knowledge.py`, `hermit/kernel/memory_governance.py`, `hermit/builtin/memory/hooks.py` | `tests/test_memory_governance.py`, `tests/test_memory_hooks.py`, CLI `memory export` |
 | Verifiable profile exposes proof coverage and exportable bundles | `implemented` | `hermit/kernel/proofs.py`, `hermit/kernel/store_ledger.py`, `hermit/main.py` | `tests/test_task_kernel.py`, CLI `task proof-export` |
-| Signed proofs / inclusion proofs | `planned` | reserved proof mode fields in `hermit/kernel/proofs.py` and ledger models | not yet claimable |
+| Signed proofs / inclusion proofs | `implemented` | `hermit/kernel/proofs.py`, `hermit/kernel/store_ledger.py` | `tests/test_kernel_store_tasks_support.py`, CLI `task claim-status` |
 
 ## Current Hard-Cut Boundaries
 
@@ -34,22 +34,17 @@ Implemented:
 - memory injection and retrieval fail closed without kernel state
 - proof export reports missing proof coverage instead of implying signed completeness
 
-Still partial:
+Current transition-era surfaces that remain intentionally compatible:
 
-- some ingress observability still reflects transition-era metadata rather than pure kernel projections
-- durable re-entry semantics are converging, but not every drift case shares one operator workflow yet
-- memory mirror and markdown rendering still exist as export surfaces around kernel truth
+- markdown memory mirror still exists, but only as an export surface around kernel truth
+- runtime/operator views still expose compatibility-friendly summaries in addition to strict ledger objects
 
 ## Claim Boundary
 
-The repo can plausibly claim:
+The repo can now gate and surface claims through code:
 
-- `Core`: close to claimable
-- `Governed`: materially implemented
-- `Verifiable`: baseline implemented, strong profile still in progress
+- `Core`: claimable through the conformance matrix and `task claim-status`
+- `Governed`: claimable through the same gate once task/operator surfaces are green
+- `Verifiable`: claimable as a baseline profile, with stronger task-level readiness depending on exported proof coverage
 
-The repo should not yet claim:
-
-- fully uniform drift recovery across every adapter and resume path
-- signed or inclusion-proof verifiability
-- complete elimination of transition-era operator surfaces
+The repo still keeps compatibility surfaces, so these claims apply to the kernel contract rather than every legacy runtime affordance.

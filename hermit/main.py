@@ -62,6 +62,7 @@ from hermit.kernel import (
     SupervisionService,
     TaskController,
 )
+from hermit.kernel.claims import repository_claim_status, task_claim_status
 from hermit.kernel.knowledge import MemoryRecordService
 from hermit.kernel.memory_governance import MemoryGovernanceService
 from hermit.kernel.proofs import ProofService
@@ -400,9 +401,13 @@ def _describe_env_source(key: str, env_file_keys: set[str]) -> str:
 
 
 def _format_preflight_item(item: _PreflightItem) -> str:
-    prefix = _t("cli.preflight.prefix.ok", "[OK]") if item.ok else _t(
-        "cli.preflight.prefix.missing",
-        "[MISSING]",
+    prefix = (
+        _t("cli.preflight.prefix.ok", "[OK]")
+        if item.ok
+        else _t(
+            "cli.preflight.prefix.missing",
+            "[MISSING]",
+        )
     )
     return f"  {prefix} {item.label}: {item.detail}"
 
@@ -948,9 +953,7 @@ def profiles_list() -> None:
             " provider={provider}{model_suffix}",
             provider=provider,
             model_suffix=(
-                _t("cli.profiles_list.model_suffix", " model={model}", model=model)
-                if model
-                else ""
+                _t("cli.profiles_list.model_suffix", " model={model}", model=model) if model else ""
             ),
         )
         typer.echo(f"{name}{marker}{suffix}")
@@ -1611,7 +1614,9 @@ def _render_memory_payload(payload: dict[str, Any]) -> str:
     if explanations:
         lines.append("Governance:")
         lines.extend([f"  - {item}" for item in explanations])
-    matched_signals = dict((inspection.get("structured_assertion", {}) or {}).get("matched_signals", {}) or {})
+    matched_signals = dict(
+        (inspection.get("structured_assertion", {}) or {}).get("matched_signals", {}) or {}
+    )
     if matched_signals:
         lines.append("Matched Signals:")
         for name, hits in sorted(matched_signals.items()):
@@ -1651,7 +1656,7 @@ def task_list(
     limit: int = typer.Option(
         20,
         help=_cli_t("cli.task.list.limit", "Maximum number of tasks to show."),
-    )
+    ),
 ) -> None:
     """List recent tasks from the kernel ledger."""
     store = _get_kernel_store()
@@ -1674,7 +1679,7 @@ def task_list(
 
 @task_app.command("show")
 def task_show(
-    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID."))
+    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID.")),
 ) -> None:
     """Show one task and its pending approvals."""
     store = _get_kernel_store()
@@ -1736,9 +1741,7 @@ def task_show(
 
     permits = store.list_execution_permits(task_id=task_id, limit=20)
     if permits:
-        typer.echo(
-            "\n" + _t("cli.task.show.permits", "Recent execution permits:")
-        )
+        typer.echo("\n" + _t("cli.task.show.permits", "Recent execution permits:"))
         for permit in permits:
             typer.echo(
                 _t(
@@ -1775,6 +1778,49 @@ def task_show(
                         path_display=grant.path_display,
                     )
                 )
+    case = SupervisionService(store).build_task_case(task_id)
+    claims = dict(case["operator_answers"].get("claims", {}) or {})
+    task_gate = dict(claims.get("task_gate", {}) or {})
+    claimable = list(claims.get("repository", {}).get("claimable_profiles", []) or [])
+    reentry = dict(case["operator_answers"].get("reentry", {}) or {})
+    typer.echo("\n" + _t("cli.task.show.claims", "Claim status:"))
+    typer.echo(
+        _t(
+            "cli.task.show.indented",
+            "    {value}",
+            value=(
+                f"repository={', '.join(claimable) or '-'} "
+                f"verifiable_ready={bool(task_gate.get('verifiable_ready'))} "
+                f"strong_verifiable_ready={bool(task_gate.get('strong_verifiable_ready'))} "
+                f"proof_mode={task_gate.get('proof_mode') or '-'} "
+                f"strongest_export_mode={task_gate.get('strongest_export_mode') or '-'}"
+            ),
+        )
+    )
+    typer.echo("\n" + _t("cli.task.show.reentry", "Re-entry status:"))
+    typer.echo(
+        _t(
+            "cli.task.show.indented",
+            "    {value}",
+            value=(
+                f"required={int(reentry.get('required_count', 0) or 0)} "
+                f"resolved={int(reentry.get('resolved_count', 0) or 0)}"
+            ),
+        )
+    )
+    for item in list(reentry.get("recent_attempts", []) or [])[:3]:
+        typer.echo(
+            _t(
+                "cli.task.show.indented",
+                "    {value}",
+                value=(
+                    f"[{item.get('step_attempt_id')}] {item.get('status')} "
+                    f"reason={item.get('reentry_reason') or '-'} "
+                    f"boundary={item.get('reentry_boundary') or '-'} "
+                    f"recovery_required={bool(item.get('recovery_required'))}"
+                ),
+            )
+        )
 
 
 @task_app.command("events")
@@ -1805,25 +1851,29 @@ def task_receipts(
 
 @task_app.command("explain")
 def task_explain(
-    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID."))
+    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID.")),
 ) -> None:
     """Explain why a task executed, under what authority, and what changed."""
     store = _get_kernel_store()
-    typer.echo(json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2))
+    typer.echo(
+        json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2)
+    )
 
 
 @task_app.command("case")
 def task_case(
-    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID."))
+    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID.")),
 ) -> None:
     """Show unified operator case view for one task."""
     store = _get_kernel_store()
-    typer.echo(json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2))
+    typer.echo(
+        json.dumps(SupervisionService(store).build_task_case(task_id), ensure_ascii=False, indent=2)
+    )
 
 
 @task_app.command("proof")
 def task_proof(
-    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID."))
+    task_id: str = typer.Argument(..., help=_cli_t("cli.task.common.task_id", "Task ID.")),
 ) -> None:
     """Show proof summary for one task."""
     store = _get_kernel_store()
@@ -1852,9 +1902,33 @@ def task_proof_export(
     typer.echo(payload)
 
 
+@task_app.command("claim-status")
+def task_claims(
+    task_id: Optional[str] = typer.Argument(
+        None,
+        help=_cli_t("cli.task.common.task_id", "Optional task ID."),
+    ),
+) -> None:
+    """Show repository claim gate status, optionally with task-level proof readiness."""
+    store = _get_kernel_store()
+    if not task_id:
+        typer.echo(json.dumps(repository_claim_status(), ensure_ascii=False, indent=2))
+        return
+    proof = ProofService(store).build_proof_summary(task_id)
+    typer.echo(
+        json.dumps(
+            task_claim_status(store, task_id, proof_summary=proof),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
 @task_app.command("rollback")
 def task_rollback(
-    receipt_id: str = typer.Argument(..., help=_cli_t("cli.task.rollback.receipt_id", "Receipt ID."))
+    receipt_id: str = typer.Argument(
+        ..., help=_cli_t("cli.task.rollback.receipt_id", "Receipt ID.")
+    ),
 ) -> None:
     """Execute a supported rollback for one receipt."""
     store = _get_kernel_store()
@@ -1916,7 +1990,7 @@ def task_approve(
     approval_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.task.common.approval_id", "Approval ID."),
-    )
+    ),
 ) -> None:
     """Approve once and resume a blocked task."""
     _task_resolution("approve_once", approval_id)
@@ -1927,7 +2001,7 @@ def task_approve_always_directory(
     approval_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.task.common.approval_id", "Approval ID."),
-    )
+    ),
 ) -> None:
     """Approve and always allow this directory for the current conversation."""
     _task_resolution("approve_always_directory", approval_id)
@@ -1953,7 +2027,7 @@ def task_resume(
     approval_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.task.resume.approval_id", "Approval ID to resume."),
-    )
+    ),
 ) -> None:
     """Resume a blocked task by approving its latest pending approval."""
     _task_resolution("approve_once", approval_id)
@@ -1983,7 +2057,7 @@ def _task_grant_list(
 
 
 def _task_grant_revoke(
-    grant_id: str = typer.Argument(..., help=_cli_t("cli.task.grant.grant_id", "Grant ID."))
+    grant_id: str = typer.Argument(..., help=_cli_t("cli.task.grant.grant_id", "Grant ID.")),
 ) -> None:
     """Revoke a path grant."""
     store = _get_kernel_store()
@@ -2018,7 +2092,7 @@ def task_grant_list(
 
 @task_grant_app.command("revoke")
 def task_grant_revoke(
-    grant_id: str = typer.Argument(..., help=_cli_t("cli.task.grant.grant_id", "Grant ID."))
+    grant_id: str = typer.Argument(..., help=_cli_t("cli.task.grant.grant_id", "Grant ID.")),
 ) -> None:
     """Revoke a path grant."""
     _task_grant_revoke(grant_id)
@@ -2033,7 +2107,10 @@ def memory_inspect(
     claim_text: Optional[str] = typer.Option(
         None,
         "--claim-text",
-        help=_cli_t("cli.memory.inspect.claim_text", "Inspect a raw claim without reading a stored memory record."),
+        help=_cli_t(
+            "cli.memory.inspect.claim_text",
+            "Inspect a raw claim without reading a stored memory record.",
+        ),
     ),
     category: str = typer.Option(
         "其他",
@@ -2084,7 +2161,9 @@ def memory_inspect(
             raise typer.Exit(1)
         payload = _memory_payload_from_record(record, settings=settings)
     else:
-        resolved_workspace_root = str(workspace_root.resolve()) if workspace_root else str(settings.base_dir)
+        resolved_workspace_root = (
+            str(workspace_root.resolve()) if workspace_root else str(settings.base_dir)
+        )
         inspection = governance.inspect_claim(
             category=category,
             claim_text=str(claim_text or ""),
@@ -2193,7 +2272,11 @@ def memory_status(
             superseded_links += 1
     payload = {
         "total_records": len(records),
-        "active_records": sum(1 for record in records if record.status == "active" and not governance.is_expired(record)),
+        "active_records": sum(
+            1
+            for record in records
+            if record.status == "active" and not governance.is_expired(record)
+        ),
         "expired_records": expired,
         "superseded_links": superseded_links,
         "by_status": by_status,
@@ -2225,20 +2308,22 @@ def memory_rebuild(
         help=_cli_t("cli.memory.rebuild.json", "Emit JSON instead of human-readable text."),
     ),
 ) -> None:
-    """Reconcile active records and re-render the mirror file from kernel state."""
+    """Reconcile active records and export the mirror file from kernel state."""
     settings = get_settings()
     _ensure_workspace(settings)
     store = _get_kernel_store()
     service = MemoryRecordService(store, mirror_path=settings.memory_file)
     before_active = len(store.list_memory_records(status="active", limit=5000))
     result = service.reconcile_active_records()
-    service.render_mirror(settings.memory_file)
+    export_path = service.export_mirror(settings.memory_file)
     after_active = len(store.list_memory_records(status="active", limit=5000))
     payload = {
         "before_active": before_active,
         "after_active": after_active,
         **result,
         "mirror_path": str(settings.memory_file),
+        "export_path": str(export_path) if export_path is not None else None,
+        "render_mode": "export_only",
     }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -2246,6 +2331,45 @@ def memory_rebuild(
     typer.echo(
         f"Rebuilt memory mirror. active {before_active} -> {after_active}; "
         f"superseded={result['superseded_count']} duplicate={result['duplicate_count']}"
+    )
+
+
+@memory_app.command("export")
+def memory_export(
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        help=_cli_t("cli.memory.export.output", "Optional output path for the exported mirror."),
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help=_cli_t("cli.memory.export.json", "Emit JSON instead of human-readable text."),
+    ),
+) -> None:
+    """Export the current kernel-backed memory mirror without mutating records."""
+    settings = get_settings()
+    _ensure_workspace(settings)
+    store = _get_kernel_store()
+    target = output or settings.memory_file
+    service = MemoryRecordService(store, mirror_path=target)
+    export_path = service.export_mirror(target)
+    active_records = len(store.list_memory_records(status="active", limit=5000))
+    payload = {
+        "active_records": active_records,
+        "export_path": str(export_path) if export_path is not None else None,
+        "render_mode": "export_only",
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(
+        _t(
+            "cli.memory.export.done",
+            "Exported memory mirror from kernel state to {path} ({count} active records).",
+            path=payload["export_path"] or "-",
+            count=active_records,
+        )
     )
 
 
@@ -2419,7 +2543,6 @@ def schedule_list() -> None:
     """List all scheduled tasks."""
     import datetime
 
-
     store = _get_schedule_store()
     jobs = store.list_schedules()
     if not jobs:
@@ -2563,7 +2686,7 @@ def schedule_remove(
     job_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.schedule.common.job_id_remove", "Task ID to remove."),
-    )
+    ),
 ) -> None:
     """Remove a scheduled task."""
     store = _get_schedule_store()
@@ -2584,7 +2707,7 @@ def schedule_enable(
     job_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.schedule.common.job_id_enable", "Task ID to enable."),
-    )
+    ),
 ) -> None:
     """Enable a scheduled task."""
     store = _get_schedule_store()
@@ -2606,7 +2729,7 @@ def schedule_disable(
     job_id: str = typer.Argument(
         ...,
         help=_cli_t("cli.schedule.common.job_id_disable", "Task ID to disable."),
-    )
+    ),
 ) -> None:
     """Disable a scheduled task."""
     store = _get_schedule_store()

@@ -647,7 +647,7 @@ def _promote_memories_via_kernel(
             )
             promoted_beliefs.append(belief.belief_id)
             promoted_memories.append(memory.memory_id)
-        memory_service.render_mirror(Path(settings.memory_file))
+        memory_service.export_mirror(Path(settings.memory_file))
 
         rollback_ref = _store_memory_artifact(
             store,

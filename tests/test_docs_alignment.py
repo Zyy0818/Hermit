@@ -44,4 +44,4 @@ def test_conformance_matrix_tracks_exit_criteria_and_claim_boundary() -> None:
     assert "Spec exit criterion" in matrix
     assert "No direct model-to-tool execution bypass" in matrix
     assert "Input drift / witness drift / approval drift use durable re-entry" in matrix
-    assert "The repo should not yet claim" in matrix
+    assert "The repo can now gate and surface claims through code" in matrix

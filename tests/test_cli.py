@@ -703,6 +703,58 @@ def test_task_proof_commands_report_and_export_proof_bundle(tmp_path, monkeypatc
     )
 
 
+def test_task_claim_status_command_reports_repo_and_task_gates(tmp_path, monkeypatch) -> None:
+    from hermit.config import get_settings
+    from hermit.kernel.store import KernelStore
+
+    base_dir = tmp_path / ".hermit"
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    monkeypatch.setenv("HERMIT_PROOF_SIGNING_SECRET", "proof-secret")
+    get_settings.cache_clear()
+
+    store = KernelStore(base_dir / "kernel" / "state.db")
+    store.ensure_conversation("cli-claims", source_channel="chat")
+    task = store.create_task(
+        conversation_id="cli-claims",
+        title="CLI Claim Task",
+        goal="Inspect claim gate",
+        source_channel="chat",
+    )
+    step = store.create_step(task_id=task.task_id, kind="respond")
+    attempt = store.create_step_attempt(task_id=task.task_id, step_id=step.step_id)
+    receipt = store.create_receipt(
+        task_id=task.task_id,
+        step_id=step.step_id,
+        step_attempt_id=attempt.step_attempt_id,
+        action_type="write_local",
+        input_refs=[],
+        environment_ref=None,
+        policy_result={"decision": "allow"},
+        approval_ref=None,
+        output_refs=[],
+        result_summary="claim receipt",
+        result_code="succeeded",
+    )
+    ProofService(store).export_task_proof(task.task_id)
+
+    runner = CliRunner()
+    repo_result = runner.invoke(app, ["task", "claim-status"])
+    task_result = runner.invoke(app, ["task", "claim-status", task.task_id])
+
+    assert repo_result.exit_code == 0
+    repo_payload = json.loads(repo_result.output)
+    assert repo_payload["profiles"]["verifiable"]["claimable"] is True
+
+    assert task_result.exit_code == 0
+    task_payload = json.loads(task_result.output)
+    assert task_payload["task_id"] == task.task_id
+    assert task_payload["task_gate"]["verifiable_ready"] is True
+    assert task_payload["task_gate"]["strong_verifiable_ready"] is True
+    refreshed_receipt = store.get_receipt(receipt.receipt_id)
+    assert refreshed_receipt is not None
+    assert refreshed_receipt.proof_mode == "signed_with_inclusion_proof"
+
+
 def test_task_case_and_projection_rebuild_commands(tmp_path, monkeypatch) -> None:
     from hermit.config import get_settings
     from hermit.kernel.store import KernelStore
@@ -814,6 +866,11 @@ def test_task_case_and_projection_rebuild_commands(tmp_path, monkeypatch) -> Non
     assert case_result.exit_code == 0
     case_payload = json.loads(case_result.output)
     assert case_payload["operator_answers"]["why_execute"] == "Policy allowed this write."
+    assert (
+        case_payload["operator_answers"]["claims"]["repository"]["profiles"]["core"]["claimable"]
+        is True
+    )
+    assert case_payload["operator_answers"]["reentry"]["required_count"] == 0
     assert case_payload["ingress_observability"]["conversation"]["focus"]["task_id"] == task.task_id
     assert (
         case_payload["ingress_observability"]["conversation"]["metrics"]["resolution_counts"][
@@ -836,6 +893,41 @@ def test_task_case_and_projection_rebuild_commands(tmp_path, monkeypatch) -> Non
     )
     assert rebuild_result.exit_code == 0
     assert json.loads(rebuild_result.output)["task"]["task_id"] == task.task_id
+
+
+def test_memory_export_command_writes_export_only_mirror(tmp_path, monkeypatch) -> None:
+    from hermit.config import get_settings
+    from hermit.kernel.store import KernelStore
+
+    base_dir = tmp_path / ".hermit"
+    monkeypatch.setenv("HERMIT_BASE_DIR", str(base_dir))
+    get_settings.cache_clear()
+
+    store = KernelStore(base_dir / "kernel" / "state.db")
+    store.create_memory_record(
+        task_id="task-memory-export",
+        conversation_id="chat-memory-export",
+        category="项目约定",
+        claim_text="默认在 /repo 执行命令",
+        scope_kind="workspace",
+        scope_ref="/repo",
+        retention_class="project_convention",
+    )
+
+    output_path = tmp_path / "memory-export.md"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["memory", "export", "--output", str(output_path), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["render_mode"] == "export_only"
+    assert payload["active_records"] == 1
+    assert payload["export_path"] == str(output_path)
+    assert output_path.exists()
+    assert "默认在 /repo 执行命令" in output_path.read_text(encoding="utf-8")
 
 
 def test_task_approve_and_deny_commands_delegate_to_runner(tmp_path, monkeypatch) -> None:

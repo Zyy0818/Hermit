@@ -8,7 +8,7 @@ from hermit.kernel.outcomes import TERMINAL_TASK_STATUSES, build_task_outcome
 from hermit.kernel.store import KernelStore
 from hermit.kernel.store_support import _canonical_json, _sha256_hex
 
-_CONVERSATION_PROJECTION_SCHEMA_VERSION = "conversation-v2"
+_CONVERSATION_PROJECTION_SCHEMA_VERSION = "conversation-v3"
 _SESSION_TIME_RE = re.compile(r"<session_time>.*?</session_time>\s*", re.DOTALL)
 _FEISHU_TAG_RE = re.compile(r"<feishu_[^>]+>.*?</feishu_[^>]+>\s*", re.DOTALL)
 
@@ -47,9 +47,17 @@ class ConversationProjectionService:
         tasks = self.store.list_tasks(conversation_id=conversation_id, limit=200)
         conversation = self.store.get_conversation(conversation_id)
         focus_task_id = self.store.ensure_valid_focus(conversation_id)
-        active_task = self.store.get_task(focus_task_id) if focus_task_id else next(
-            (task for task in tasks if task.status in {"queued", "running", "blocked", "planning_ready"}),
-            None,
+        active_task = (
+            self.store.get_task(focus_task_id)
+            if focus_task_id
+            else next(
+                (
+                    task
+                    for task in tasks
+                    if task.status in {"queued", "running", "blocked", "planning_ready"}
+                ),
+                None,
+            )
         )
         latest_task = tasks[0] if tasks else None
         recent_notes: list[str] = []
@@ -61,9 +69,6 @@ class ConversationProjectionService:
         ingress_metrics = {
             "total": 0,
             "resolution_counts": {},
-            "shadow_compared_count": 0,
-            "shadow_match_count": 0,
-            "shadow_disagreement_count": 0,
             "user_disambiguation_count": 0,
         }
         recent_ingresses: list[dict[str, Any]] = []
@@ -77,7 +82,9 @@ class ConversationProjectionService:
                         "task_id": task.task_id,
                         "title": str(task.title or ""),
                         "status": str(task.status or ""),
-                        "is_focus": bool(active_task is not None and task.task_id == active_task.task_id),
+                        "is_focus": bool(
+                            active_task is not None and task.task_id == active_task.task_id
+                        ),
                     }
                 )
             events = self.store.list_events(task_id=task.task_id, limit=500)
@@ -86,7 +93,11 @@ class ConversationProjectionService:
             for event in reversed(events):
                 if event["event_type"] == "task.note.appended" and len(recent_notes) < 5:
                     excerpt = self._sanitize_note_excerpt(
-                        str(event["payload"].get("inline_excerpt") or event["payload"].get("raw_text") or "")
+                        str(
+                            event["payload"].get("inline_excerpt")
+                            or event["payload"].get("raw_text")
+                            or ""
+                        )
                     )
                     if excerpt:
                         recent_notes.append(excerpt[:240])
@@ -95,12 +106,16 @@ class ConversationProjectionService:
                     verdict = str(payload.get("verdict") or "").strip()
                     reason = str(payload.get("reason") or "").strip()
                     action_type = str(payload.get("action_type") or "").strip()
-                    summary = " ".join(part for part in [action_type, verdict, reason] if part).strip()
+                    summary = " ".join(
+                        part for part in [action_type, verdict, reason] if part
+                    ).strip()
                     if summary:
                         recent_decisions.append(summary[:240])
             if task.status in TERMINAL_TASK_STATUSES and len(continuation_candidates) < 5:
                 projection = self.store.build_task_projection(task.task_id)
-                step_kinds = {str(step.get("kind") or "") for step in projection.get("steps", {}).values()}
+                step_kinds = {
+                    str(step.get("kind") or "") for step in projection.get("steps", {}).values()
+                }
                 if not step_kinds or (step_kinds & {"respond", "plan"}):
                     outcome = build_task_outcome(
                         store=self.store,
@@ -115,7 +130,9 @@ class ConversationProjectionService:
                                 "title": str(task.title or ""),
                                 "status": str(outcome.get("status", task.status) or task.status),
                                 "outcome_summary": str(outcome.get("outcome_summary", "") or ""),
-                                "source_artifact_refs": list(outcome.get("source_artifact_refs", []) or []),
+                                "source_artifact_refs": list(
+                                    outcome.get("source_artifact_refs", []) or []
+                                ),
                             }
                         )
             for artifact in reversed(self.store.list_artifacts(task_id=task.task_id, limit=50)):
@@ -133,13 +150,6 @@ class ConversationProjectionService:
             resolution_counts[resolution] = int(resolution_counts.get(resolution, 0)) + 1
             ingress_metrics["resolution_counts"] = resolution_counts
             rationale = dict(ingress.rationale or {})
-            shadow = dict(rationale.get("shadow_binding", {}) or {})
-            if shadow:
-                ingress_metrics["shadow_compared_count"] += 1
-                if bool(shadow.get("match_actual")):
-                    ingress_metrics["shadow_match_count"] += 1
-                else:
-                    ingress_metrics["shadow_disagreement_count"] += 1
             if str(rationale.get("resolved_by", "") or "").strip() == "explicit_task_switch":
                 ingress_metrics["user_disambiguation_count"] += 1
             if len(recent_ingresses) < 5:
@@ -150,7 +160,6 @@ class ConversationProjectionService:
                         "resolution": ingress.resolution,
                         "chosen_task_id": ingress.chosen_task_id,
                         "parent_task_id": ingress.parent_task_id,
-                        "shadow_match_actual": shadow.get("match_actual") if shadow else None,
                         "reason_codes": list(rationale.get("reason_codes", []) or []),
                     }
                 )
@@ -172,12 +181,16 @@ class ConversationProjectionService:
             "focus_reason": str(getattr(conversation, "focus_reason", "") or ""),
             "open_tasks": open_tasks[:8],
             "open_loops": open_loops[:8],
-            "active_task_id": active_task.task_id if active_task is not None else (latest_task.task_id if latest_task else ""),
+            "active_task_id": active_task.task_id
+            if active_task is not None
+            else (latest_task.task_id if latest_task else ""),
             "recent_decisions": recent_decisions[:5],
             "latest_artifact_refs": latest_artifact_refs[:10],
             "recent_notes": recent_notes[:5],
             "continuation_candidates": continuation_candidates[:5],
-            "pending_ingress_count": self.store.count_pending_ingresses(conversation_id=conversation_id),
+            "pending_ingress_count": self.store.count_pending_ingresses(
+                conversation_id=conversation_id
+            ),
             "ingress_metrics": ingress_metrics,
             "recent_ingresses": recent_ingresses,
             "last_event_seq": last_event_seq,
@@ -229,7 +242,9 @@ class ConversationProjectionService:
             )
         return _sha256_hex(_canonical_json(heads))
 
-    def _store_projection_artifact(self, conversation_id: str, payload: dict[str, Any]) -> str | None:
+    def _store_projection_artifact(
+        self, conversation_id: str, payload: dict[str, Any]
+    ) -> str | None:
         if self.artifact_store is None:
             return None
         uri, content_hash = self.artifact_store.store_json(payload)

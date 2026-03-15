@@ -4,13 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from hermit.kernel.claims import task_claim_status
 from hermit.kernel.outcomes import build_task_outcome
 from hermit.kernel.planning import PlanningService
 from hermit.kernel.proofs import ProofService
 from hermit.kernel.store import KernelStore
 from hermit.kernel.topics import build_task_topic
 
-_PROJECTION_SCHEMA_VERSION = "tail-v6"
+_PROJECTION_SCHEMA_VERSION = "tail-v7"
 
 
 class ProjectionService:
@@ -69,7 +70,9 @@ class ProjectionService:
         events = self.store.list_events(task_id=task_id, limit=500)
         planning = PlanningService(self.store)
         planning_state = planning.state_for_task(task_id)
-        beliefs = [belief.__dict__ for belief in self.store.list_beliefs(task_id=task_id, limit=200)]
+        beliefs = [
+            belief.__dict__ for belief in self.store.list_beliefs(task_id=task_id, limit=200)
+        ]
         knowledge = [
             record.__dict__
             for record in self.store.list_memory_records(conversation_id=conversation_id, limit=200)
@@ -86,7 +89,10 @@ class ProjectionService:
                 break
         current_tool_history = previous_tool_history or self._tool_history_from_events(events)
         if previous_tool_history:
-            seen = {(entry["event_seq"], entry["tool_name"], entry["key_input"]) for entry in previous_tool_history}
+            seen = {
+                (entry["event_seq"], entry["tool_name"], entry["key_input"])
+                for entry in previous_tool_history
+            }
             for entry in self._tool_history_from_events(events):
                 key = (entry["event_seq"], entry["tool_name"], entry["key_input"])
                 if key not in seen:
@@ -101,6 +107,7 @@ class ProjectionService:
             "task": task.__dict__,
             "projection": projection,
             "proof": proof,
+            "claims": task_claim_status(self.store, task_id, proof_summary=proof),
             "topic": build_task_topic(events),
             "outcome": build_task_outcome(
                 store=self.store,
@@ -137,7 +144,8 @@ class ProjectionService:
             "valid": cache["schema_version"] == _PROJECTION_SCHEMA_VERSION
             and cache["event_head_hash"] == proof["head_hash"],
             "reason": "ok"
-            if cache["schema_version"] == _PROJECTION_SCHEMA_VERSION and cache["event_head_hash"] == proof["head_hash"]
+            if cache["schema_version"] == _PROJECTION_SCHEMA_VERSION
+            and cache["event_head_hash"] == proof["head_hash"]
             else "stale",
             "head_hash": proof["head_hash"],
             "cached_head_hash": cache["event_head_hash"],
